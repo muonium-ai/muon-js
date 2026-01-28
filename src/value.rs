@@ -32,6 +32,20 @@ impl Value {
     }
 
     #[inline]
+    pub const fn from_int32(v: i32) -> Self {
+        Value(((v as isize as usize) << 1) | Self::TAG_INT)
+    }
+
+    #[inline]
+    pub fn int32(self) -> Option<i32> {
+        if self.is_int() {
+            Some((self.0 as isize >> 1) as i32)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
     pub fn is_int(self) -> bool {
         (self.0 & 1) == Self::TAG_INT
     }
@@ -64,6 +78,11 @@ impl Value {
     #[inline]
     pub fn is_exception(self) -> bool {
         self == Self::EXCEPTION
+    }
+
+    #[inline]
+    pub fn is_number(self) -> bool {
+        self.is_int()
     }
 
     #[inline]

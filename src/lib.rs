@@ -2,6 +2,8 @@
 
 mod api;
 mod context;
+mod types;
 mod value;
 
 pub use api::*;
+pub use types::*;
