@@ -1,0 +1,18 @@
+[package]
+name = "muon-js"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "muon_js"
+path = "src/lib.rs"
+
+[features]
+# Keep default minimal; add feature flags as ports land.
+default = []
+
+[dependencies]
+
+[dev-dependencies]
+
