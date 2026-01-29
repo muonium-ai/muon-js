@@ -2334,7 +2334,7 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_factor()?;
+        let mut value = self.parse_postfix()?;
         loop {
             self.skip_ws();
             let op = match self.peek() {
@@ -2343,12 +2343,61 @@ impl<'a> ArithParser<'a> {
                 _ => break,
             };
             self.pos += 1;
-            let rhs = self.parse_factor()?;
+            let rhs = self.parse_postfix()?;
             value = if op == b'*' {
                 self.mul_values(value, rhs)?
             } else {
                 self.div_values(value, rhs)?
             };
+        }
+        Ok(value)
+    }
+
+    fn parse_postfix(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_factor()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'.') => {
+                    self.pos += 1;
+                    let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
+                    let (prop, remaining) = parse_identifier(rest).ok_or(())?;
+                    let consumed = rest.len() - remaining.len();
+                    self.pos += consumed;
+                    let ctx = unsafe { &mut *self.ctx };
+                    value = js_get_property_str(ctx, value, prop);
+                    if value.is_exception() {
+                        return Err(());
+                    }
+                }
+                Some(b'[') => {
+                    self.pos += 1;
+                    let index = self.parse_expr()?;
+                    self.skip_ws();
+                    if self.peek() != Some(b']') {
+                        return Err(());
+                    }
+                    self.pos += 1;
+                    let ctx = unsafe { &mut *self.ctx };
+                    // Try as uint32 index first
+                    if let Ok(idx) = js_to_uint32(ctx, index) {
+                        value = js_get_property_uint32(ctx, value, idx);
+                    } else if let Some(bytes) = ctx.string_bytes(index) {
+                        let owned = bytes.to_vec();
+                        if let Ok(s) = core::str::from_utf8(&owned) {
+                            value = js_get_property_str(ctx, value, s);
+                        } else {
+                            return Err(());
+                        }
+                    } else {
+                        return Err(());
+                    }
+                    if value.is_exception() {
+                        return Err(());
+                    }
+                }
+                _ => break,
+            }
         }
         Ok(value)
     }
@@ -2372,6 +2421,12 @@ impl<'a> ArithParser<'a> {
             }
             self.pos += 1;
             return Ok(value);
+        }
+        if self.peek() == Some(b'[') {
+            return self.parse_array_literal();
+        }
+        if self.peek() == Some(b'{') {
+            return self.parse_object_literal();
         }
         if self.peek() == Some(b'\"') || self.peek() == Some(b'\'') {
             return self.parse_string();
@@ -2554,6 +2609,104 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
             } else {
                 break;
+            }
+        }
+    }
+
+    fn parse_array_literal(&mut self) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        self.pos += 1; // skip '['
+        self.skip_ws();
+        
+        let arr = js_new_array(ctx, 0);
+        if arr.is_exception() {
+            return Err(());
+        }
+        
+        let mut idx = 0u32;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b']') {
+                self.pos += 1;
+                return Ok(arr);
+            }
+            
+            if idx > 0 {
+                if self.peek() != Some(b',') {
+                    return Err(());
+                }
+                self.pos += 1;
+                self.skip_ws();
+                if self.peek() == Some(b']') {
+                    self.pos += 1;
+                    return Ok(arr);
+                }
+            }
+            
+            let elem = self.parse_expr()?;
+            let res = js_set_property_uint32(ctx, arr, idx, elem);
+            if res.is_exception() {
+                return Err(());
+            }
+            idx += 1;
+        }
+    }
+
+    fn parse_object_literal(&mut self) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        self.pos += 1; // skip '{'
+        self.skip_ws();
+        
+        let obj = js_new_object(ctx);
+        if obj.is_exception() {
+            return Err(());
+        }
+        
+        let mut first = true;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                return Ok(obj);
+            }
+            
+            if !first {
+                if self.peek() != Some(b',') {
+                    return Err(());
+                }
+                self.pos += 1;
+                self.skip_ws();
+                if self.peek() == Some(b'}') {
+                    self.pos += 1;
+                    return Ok(obj);
+                }
+            }
+            first = false;
+            
+            // Parse key (identifier or string)
+            let key = if self.peek() == Some(b'\"') || self.peek() == Some(b'\'') {
+                let key_val = self.parse_string()?;
+                let bytes = ctx.string_bytes(key_val).ok_or(())?;
+                let owned = bytes.to_vec();
+                core::str::from_utf8(&owned).map_err(|_| ())?.to_string()
+            } else {
+                let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
+                let (name, remaining) = parse_identifier(rest).ok_or(())?;
+                let consumed = rest.len() - remaining.len();
+                self.pos += consumed;
+                name.to_string()
+            };
+            
+            self.skip_ws();
+            if self.peek() != Some(b':') {
+                return Err(());
+            }
+            self.pos += 1;
+            
+            let value = self.parse_expr()?;
+            let res = js_set_property_str(ctx, obj, &key, value);
+            if res.is_exception() {
+                return Err(());
             }
         }
     }

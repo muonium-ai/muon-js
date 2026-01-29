@@ -5,12 +5,14 @@ const BASIC_SAMPLES: &[(&str, &str)] = &[
     ("02_variables.js", include_str!("../samples/pass/02_variables.js")),
     ("03_strings.js", include_str!("../samples/pass/03_strings.js")),
     ("04_null_undefined.js", include_str!("../samples/pass/04_null_undefined.js")),
+    ("05_arrays_simple.js", include_str!("../samples/pass/05_arrays_simple.js")),
+    ("06_objects.js", include_str!("../samples/pass/06_objects.js")),
 ];
 
 const FEATURE_SAMPLES: &[(&str, &str)] = &[
-    ("01_arrays.js", include_str!("../samples/fail/01_arrays.js")),
-    ("02_objects.js", include_str!("../samples/fail/02_objects.js")),
-    ("03_functions.js", include_str!("../samples/fail/03_functions.js")),
+    ("01_array_indexing.js", include_str!("../samples/fail/01_array_indexing.js")),
+    ("02_functions.js", include_str!("../samples/fail/02_functions.js")),
+    ("03_property_access.js", include_str!("../samples/fail/03_property_access.js")),
 ];
 
 fn eval_sample(source: &str, filename: &str) -> JSValue {
