@@ -247,11 +247,17 @@ pub fn js_parse(
     _filename: &str,
     _eval_flags: i32,
 ) -> JSValue {
-    Value::UNDEFINED
+    js_new_string(_ctx, _input)
 }
 
 pub fn js_run(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
-    Value::UNDEFINED
+    if let Some(bytes) = _ctx.string_bytes(_val) {
+        if let Ok(src) = core::str::from_utf8(bytes) {
+            let owned = src.to_owned();
+            return js_eval(_ctx, &owned, "<run>", 0);
+        }
+    }
+    Value::EXCEPTION
 }
 
 pub fn js_eval(

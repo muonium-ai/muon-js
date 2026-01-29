@@ -148,4 +148,14 @@ mod tests {
         let t = JS_Eval(&mut ctx, "true", "test.js", 0);
         assert_eq!(t, JSValue::TRUE);
     }
+
+    #[test]
+    fn parse_and_run() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let code = JS_Parse(&mut ctx, "42", "test.js", 0);
+        let res = JS_Run(&mut ctx, code);
+        let n = JS_ToInt32(&mut ctx, res).expect("int32");
+        assert_eq!(n, 42);
+    }
 }
