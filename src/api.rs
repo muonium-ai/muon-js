@@ -512,7 +512,39 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
     let global = js_get_global_object(_ctx);
     let _ = js_set_property_str(_ctx, global, "Object", obj_ctor);
     let _ = js_set_property_str(_ctx, global, "Array", arr_ctor);
+    if _ctx.c_function_def(2).is_some() {
+        let keys_fn = js_new_c_function_params(_ctx, 2, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, obj_ctor, "keys", keys_fn);
+    }
+    if _ctx.c_function_def(3).is_some() {
+        let is_array_fn = js_new_c_function_params(_ctx, 3, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, arr_ctor, "isArray", is_array_fn);
+    }
     Value::UNDEFINED
+}
+
+pub fn js_object_keys(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {
+    let keys = match _ctx.object_keys(obj) {
+        Some(keys) => keys,
+        None => return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an object"),
+    };
+    let arr = js_new_array(_ctx, keys.len() as i32);
+    if arr.is_exception() {
+        return arr;
+    }
+    for (i, key) in keys.iter().enumerate() {
+        let s = js_new_string(_ctx, key);
+        let _ = js_set_property_uint32(_ctx, arr, i as u32, s);
+    }
+    arr
+}
+
+pub fn js_array_is_array(_ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
+    if _ctx.object_class_id(val) == Some(JSObjectClassEnum::Array as u32) {
+        Value::TRUE
+    } else {
+        Value::FALSE
+    }
 }
 
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {

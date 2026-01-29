@@ -378,6 +378,34 @@ mod tests {
             js_new_array(ctx, len)
         }
 
+        fn object_keys(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            if argc < 1 {
+                return JSValue::EXCEPTION;
+            }
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let obj = unsafe { *argv };
+            js_object_keys(ctx, obj)
+        }
+
+        fn array_is_array(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            if argc < 1 {
+                return JSValue::FALSE;
+            }
+            let val = unsafe { *argv };
+            js_array_is_array(ctx, val)
+        }
+
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
         let def_obj = JSCFunctionDef {
@@ -394,7 +422,21 @@ mod tests {
             arg_count: 1,
             magic: 0,
         };
-        let table = [def_obj, def_arr];
+        let def_keys = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(object_keys) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let def_is_array = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(array_is_array) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let table = [def_obj, def_arr, def_keys, def_is_array];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
@@ -402,6 +444,14 @@ mod tests {
         let arr = JS_Eval(&mut ctx, "Array(2)", "test.js", 0);
         let len = JS_GetPropertyStr(&mut ctx, arr, "length");
         assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
+        let keys = JS_Eval(&mut ctx, "Object.keys({a:1})", "test.js", 0);
+        let k0 = JS_GetPropertyUint32(&mut ctx, keys, 0);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let k0s = JS_ToString(&mut ctx, k0);
+        let ks = JS_ToCString(&mut ctx, k0s, &mut buf);
+        assert_eq!(ks, "a");
+        let is_arr = JS_Eval(&mut ctx, "Array.isArray([])", "test.js", 0);
+        assert_eq!(is_arr, JSValue::TRUE);
     }
 
     #[test]

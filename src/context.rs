@@ -318,6 +318,34 @@ impl Context {
         }
     }
 
+    pub fn object_keys(&self, val: Value) -> Option<Vec<String>> {
+        let obj = self.object_ptr(val)?;
+        let mut keys = Vec::new();
+        unsafe {
+            if (*obj).tag == HEAP_TAG_ARRAY {
+                let len = (*obj).array_len as usize;
+                for i in 0..len {
+                    keys.push(i.to_string());
+                }
+            }
+            let mut cur = (*obj).prop_head;
+            while !cur.is_null() {
+                if (*cur).key_kind == PROP_KEY_INDEX {
+                    keys.push((*cur).key.to_string());
+                } else {
+                    let atom = (*cur).key;
+                    if let Some(bytes) = self.atom_bytes(atom) {
+                        if let Ok(s) = core::str::from_utf8(bytes) {
+                            keys.push(s.to_string());
+                        }
+                    }
+                }
+                cur = (*cur).next;
+            }
+        }
+        Some(keys)
+    }
+
     pub fn alloc_float(&mut self, value: f64) -> Option<*mut u8> {
         let raw = self
             .mem
