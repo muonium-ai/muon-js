@@ -129,4 +129,12 @@ mod tests {
         let ni = JS_ToNumber(&mut ctx, i).expect("number");
         assert!(ni > 1.0e12);
     }
+
+    #[test]
+    fn c_function_object() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let func = JS_NewCFunctionParams(&mut ctx, 1, JSValue::UNDEFINED);
+        assert_eq!(JS_IsFunction(&mut ctx, func), 1);
+    }
 }

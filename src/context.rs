@@ -152,6 +152,15 @@ impl Context {
         Some(Value::from_ptr(obj as *mut u8))
     }
 
+    pub fn new_c_function(&mut self, func_idx: i32, params: Value) -> Option<Value> {
+        let obj = self.alloc_object(JSObjectClassEnum::CFunction as u32)?;
+        unsafe {
+            (*obj).func_idx = func_idx;
+            (*obj).func_params = params;
+        }
+        Some(Value::from_ptr(obj as *mut u8))
+    }
+
     pub fn object_class_id(&self, val: Value) -> Option<u32> {
         let obj = self.object_ptr(val)?;
         unsafe { Some((*obj).class_id) }
@@ -408,6 +417,8 @@ struct HeapObject {
     array_cap: u32,
     elements: *mut Value,
     opaque: *mut core::ffi::c_void,
+    func_idx: i32,
+    func_params: Value,
 }
 
 #[repr(C)]
@@ -436,6 +447,8 @@ impl Context {
             (*obj).array_cap = 0;
             (*obj).elements = core::ptr::null_mut();
             (*obj).opaque = core::ptr::null_mut();
+            (*obj).func_idx = 0;
+            (*obj).func_params = Value::UNDEFINED;
             Some(obj)
         }
     }

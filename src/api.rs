@@ -129,7 +129,14 @@ pub fn js_is_error(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
 }
 
 pub fn js_is_function(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
-    0
+    match _ctx.object_class_id(_val) {
+        Some(id) => {
+            let func = JSObjectClassEnum::CFunction as u32;
+            let closure = JSObjectClassEnum::Closure as u32;
+            if id == func || id == closure { 1 } else { 0 }
+        }
+        None => 0,
+    }
 }
 
 pub fn js_get_class_id(_ctx: &mut JSContextImpl, _val: JSValue) -> i32 {
@@ -229,7 +236,9 @@ pub fn js_new_c_function_params(
     _func_idx: i32,
     _params: JSValue,
 ) -> JSValue {
-    Value::UNDEFINED
+    _ctx
+        .new_c_function(_func_idx, _params)
+        .unwrap_or(Value::EXCEPTION)
 }
 
 pub fn js_parse(
