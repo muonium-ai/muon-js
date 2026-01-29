@@ -275,7 +275,7 @@ pub fn js_run(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
     if let Some(bytes) = _ctx.string_bytes(_val) {
         if let Ok(src) = core::str::from_utf8(bytes) {
             let owned = src.to_owned();
-            return js_eval(_ctx, &owned, "<run>", 0);
+            return js_eval(_ctx, &owned, "<run>", JS_EVAL_RETVAL);
         }
     }
     if _val.is_exception() {
@@ -298,7 +298,13 @@ pub fn js_eval(
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
     }
     if let Some(val) = eval_expr(_ctx, src) {
-        return val;
+        if val.is_exception() {
+            return val;
+        }
+        if (_eval_flags & JS_EVAL_RETVAL) != 0 {
+            return val;
+        }
+        return Value::UNDEFINED;
     }
     Value::EXCEPTION
 }

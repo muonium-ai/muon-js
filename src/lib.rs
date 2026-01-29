@@ -12,6 +12,10 @@ pub use types::*;
 mod tests {
     use super::*;
 
+    fn eval_ret(ctx: &mut JSContextImpl, src: &str) -> JSValue {
+        JS_Eval(ctx, src, "test.js", JS_EVAL_RETVAL)
+    }
+
     #[test]
     fn array_no_holes() {
         let mut mem = vec![0u8; 4096];
@@ -280,9 +284,9 @@ mod tests {
         let obj = JS_NewObject(&mut ctx);
         let _ = JS_SetPropertyStr(&mut ctx, obj, "f", func);
         let _ = JS_Eval(&mut ctx, "obj = {}", "test.js", 0);
-        let global_obj = JS_Eval(&mut ctx, "obj", "test.js", 0);
+        let global_obj = eval_ret(&mut ctx, "obj");
         let _ = JS_SetPropertyStr(&mut ctx, global_obj, "f", func);
-        let res = JS_Eval(&mut ctx, "obj.f()", "test.js", 0);
+        let res = eval_ret(&mut ctx, "obj.f()");
         assert_eq!(res, global_obj);
     }
 
@@ -310,9 +314,9 @@ mod tests {
         JS_SetCFunctionTable(&mut ctx, &table);
         let func = JS_NewCFunctionParams(&mut ctx, 0, JSValue::UNDEFINED);
         let _ = JS_Eval(&mut ctx, "obj = {}", "test.js", 0);
-        let obj = JS_Eval(&mut ctx, "obj", "test.js", 0);
+        let obj = eval_ret(&mut ctx, "obj");
         let _ = JS_SetPropertyStr(&mut ctx, obj, "f", func);
-        let res = JS_Eval(&mut ctx, "obj[\"f\"]()", "test.js", 0);
+        let res = eval_ret(&mut ctx, "obj[\"f\"]()");
         assert_eq!(res, obj);
     }
 
@@ -347,7 +351,7 @@ mod tests {
         let table = [def];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterGlobalFunction(&mut ctx, "addTwo", 0, JSValue::UNDEFINED);
-        let res = JS_Eval(&mut ctx, "addTwo(3)", "test.js", 0);
+        let res = eval_ret(&mut ctx, "addTwo(3)");
         assert_eq!(JS_ToInt32(&mut ctx, res).unwrap(), 5);
     }
 
@@ -600,52 +604,52 @@ mod tests {
         ];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
-        let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
+        let obj = eval_ret(&mut ctx, "Object()");
         assert_eq!(JS_GetClassID(&mut ctx, obj), JSObjectClassEnum::Object as i32);
-        let arr = JS_Eval(&mut ctx, "Array(2)", "test.js", 0);
+        let arr = eval_ret(&mut ctx, "Array(2)");
         let len = JS_GetPropertyStr(&mut ctx, arr, "length");
         assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
-        let arr2 = JS_Eval(&mut ctx, "Array(1,2)", "test.js", 0);
+        let arr2 = eval_ret(&mut ctx, "Array(1,2)");
         let v0 = JS_GetPropertyUint32(&mut ctx, arr2, 0);
         let v1 = JS_GetPropertyUint32(&mut ctx, arr2, 1);
         assert_eq!(JS_ToInt32(&mut ctx, v0).unwrap(), 1);
         assert_eq!(JS_ToInt32(&mut ctx, v1).unwrap(), 2);
-        let keys = JS_Eval(&mut ctx, "Object.keys({a:1})", "test.js", 0);
+        let keys = eval_ret(&mut ctx, "Object.keys({a:1})");
         let k0 = JS_GetPropertyUint32(&mut ctx, keys, 0);
         let mut buf = JSCStringBuf { buf: [0u8; 5] };
         let k0s = JS_ToString(&mut ctx, k0);
         let ks = JS_ToCString(&mut ctx, k0s, &mut buf);
         assert_eq!(ks, "a");
-        let is_arr = JS_Eval(&mut ctx, "Array.isArray([])", "test.js", 0);
+        let is_arr = eval_ret(&mut ctx, "Array.isArray([])");
         assert_eq!(is_arr, JSValue::TRUE);
-        let created = JS_Eval(&mut ctx, "Object.create({})", "test.js", 0);
+        let created = eval_ret(&mut ctx, "Object.create({})");
         assert_eq!(JS_GetClassID(&mut ctx, created), JSObjectClassEnum::Object as i32);
-        let abs_v = JS_Eval(&mut ctx, "Math.abs(-3)", "test.js", 0);
+        let abs_v = eval_ret(&mut ctx, "Math.abs(-3)");
         assert_eq!(JS_ToInt32(&mut ctx, abs_v).unwrap(), 3);
-        let floor_v = JS_Eval(&mut ctx, "Math.floor(1.9)", "test.js", 0);
+        let floor_v = eval_ret(&mut ctx, "Math.floor(1.9)");
         let fv = JS_ToNumber(&mut ctx, floor_v).unwrap();
         assert!((fv - 1.0).abs() < 1e-9);
         let _ = JS_Eval(&mut ctx, "o = {}", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "Object.defineProperty(o, \"x\", {value: 7})", "test.js", 0);
-        let ox = JS_Eval(&mut ctx, "o.x", "test.js", 0);
+        let ox = eval_ret(&mut ctx, "o.x");
         assert_eq!(JS_ToInt32(&mut ctx, ox).unwrap(), 7);
         let _ = JS_Eval(&mut ctx, "arr = []", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "arr.push(1)", "test.js", 0);
-        let pv = JS_Eval(&mut ctx, "arr.pop()", "test.js", 0);
+        let pv = eval_ret(&mut ctx, "arr.pop()");
         assert_eq!(JS_ToInt32(&mut ctx, pv).unwrap(), 1);
-        let keys_empty = JS_Eval(&mut ctx, "Object.keys([])", "test.js", 0);
+        let keys_empty = eval_ret(&mut ctx, "Object.keys([])");
         let klen = JS_GetPropertyStr(&mut ctx, keys_empty, "length");
         assert_eq!(JS_ToInt32(&mut ctx, klen).unwrap(), 0);
-        let proto = JS_Eval(&mut ctx, "Object.getPrototypeOf({})", "test.js", 0);
+        let proto = eval_ret(&mut ctx, "Object.getPrototypeOf({})");
         assert_eq!(JS_GetClassID(&mut ctx, proto), JSObjectClassEnum::Object as i32);
         let _ = JS_Eval(&mut ctx, "p = {a: 5}", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "o = Object.create(p)", "test.js", 0);
-        let oa = JS_Eval(&mut ctx, "o.a", "test.js", 0);
+        let oa = eval_ret(&mut ctx, "o.a");
         assert_eq!(JS_ToInt32(&mut ctx, oa).unwrap(), 5);
-        let proto2 = JS_Eval(&mut ctx, "Object.getPrototypeOf(o)", "test.js", 0);
+        let proto2 = eval_ret(&mut ctx, "Object.getPrototypeOf(o)");
         let pa = JS_GetPropertyStr(&mut ctx, proto2, "a");
         assert_eq!(JS_ToInt32(&mut ctx, pa).unwrap(), 5);
-        let now = JS_Eval(&mut ctx, "Date.now()", "test.js", 0);
+        let now = eval_ret(&mut ctx, "Date.now()");
         let n = JS_ToNumber(&mut ctx, now).unwrap();
         assert!(n > 0.0);
     }
@@ -654,52 +658,60 @@ mod tests {
     fn eval_basic_literals() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
-        let v = JS_Eval(&mut ctx, "42", "test.js", 0);
+        let v = eval_ret(&mut ctx, "42");
         let n = JS_ToInt32(&mut ctx, v).expect("int32");
         assert_eq!(n, 42);
-        let t = JS_Eval(&mut ctx, "true", "test.js", 0);
+        let t = eval_ret(&mut ctx, "true");
         assert_eq!(t, JSValue::TRUE);
-        let s = JS_Eval(&mut ctx, "\"hi\"", "test.js", 0);
+        let s = eval_ret(&mut ctx, "\"hi\"");
         let mut buf = JSCStringBuf { buf: [0u8; 5] };
         let ss = JS_ToString(&mut ctx, s);
         let out = JS_ToCString(&mut ctx, ss, &mut buf);
         assert_eq!(out, "hi");
         let len = JS_GetPropertyStr(&mut ctx, s, "length");
         assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
-        let e = JS_Eval(&mut ctx, "1+2*3", "test.js", 0);
+        let e = eval_ret(&mut ctx, "1+2*3");
         let n = JS_ToNumber(&mut ctx, e).expect("number");
         assert!((n - 7.0).abs() < 1e-9);
-        let e2 = JS_Eval(&mut ctx, "(1+2)*3", "test.js", 0);
+        let e2 = eval_ret(&mut ctx, "(1+2)*3");
         let n2 = JS_ToNumber(&mut ctx, e2).expect("number");
         assert!((n2 - 9.0).abs() < 1e-9);
-        let e3 = JS_Eval(&mut ctx, "1.5+1", "test.js", 0);
+        let e3 = eval_ret(&mut ctx, "1.5+1");
         let n3 = JS_ToNumber(&mut ctx, e3).expect("number");
         assert!((n3 - 2.5).abs() < 1e-9);
-        let arr = JS_Eval(&mut ctx, "[1, 2]", "test.js", 0);
+        let arr = eval_ret(&mut ctx, "[1, 2]");
         let a1 = JS_GetPropertyUint32(&mut ctx, arr, 0);
         let a2 = JS_GetPropertyUint32(&mut ctx, arr, 1);
         assert_eq!(JS_ToInt32(&mut ctx, a1).unwrap(), 1);
         assert_eq!(JS_ToInt32(&mut ctx, a2).unwrap(), 2);
-        let obj = JS_Eval(&mut ctx, "{a: 3}", "test.js", 0);
+        let obj = eval_ret(&mut ctx, "{a: 3}");
         let oa = JS_GetPropertyStr(&mut ctx, obj, "a");
         assert_eq!(JS_ToInt32(&mut ctx, oa).unwrap(), 3);
-        let nested = JS_Eval(&mut ctx, "[1, [2, 3]]", "test.js", 0);
+        let nested = eval_ret(&mut ctx, "[1, [2, 3]]");
         let inner = JS_GetPropertyUint32(&mut ctx, nested, 1);
         let inner_val = JS_GetPropertyUint32(&mut ctx, inner, 0);
         assert_eq!(JS_ToInt32(&mut ctx, inner_val).unwrap(), 2);
-        let expr = JS_Eval(&mut ctx, "([1,2])[0]", "test.js", 0);
+        let expr = eval_ret(&mut ctx, "([1,2])[0]");
         assert_eq!(JS_ToInt32(&mut ctx, expr).unwrap(), 1);
         let _ = JS_Eval(&mut ctx, "x = 7", "test.js", 0);
-        let xv = JS_Eval(&mut ctx, "x", "test.js", 0);
+        let xv = eval_ret(&mut ctx, "x");
         assert_eq!(JS_ToInt32(&mut ctx, xv).unwrap(), 7);
         let _ = JS_Eval(&mut ctx, "obj = {a: 1}", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "obj.a = 4", "test.js", 0);
-        let ov = JS_Eval(&mut ctx, "obj.a", "test.js", 0);
+        let ov = eval_ret(&mut ctx, "obj.a");
         assert_eq!(JS_ToInt32(&mut ctx, ov).unwrap(), 4);
         let _ = JS_Eval(&mut ctx, "arr = []", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "arr[\"0\"] = 9", "test.js", 0);
-        let av = JS_Eval(&mut ctx, "arr[0]", "test.js", 0);
+        let av = eval_ret(&mut ctx, "arr[0]");
         assert_eq!(JS_ToInt32(&mut ctx, av).unwrap(), 9);
+    }
+
+    #[test]
+    fn eval_default_returns_undefined() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = JS_Eval(&mut ctx, "1+1", "test.js", 0);
+        assert_eq!(v, JSValue::UNDEFINED);
     }
 
     #[test]
