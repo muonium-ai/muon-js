@@ -103,4 +103,18 @@ mod tests {
         let val = JS_ToInt32(&mut ctx, got).expect("int32");
         assert_eq!(val, 99);
     }
+
+    #[test]
+    fn float_roundtrip() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let f = JS_NewFloat64(&mut ctx, 1.5);
+        assert_eq!(JS_IsNumber(&mut ctx, f), 1);
+        let n = JS_ToNumber(&mut ctx, f).expect("number");
+        assert!((n - 1.5).abs() < 1e-9);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let fs = JS_ToString(&mut ctx, f);
+        let s = JS_ToCString(&mut ctx, fs, &mut buf);
+        assert!(s.starts_with('1'));
+    }
 }

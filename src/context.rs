@@ -249,6 +249,32 @@ impl Context {
             Some(core::slice::from_raw_parts(data, len))
         }
     }
+
+    pub fn alloc_float(&mut self, value: f64) -> Option<*mut u8> {
+        let raw = self
+            .mem
+            .alloc(core::mem::size_of::<FloatHeader>(), core::mem::align_of::<f64>())?;
+        unsafe {
+            let header = raw as *mut FloatHeader;
+            (*header).tag = HEAP_TAG_FLOAT;
+            (*header)._pad = 0;
+            (*header).value = value;
+            Some(raw)
+        }
+    }
+
+    pub fn float_value(&self, val: Value) -> Option<f64> {
+        if !val.is_ptr() {
+            return None;
+        }
+        let ptr = val.as_ptr() as *const FloatHeader;
+        unsafe {
+            if (*ptr).tag != HEAP_TAG_FLOAT {
+                return None;
+            }
+            Some((*ptr).value)
+        }
+    }
 }
 
 /// Placeholder for the custom allocator and GC state.
@@ -291,6 +317,7 @@ fn _value_size_check(_v: Value) {
 const HEAP_TAG_STRING: u32 = 1;
 const HEAP_TAG_OBJECT: u32 = 2;
 const HEAP_TAG_ARRAY: u32 = 3;
+const HEAP_TAG_FLOAT: u32 = 4;
 
 const PROP_KEY_ATOM: u32 = 0;
 const PROP_KEY_INDEX: u32 = 1;
@@ -299,6 +326,13 @@ const PROP_KEY_INDEX: u32 = 1;
 struct StringHeader {
     tag: u32,
     len: u32,
+}
+
+#[repr(C)]
+struct FloatHeader {
+    tag: u32,
+    _pad: u32,
+    value: f64,
 }
 
 fn align_up(value: usize, align: usize) -> usize {

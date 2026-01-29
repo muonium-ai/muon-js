@@ -66,7 +66,11 @@ pub fn js_new_context2(mem: &mut [u8], _prepare_compilation: JSBool) -> JSContex
 }
 
 pub fn js_new_float64(_ctx: &mut JSContextImpl, _d: f64) -> JSValue {
-    Value::UNDEFINED
+    if let Some(ptr) = _ctx.alloc_float(_d) {
+        Value::from_ptr(ptr)
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_new_int32(_ctx: &mut JSContextImpl, _val: i32) -> JSValue {
@@ -82,7 +86,7 @@ pub fn js_new_int64(_ctx: &mut JSContextImpl, _val: i64) -> JSValue {
 }
 
 pub fn js_is_number(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
-    if _val.is_number() { 1 } else { 0 }
+    if _val.is_number() || _ctx.float_value(_val).is_some() { 1 } else { 0 }
 }
 
 pub fn js_is_bool(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
@@ -291,6 +295,10 @@ pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
         let bytes = int_to_decimal_bytes(_val.int32().unwrap_or(0), &mut buf);
         return js_new_string_len(_ctx, bytes);
     }
+    if let Some(f) = _ctx.float_value(_val) {
+        let s = f.to_string();
+        return js_new_string(_ctx, &s);
+    }
     if _ctx.string_bytes(_val).is_some() {
         return _val;
     }
@@ -336,6 +344,8 @@ pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, J
 pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v as f64)
+    } else if let Some(f) = _ctx.float_value(_val) {
+        Ok(f)
     } else if _val.is_bool() {
         Ok(if _val == Value::TRUE { 1.0 } else { 0.0 })
     } else if _val.is_null() {
