@@ -197,7 +197,7 @@ pub fn js_set_property_str(
     if _ctx.set_property_str(_this_obj, _str.as_bytes(), _val) {
         _val
     } else {
-        Value::EXCEPTION
+        js_throw_error(_ctx, JSObjectClassEnum::TypeError, "property set failed")
     }
 }
 
@@ -209,7 +209,7 @@ pub fn js_set_property_uint32(
 ) -> JSValue {
     match _ctx.set_property_index(_this_obj, _idx, _val) {
         Ok(()) => _val,
-        Err(()) => Value::EXCEPTION,
+        Err(()) => js_throw_error(_ctx, JSObjectClassEnum::TypeError, "array index out of bounds"),
     }
 }
 
