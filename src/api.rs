@@ -943,6 +943,7 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     let (base, tail) = split_base_and_tail(s)?;
     let mut val = eval_value(ctx, base)?;
+    let mut this_val = Value::UNDEFINED;
     let mut rest = tail;
     loop {
         let rest_trim = rest.trim_start();
@@ -964,13 +965,15 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 js_push_arg(ctx, *arg);
             }
             js_push_arg(ctx, val);
-            js_push_arg(ctx, Value::UNDEFINED);
+            js_push_arg(ctx, this_val);
             val = js_call(ctx, args.len() as i32);
+            this_val = Value::UNDEFINED;
             rest = next;
             continue;
         }
         if rest_trim.starts_with('.') {
             let (name, next) = parse_identifier(&rest_trim[1..])?;
+            this_val = val;
             val = js_get_property_str(ctx, val, name);
             rest = next;
             continue;
@@ -979,10 +982,12 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             let (inside, next) = extract_bracket(rest_trim)?;
             let idx_val = eval_expr(ctx, inside)?;
             if let Some(i) = idx_val.int32() {
+                this_val = val;
                 val = js_get_property_uint32(ctx, val, i as u32);
             } else if let Some(bytes) = ctx.string_bytes(idx_val) {
                 let owned = bytes.to_vec();
                 let name = core::str::from_utf8(&owned).ok()?;
+                this_val = val;
                 val = js_get_property_str(ctx, val, name);
             } else {
                 return None;

@@ -255,6 +255,38 @@ mod tests {
     }
 
     #[test]
+    fn method_call_sets_this() {
+        fn return_this(
+            _ctx: *mut JSContext,
+            this_val: *mut JSValue,
+            _argc: i32,
+            _argv: *mut JSValue,
+        ) -> JSValue {
+            unsafe { *this_val }
+        }
+
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let def = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(return_this) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 0,
+            magic: 0,
+        };
+        let table = [def];
+        JS_SetCFunctionTable(&mut ctx, &table);
+        let func = JS_NewCFunctionParams(&mut ctx, 0, JSValue::UNDEFINED);
+        let obj = JS_NewObject(&mut ctx);
+        let _ = JS_SetPropertyStr(&mut ctx, obj, "f", func);
+        let _ = JS_Eval(&mut ctx, "obj = {}", "test.js", 0);
+        let global_obj = JS_Eval(&mut ctx, "obj", "test.js", 0);
+        let _ = JS_SetPropertyStr(&mut ctx, global_obj, "f", func);
+        let res = JS_Eval(&mut ctx, "obj.f()", "test.js", 0);
+        assert_eq!(res, global_obj);
+    }
+
+    #[test]
     fn eval_basic_literals() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
