@@ -1193,6 +1193,49 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     Ok(value)
 }
 
+fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<f64, ()> {
+    let mut parser = ArithParser::new(ctx, src.as_bytes());
+    let value = parser.parse_expr()?;
+    parser.skip_ws();
+    if parser.pos != parser.input.len() {
+        return Err(());
+    }
+    Ok(value)
+}
+
+fn contains_arith_op(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for &b in bytes {
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+            }
+            b']' | b'}' | b')' => {
+                depth -= 1;
+            }
+            b'+' | b'-' | b'*' | b'/' if depth == 0 => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.starts_with('[') && s.ends_with(']') {
@@ -1218,6 +1261,11 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     {
         let inner = &s[1..s.len() - 1];
         return Some(js_new_string(ctx, inner));
+    }
+    if contains_arith_op(s) {
+        if let Ok(num) = parse_arith_expr(ctx, s) {
+            return Some(number_to_value(ctx, num));
+        }
     }
     if let Ok(num) = parse_numeric_expr(s) {
         return Some(number_to_value(ctx, num));
@@ -2211,6 +2259,155 @@ impl<'a> ExprParser<'a> {
         }
         let slice = &self.input[start..self.pos];
         let s = core::str::from_utf8(slice).map_err(|_| ())?;
+        s.parse::<f64>().map_err(|_| ())
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek() {
+            if b.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+}
+
+struct ArithParser<'a> {
+    ctx: *mut JSContextImpl,
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ArithParser<'a> {
+    fn new(ctx: &mut JSContextImpl, input: &'a [u8]) -> Self {
+        Self { ctx, input, pos: 0 }
+    }
+
+    fn parse_expr(&mut self) -> Result<f64, ()> {
+        let mut value = self.parse_term()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some(b'+') => b'+',
+                Some(b'-') => b'-',
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_term()?;
+            if op == b'+' {
+                value += rhs;
+            } else {
+                value -= rhs;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_term(&mut self) -> Result<f64, ()> {
+        let mut value = self.parse_factor()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some(b'*') => b'*',
+                Some(b'/') => b'/',
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_factor()?;
+            if op == b'*' {
+                value *= rhs;
+            } else {
+                value /= rhs;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_factor(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        if let Some(b'+') = self.peek() {
+            self.pos += 1;
+            return self.parse_factor();
+        }
+        if let Some(b'-') = self.peek() {
+            self.pos += 1;
+            return Ok(-self.parse_factor()?);
+        }
+        if let Some(b'(') = self.peek() {
+            self.pos += 1;
+            let value = self.parse_expr()?;
+            self.skip_ws();
+            if self.peek() != Some(b')') {
+                return Err(());
+            }
+            self.pos += 1;
+            return Ok(value);
+        }
+        if matches!(self.peek(), Some(b'0'..=b'9') | Some(b'.')) {
+            return self.parse_number();
+        }
+        self.parse_identifier_number()
+    }
+
+    fn parse_identifier_number(&mut self) -> Result<f64, ()> {
+        let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
+        let (name, remaining) = parse_identifier(rest).ok_or(())?;
+        let consumed = rest.len() - remaining.len();
+        self.pos += consumed;
+        let ctx = unsafe { &mut *self.ctx };
+        let global = js_get_global_object(ctx);
+        let val = js_get_property_str(ctx, global, name);
+        js_to_number(ctx, val).map_err(|_| ())
+    }
+
+    fn parse_number(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        match self.peek() {
+            Some(b'0') => {
+                self.pos += 1;
+            }
+            Some(b'1'..=b'9') => {
+                self.pos += 1;
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            Some(b'.') => {
+                self.pos += 1;
+            }
+            _ => return Err(()),
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(());
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(());
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        let s = core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| ())?;
         s.parse::<f64>().map_err(|_| ())
     }
 
