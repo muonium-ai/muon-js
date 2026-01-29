@@ -288,8 +288,8 @@ pub fn js_eval(
         let inner = &src[1..src.len() - 1];
         return js_new_string(_ctx, inner);
     }
-    if let Ok(num) = src.parse::<i64>() {
-        return js_new_int64(_ctx, num);
+    if let Ok(num) = parse_numeric_expr(src) {
+        return number_to_value(_ctx, num);
     }
     Value::EXCEPTION
 }
@@ -825,4 +825,147 @@ fn write_decimal(buf: &mut [u8], mut value: usize) -> usize {
     let out_len = len.min(buf.len());
     buf[..out_len].copy_from_slice(&tmp[idx..idx + out_len]);
     out_len
+}
+
+fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
+    if !val.is_finite() {
+        return Value::EXCEPTION;
+    }
+    if val.fract() == 0.0 && val >= i32::MIN as f64 && val <= i32::MAX as f64 {
+        return Value::from_int32(val as i32);
+    }
+    if let Some(ptr) = ctx.alloc_float(val) {
+        Value::from_ptr(ptr)
+    } else {
+        Value::EXCEPTION
+    }
+}
+
+fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
+    let mut parser = ExprParser::new(src.as_bytes());
+    let value = parser.parse_expr()?;
+    parser.skip_ws();
+    if parser.pos != parser.input.len() {
+        return Err(());
+    }
+    Ok(value)
+}
+
+struct ExprParser<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ExprParser<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn parse_expr(&mut self) -> Result<f64, ()> {
+        let mut value = self.parse_term()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some(b'+') => b'+',
+                Some(b'-') => b'-',
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_term()?;
+            if op == b'+' {
+                value += rhs;
+            } else {
+                value -= rhs;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_term(&mut self) -> Result<f64, ()> {
+        let mut value = self.parse_factor()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some(b'*') => b'*',
+                Some(b'/') => b'/',
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_factor()?;
+            if op == b'*' {
+                value *= rhs;
+            } else {
+                value /= rhs;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_factor(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        if let Some(b'+') = self.peek() {
+            self.pos += 1;
+            return self.parse_factor();
+        }
+        if let Some(b'-') = self.peek() {
+            self.pos += 1;
+            return Ok(-self.parse_factor()?);
+        }
+        if let Some(b'(') = self.peek() {
+            self.pos += 1;
+            let value = self.parse_expr()?;
+            self.skip_ws();
+            if self.peek() != Some(b')') {
+                return Err(());
+            }
+            self.pos += 1;
+            return Ok(value);
+        }
+        self.parse_number()
+    }
+
+    fn parse_number(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        let start = self.pos;
+        let mut saw_digit = false;
+        while let Some(b) = self.peek() {
+            if b.is_ascii_digit() {
+                saw_digit = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if let Some(b'.') = self.peek() {
+            self.pos += 1;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() {
+                    saw_digit = true;
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        if !saw_digit {
+            return Err(());
+        }
+        let slice = &self.input[start..self.pos];
+        let s = core::str::from_utf8(slice).map_err(|_| ())?;
+        s.parse::<f64>().map_err(|_| ())
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek() {
+            if b.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
 }

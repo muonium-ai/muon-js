@@ -152,6 +152,15 @@ mod tests {
         let ss = JS_ToString(&mut ctx, s);
         let out = JS_ToCString(&mut ctx, ss, &mut buf);
         assert_eq!(out, "hi");
+        let e = JS_Eval(&mut ctx, "1+2*3", "test.js", 0);
+        let n = JS_ToNumber(&mut ctx, e).expect("number");
+        assert!((n - 7.0).abs() < 1e-9);
+        let e2 = JS_Eval(&mut ctx, "(1+2)*3", "test.js", 0);
+        let n2 = JS_ToNumber(&mut ctx, e2).expect("number");
+        assert!((n2 - 9.0).abs() < 1e-9);
+        let e3 = JS_Eval(&mut ctx, "1.5+1", "test.js", 0);
+        let n3 = JS_ToNumber(&mut ctx, e3).expect("number");
+        assert!((n3 - 2.5).abs() < 1e-9);
     }
 
     #[test]
