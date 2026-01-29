@@ -120,9 +120,11 @@ pub fn js_get_class_id(_ctx: &mut JSContextImpl, _val: JSValue) -> i32 {
     _ctx.object_class_id(_val).map(|v| v as i32).unwrap_or(-1)
 }
 
-pub fn js_set_opaque(_ctx: &mut JSContextImpl, _val: JSValue, _opaque: *mut core::ffi::c_void) {}
+pub fn js_set_opaque(_ctx: &mut JSContextImpl, _val: JSValue, _opaque: *mut core::ffi::c_void) {
+    _ctx.set_object_opaque(_val, _opaque);
+}
 pub fn js_get_opaque(_ctx: &mut JSContextImpl, _val: JSValue) -> *mut core::ffi::c_void {
-    core::ptr::null_mut()
+    _ctx.get_object_opaque(_val)
 }
 
 pub fn js_set_context_opaque(_ctx: &mut JSContextImpl, _opaque: *mut core::ffi::c_void) {
@@ -334,6 +336,10 @@ pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, J
 pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v as f64)
+    } else if _val.is_bool() {
+        Ok(if _val == Value::TRUE { 1.0 } else { 0.0 })
+    } else if _val.is_null() {
+        Ok(0.0)
     } else {
         Err(Value::EXCEPTION)
     }

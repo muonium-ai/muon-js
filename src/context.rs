@@ -119,6 +119,25 @@ impl Context {
         unsafe { Some((*obj).class_id) }
     }
 
+    pub fn set_object_opaque(&mut self, val: Value, opaque: *mut core::ffi::c_void) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
+            None => return false,
+        };
+        unsafe {
+            (*obj).opaque = opaque;
+        }
+        true
+    }
+
+    pub fn get_object_opaque(&self, val: Value) -> *mut core::ffi::c_void {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
+            None => return core::ptr::null_mut(),
+        };
+        unsafe { (*obj).opaque }
+    }
+
     pub fn get_property_str(&mut self, val: Value, name: &[u8]) -> Option<Value> {
         let obj = self.object_ptr(val)?;
         unsafe {
@@ -312,6 +331,7 @@ struct HeapObject {
     array_len: u32,
     array_cap: u32,
     elements: *mut Value,
+    opaque: *mut core::ffi::c_void,
 }
 
 #[repr(C)]
@@ -339,6 +359,7 @@ impl Context {
             (*obj).array_len = 0;
             (*obj).array_cap = 0;
             (*obj).elements = core::ptr::null_mut();
+            (*obj).opaque = core::ptr::null_mut();
             Some(obj)
         }
     }

@@ -70,4 +70,15 @@ mod tests {
         let su = JS_ToCString(&mut ctx, us, &mut buf);
         assert_eq!(su, "undefined");
     }
+
+    #[test]
+    fn opaque_roundtrip() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let obj = JS_NewObject(&mut ctx);
+        let ptr = 0x1234usize as *mut core::ffi::c_void;
+        JS_SetOpaque(&mut ctx, obj, ptr);
+        let got = JS_GetOpaque(&mut ctx, obj);
+        assert_eq!(got, ptr);
+    }
 }
