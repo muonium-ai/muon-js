@@ -471,6 +471,14 @@ pub fn js_set_log_func(_ctx: &mut JSContextImpl, _write_func: Option<JSWriteFunc
     _ctx.set_log_func(_write_func);
 }
 
+pub fn js_set_c_function_table(_ctx: &mut JSContextImpl, table: &[JSCFunctionDef]) {
+    _ctx.set_c_function_table(table.as_ptr(), table.len());
+}
+
+pub fn js_set_stdlib_def(_ctx: &mut JSContextImpl, def: &JSSTDLibraryDef, cfunc_len: usize) {
+    _ctx.set_c_function_table(def.c_function_table, cfunc_len);
+}
+
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
     let mut buf = JSCStringBuf { buf: [0u8; 5] };
     let owned = {
@@ -774,6 +782,14 @@ pub fn JS_LoadBytecode(ctx: &mut JSContextImpl, buf: &[u8]) -> JSValue {
 
 pub fn JS_SetLogFunc(ctx: &mut JSContextImpl, write_func: Option<JSWriteFunc>) {
     js_set_log_func(ctx, write_func)
+}
+
+pub fn JS_SetCFunctionTable(ctx: &mut JSContextImpl, table: &[JSCFunctionDef]) {
+    js_set_c_function_table(ctx, table)
+}
+
+pub fn JS_SetStdlibDef(ctx: &mut JSContextImpl, def: &JSSTDLibraryDef, cfunc_len: usize) {
+    js_set_stdlib_def(ctx, def, cfunc_len)
 }
 
 pub fn JS_PrintValue(ctx: &mut JSContextImpl, val: JSValue) {

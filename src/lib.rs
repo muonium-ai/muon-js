@@ -142,6 +142,45 @@ mod tests {
     }
 
     #[test]
+    fn c_function_table_dispatch() {
+        fn add_one(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            if argc < 1 {
+                return JSValue::EXCEPTION;
+            }
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let arg0 = unsafe { *argv };
+            if let Ok(v) = js_to_int32(ctx, arg0) {
+                return js_new_int32(ctx, v + 1);
+            }
+            JSValue::EXCEPTION
+        }
+
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let def = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(add_one) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let table = [def];
+        JS_SetCFunctionTable(&mut ctx, &table);
+        let func = JS_NewCFunctionParams(&mut ctx, 0, JSValue::UNDEFINED);
+        let two = JS_NewInt32(&mut ctx, 2);
+        JS_PushArg(&mut ctx, two);
+        JS_PushArg(&mut ctx, func);
+        JS_PushArg(&mut ctx, JSValue::UNDEFINED);
+        let res = JS_Call(&mut ctx, 1);
+        assert_eq!(JS_ToInt32(&mut ctx, res).unwrap(), 3);
+    }
+
+    #[test]
     fn eval_basic_literals() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
