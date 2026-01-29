@@ -397,6 +397,10 @@ mod tests {
         let _ = JS_Eval(&mut ctx, "obj.a = 4", "test.js", 0);
         let ov = JS_Eval(&mut ctx, "obj.a", "test.js", 0);
         assert_eq!(JS_ToInt32(&mut ctx, ov).unwrap(), 4);
+        let _ = JS_Eval(&mut ctx, "arr = []", "test.js", 0);
+        let _ = JS_Eval(&mut ctx, "arr[\"0\"] = 9", "test.js", 0);
+        let av = JS_Eval(&mut ctx, "arr[0]", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, av).unwrap(), 9);
     }
 
     #[test]
