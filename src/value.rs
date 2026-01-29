@@ -4,6 +4,7 @@ pub struct Value(pub usize);
 
 impl Value {
     const WORD_BYTES: usize = core::mem::size_of::<usize>();
+    const PTR_MASK: usize = Self::WORD_BYTES - 1;
     pub const TAG_INT: usize = 0;
     pub const TAG_PTR: usize = 1;
     pub const TAG_SPECIAL: usize = 3;
@@ -52,7 +53,7 @@ impl Value {
 
     #[inline]
     pub fn is_ptr(self) -> bool {
-        (self.0 & (Self::WORD_BYTES - 1)) == Self::TAG_PTR
+        (self.0 & Self::PTR_MASK) == Self::TAG_PTR
     }
 
     #[inline]
@@ -83,6 +84,16 @@ impl Value {
     #[inline]
     pub fn is_number(self) -> bool {
         self.is_int()
+    }
+
+    #[inline]
+    pub fn from_ptr(ptr: *mut u8) -> Self {
+        Value((ptr as usize) | Self::TAG_PTR)
+    }
+
+    #[inline]
+    pub fn as_ptr(self) -> *mut u8 {
+        (self.0 & !Self::PTR_MASK) as *mut u8
     }
 
     #[inline]

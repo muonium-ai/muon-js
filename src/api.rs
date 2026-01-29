@@ -85,8 +85,20 @@ pub fn js_is_number(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
     if _val.is_number() { 1 } else { 0 }
 }
 
+pub fn js_is_bool(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
+    if _val.is_bool() { 1 } else { 0 }
+}
+
+pub fn js_is_null(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
+    if _val.is_null() { 1 } else { 0 }
+}
+
+pub fn js_is_undefined(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
+    if _val.is_undefined() { 1 } else { 0 }
+}
+
 pub fn js_is_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
-    0
+    if _ctx.string_bytes(_val).is_some() { 1 } else { 0 }
 }
 
 pub fn js_is_error(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
@@ -204,11 +216,15 @@ pub fn js_eval(
 pub fn js_gc(_ctx: &mut JSContextImpl) {}
 
 pub fn js_new_string_len(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
-    Value::UNDEFINED
+    if let Some(header) = _ctx.alloc_string(_buf) {
+        Value::from_ptr(header)
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_new_string(_ctx: &mut JSContextImpl, _buf: &str) -> JSValue {
-    Value::UNDEFINED
+    js_new_string_len(_ctx, _buf.as_bytes())
 }
 
 pub fn js_to_cstring_len<'a>(
@@ -216,6 +232,11 @@ pub fn js_to_cstring_len<'a>(
     _val: JSValue,
     _buf: &'a mut JSCStringBuf,
 ) -> &'a str {
+    if let Some(bytes) = _ctx.string_bytes(_val) {
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            return s;
+        }
+    }
     ""
 }
 
@@ -224,10 +245,18 @@ pub fn js_to_cstring<'a>(
     _val: JSValue,
     _buf: &'a mut JSCStringBuf,
 ) -> &'a str {
-    ""
+    js_to_cstring_len(_ctx, _val, _buf)
 }
 
 pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
+    if _val.is_int() {
+        let mut buf = [0u8; 12];
+        let bytes = int_to_decimal_bytes(_val.int32().unwrap_or(0), &mut buf);
+        return js_new_string_len(_ctx, bytes);
+    }
+    if _ctx.string_bytes(_val).is_some() {
+        return _val;
+    }
     Value::UNDEFINED
 }
 
@@ -256,7 +285,11 @@ pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, J
 }
 
 pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSValue> {
-    Err(Value::EXCEPTION)
+    if let Some(v) = _val.int32() {
+        Ok(v as f64)
+    } else {
+        Err(Value::EXCEPTION)
+    }
 }
 
 pub fn js_get_exception(_ctx: &mut JSContextImpl) -> JSValue {
@@ -347,6 +380,18 @@ pub fn JS_NewInt64(ctx: &mut JSContextImpl, val: i64) -> JSValue {
 
 pub fn JS_IsNumber(ctx: &mut JSContextImpl, val: JSValue) -> JSBool {
     js_is_number(ctx, val)
+}
+
+pub fn JS_IsBool(ctx: &mut JSContextImpl, val: JSValue) -> JSBool {
+    js_is_bool(ctx, val)
+}
+
+pub fn JS_IsNull(ctx: &mut JSContextImpl, val: JSValue) -> JSBool {
+    js_is_null(ctx, val)
+}
+
+pub fn JS_IsUndefined(ctx: &mut JSContextImpl, val: JSValue) -> JSBool {
+    js_is_undefined(ctx, val)
 }
 
 pub fn JS_IsString(ctx: &mut JSContextImpl, val: JSValue) -> JSBool {
@@ -563,4 +608,27 @@ pub fn JS_DumpValue(ctx: &mut JSContextImpl, label: &str, val: JSValue) {
 
 pub fn JS_DumpMemory(ctx: &mut JSContextImpl, is_long: JSBool) {
     js_dump_memory(ctx, is_long)
+}
+
+fn int_to_decimal_bytes(mut value: i32, buf: &mut [u8; 12]) -> &[u8] {
+    if value == 0 {
+        buf[0] = b'0';
+        return &buf[0..1];
+    }
+    let negative = value < 0;
+    if negative {
+        value = -value;
+    }
+    let mut idx = buf.len();
+    while value > 0 {
+        let digit = (value % 10) as u8;
+        value /= 10;
+        idx -= 1;
+        buf[idx] = b'0' + digit;
+    }
+    if negative {
+        idx -= 1;
+        buf[idx] = b'-';
+    }
+    &buf[idx..]
 }
