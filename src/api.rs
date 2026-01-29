@@ -13,6 +13,18 @@ pub fn js_new_context(mem: &mut [u8]) -> JSContextImpl {
     Context::new(mem)
 }
 
+pub fn js_new_context_with_stdlib(
+    mem: &mut [u8],
+    stdlib_def: Option<&JSSTDLibraryDef>,
+    cfunc_len: usize,
+) -> JSContextImpl {
+    let mut ctx = Context::new(mem);
+    if let Some(def) = stdlib_def {
+        js_set_stdlib_def(&mut ctx, def, cfunc_len);
+    }
+    ctx
+}
+
 /// Free the context. Finalizers should run; no system allocator is used.
 pub fn js_free_context(_ctx: JSContextImpl) {
     // Placeholder until GC/finalizers are implemented.
@@ -479,6 +491,21 @@ pub fn js_set_stdlib_def(_ctx: &mut JSContextImpl, def: &JSSTDLibraryDef, cfunc_
     _ctx.set_c_function_table(def.c_function_table, cfunc_len);
 }
 
+pub fn js_register_global_function(
+    _ctx: &mut JSContextImpl,
+    name: &str,
+    func_idx: i32,
+    params: JSValue,
+) -> JSValue {
+    let func = js_new_c_function_params(_ctx, func_idx, params);
+    let global = js_get_global_object(_ctx);
+    let res = js_set_property_str(_ctx, global, name, func);
+    if res.is_exception() {
+        return res;
+    }
+    func
+}
+
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
     let mut buf = JSCStringBuf { buf: [0u8; 5] };
     let owned = {
@@ -526,6 +553,14 @@ pub fn js_dump_memory(_ctx: &mut JSContextImpl, _is_long: JSBool) {
 
 pub fn JS_NewContext(mem: &mut [u8]) -> JSContextImpl {
     js_new_context(mem)
+}
+
+pub fn JS_NewContextWithStdlib(
+    mem: &mut [u8],
+    stdlib_def: Option<&JSSTDLibraryDef>,
+    cfunc_len: usize,
+) -> JSContextImpl {
+    js_new_context_with_stdlib(mem, stdlib_def, cfunc_len)
 }
 
 pub fn JS_NewContext2(mem: &mut [u8], prepare_compilation: JSBool) -> JSContextImpl {
@@ -790,6 +825,15 @@ pub fn JS_SetCFunctionTable(ctx: &mut JSContextImpl, table: &[JSCFunctionDef]) {
 
 pub fn JS_SetStdlibDef(ctx: &mut JSContextImpl, def: &JSSTDLibraryDef, cfunc_len: usize) {
     js_set_stdlib_def(ctx, def, cfunc_len)
+}
+
+pub fn JS_RegisterGlobalFunction(
+    ctx: &mut JSContextImpl,
+    name: &str,
+    func_idx: i32,
+    params: JSValue,
+) -> JSValue {
+    js_register_global_function(ctx, name, func_idx, params)
 }
 
 pub fn JS_PrintValue(ctx: &mut JSContextImpl, val: JSValue) {
@@ -1133,6 +1177,18 @@ fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
                 return Some((base, tail));
             }
         }
+        if b == b'(' {
+            if depth == 0 && i > 0 {
+                let base = s[..i].trim();
+                let tail = &s[i..];
+                if base.is_empty() {
+                    return None;
+                }
+                return Some((base, tail));
+            }
+            depth += 1;
+            continue;
+        }
         if b == b'[' {
             if depth == 0 && i > 0 {
                 let base = s[..i].trim();
@@ -1146,7 +1202,7 @@ fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
             continue;
         }
         match b {
-            b'{' | b'(' => depth += 1,
+            b'{' => depth += 1,
             b']' | b'}' | b')' => depth -= 1,
             _ => {}
         }
