@@ -55,4 +55,19 @@ mod tests {
         let shrink = JS_SetPropertyStr(&mut ctx, arr, "length", zero);
         assert!(!shrink.is_exception());
     }
+
+    #[test]
+    fn to_string_primitives() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let t = JSValue::new_bool(true);
+        let ts = JS_ToString(&mut ctx, t);
+        let s = JS_ToCString(&mut ctx, ts, &mut buf);
+        assert_eq!(s, "true");
+        let u = JSValue::UNDEFINED;
+        let us = JS_ToString(&mut ctx, u);
+        let su = JS_ToCString(&mut ctx, us, &mut buf);
+        assert_eq!(su, "undefined");
+    }
 }

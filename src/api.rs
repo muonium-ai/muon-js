@@ -263,7 +263,11 @@ pub fn js_to_cstring_len<'a>(
     _val: JSValue,
     _buf: &'a mut JSCStringBuf,
 ) -> &'a str {
-    if let Some(bytes) = _ctx.string_bytes(_val) {
+    let mut val = _val;
+    if _ctx.string_bytes(val).is_none() {
+        val = js_to_string(_ctx, val);
+    }
+    if let Some(bytes) = _ctx.string_bytes(val) {
         if let Ok(s) = core::str::from_utf8(bytes) {
             return s;
         }
@@ -287,6 +291,18 @@ pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
     }
     if _ctx.string_bytes(_val).is_some() {
         return _val;
+    }
+    if _val.is_bool() {
+        if _val == Value::TRUE {
+            return js_new_string_len(_ctx, b"true");
+        }
+        return js_new_string_len(_ctx, b"false");
+    }
+    if _val.is_null() {
+        return js_new_string_len(_ctx, b"null");
+    }
+    if _val.is_undefined() {
+        return js_new_string_len(_ctx, b"undefined");
     }
     Value::UNDEFINED
 }
