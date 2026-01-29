@@ -8,6 +8,7 @@ pub struct Context {
     interrupt_handler: Option<crate::types::JSInterruptHandler>,
     log_func: Option<crate::types::JSWriteFunc>,
     random_seed: u64,
+    atoms: AtomTable,
 }
 
 impl Context {
@@ -19,6 +20,7 @@ impl Context {
             interrupt_handler: None,
             log_func: None,
             random_seed: 0,
+            atoms: AtomTable::new(),
         }
     }
 
@@ -90,6 +92,28 @@ impl Context {
             Some(core::slice::from_raw_parts(data, len))
         }
     }
+
+    pub fn intern_string(&mut self, bytes: &[u8]) -> Option<u32> {
+        if let Some(id) = self.atoms.find(bytes) {
+            return Some(id);
+        }
+        let header = self.alloc_string(bytes)?;
+        let id = self.atoms.push(AtomEntry { bytes: header })?;
+        Some(id)
+    }
+
+    pub fn atom_bytes(&self, id: u32) -> Option<&[u8]> {
+        let entry = self.atoms.get(id)?;
+        let header = entry.bytes as *const StringHeader;
+        unsafe {
+            if (*header).tag != HEAP_TAG_STRING {
+                return None;
+            }
+            let len = (*header).len as usize;
+            let data = (header as *const u8).add(core::mem::size_of::<StringHeader>());
+            Some(core::slice::from_raw_parts(data, len))
+        }
+    }
 }
 
 /// Placeholder for the custom allocator and GC state.
@@ -138,4 +162,57 @@ fn align_up(value: usize, align: usize) -> usize {
         return value;
     }
     (value + align - 1) & !(align - 1)
+}
+
+struct AtomTable {
+    entries: Vec<AtomEntry>,
+}
+
+impl AtomTable {
+    fn new() -> Self {
+        let mut table = Self { entries: Vec::new() };
+        table.entries.push(AtomEntry { bytes: core::ptr::null_mut() });
+        table
+    }
+
+    fn find(&self, bytes: &[u8]) -> Option<u32> {
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if entry.bytes_equal(bytes) {
+                return Some(idx as u32);
+            }
+        }
+        None
+    }
+
+    fn push(&mut self, entry: AtomEntry) -> Option<u32> {
+        let id = self.entries.len() as u32;
+        self.entries.push(entry);
+        Some(id)
+    }
+
+    fn get(&self, id: u32) -> Option<&AtomEntry> {
+        self.entries.get(id as usize)
+    }
+}
+
+struct AtomEntry {
+    bytes: *mut u8,
+}
+
+impl AtomEntry {
+    fn bytes_equal(&self, bytes: &[u8]) -> bool {
+        let header = self.bytes as *const StringHeader;
+        unsafe {
+            if (*header).tag != HEAP_TAG_STRING {
+                return false;
+            }
+            let len = (*header).len as usize;
+            if len != bytes.len() {
+                return false;
+            }
+            let data = (header as *const u8).add(core::mem::size_of::<StringHeader>());
+            let stored = core::slice::from_raw_parts(data, len);
+            stored == bytes
+        }
+    }
 }

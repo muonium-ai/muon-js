@@ -128,6 +128,8 @@ pub const JS_EVAL_REGEXP_FLAGS_SHIFT: i32 = 8;
 
 pub const JS_BYTECODE_MAGIC: u16 = 0xacfb;
 
+pub const JS_ATOM_NULL: i32 = 0;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct JSBytecodeHeader {

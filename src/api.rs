@@ -227,6 +227,14 @@ pub fn js_new_string(_ctx: &mut JSContextImpl, _buf: &str) -> JSValue {
     js_new_string_len(_ctx, _buf.as_bytes())
 }
 
+pub fn js_new_atom(_ctx: &mut JSContextImpl, _buf: &[u8]) -> i32 {
+    if let Some(id) = _ctx.intern_string(_buf) {
+        id as i32
+    } else {
+        -1
+    }
+}
+
 pub fn js_to_cstring_len<'a>(
     _ctx: &'a mut JSContextImpl,
     _val: JSValue,
@@ -520,6 +528,10 @@ pub fn JS_NewStringLen(ctx: &mut JSContextImpl, buf: &[u8]) -> JSValue {
 
 pub fn JS_NewString(ctx: &mut JSContextImpl, buf: &str) -> JSValue {
     js_new_string(ctx, buf)
+}
+
+pub fn JS_NewAtom(ctx: &mut JSContextImpl, buf: &[u8]) -> i32 {
+    js_new_atom(ctx, buf)
 }
 
 pub fn JS_ToCStringLen<'a>(
