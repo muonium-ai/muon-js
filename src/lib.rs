@@ -147,6 +147,11 @@ mod tests {
         assert_eq!(n, 42);
         let t = JS_Eval(&mut ctx, "true", "test.js", 0);
         assert_eq!(t, JSValue::TRUE);
+        let s = JS_Eval(&mut ctx, "\"hi\"", "test.js", 0);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let ss = JS_ToString(&mut ctx, s);
+        let out = JS_ToCString(&mut ctx, ss, &mut buf);
+        assert_eq!(out, "hi");
     }
 
     #[test]

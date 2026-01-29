@@ -282,6 +282,12 @@ pub fn js_eval(
     if src == "false" {
         return Value::FALSE;
     }
+    if (src.starts_with('\"') && src.ends_with('\"') && src.len() >= 2)
+        || (src.starts_with('\'') && src.ends_with('\'') && src.len() >= 2)
+    {
+        let inner = &src[1..src.len() - 1];
+        return js_new_string(_ctx, inner);
+    }
     if let Ok(num) = src.parse::<i64>() {
         return js_new_int64(_ctx, num);
     }
