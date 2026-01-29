@@ -443,11 +443,15 @@ pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
 }
 
 pub fn js_relocate_bytecode(_ctx: &mut JSContextImpl, _buf: &mut [u8]) -> i32 {
-    -1
+    if js_is_bytecode(_buf) != 0 { 0 } else { -1 }
 }
 
 pub fn js_load_bytecode(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
-    Value::UNDEFINED
+    if js_is_bytecode(_buf) != 0 {
+        Value::UNDEFINED
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_set_log_func(_ctx: &mut JSContextImpl, _write_func: Option<JSWriteFunc>) {
