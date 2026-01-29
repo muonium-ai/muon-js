@@ -633,8 +633,11 @@ mod tests {
         let _ = JS_Eval(&mut ctx, "arr.push(1)", "test.js", 0);
         let pv = JS_Eval(&mut ctx, "arr.pop()", "test.js", 0);
         assert_eq!(JS_ToInt32(&mut ctx, pv).unwrap(), 1);
+        let keys_empty = JS_Eval(&mut ctx, "Object.keys([])", "test.js", 0);
+        let klen = JS_GetPropertyStr(&mut ctx, keys_empty, "length");
+        assert_eq!(JS_ToInt32(&mut ctx, klen).unwrap(), 0);
         let proto = JS_Eval(&mut ctx, "Object.getPrototypeOf({})", "test.js", 0);
-        assert_eq!(proto, JSValue::NULL);
+        assert_eq!(JS_GetClassID(&mut ctx, proto), JSObjectClassEnum::Object as i32);
         let _ = JS_Eval(&mut ctx, "p = {a: 5}", "test.js", 0);
         let _ = JS_Eval(&mut ctx, "o = Object.create(p)", "test.js", 0);
         let oa = JS_Eval(&mut ctx, "o.a", "test.js", 0);

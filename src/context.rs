@@ -18,6 +18,7 @@ pub struct Context {
     last_exception: Value,
     c_function_table: *const crate::types::JSCFunctionDef,
     c_function_table_len: usize,
+    object_proto: Value,
     array_proto: Value,
     array_push_fn: Value,
     array_pop_fn: Value,
@@ -39,6 +40,7 @@ impl Context {
             last_exception: Value::UNDEFINED,
             c_function_table: core::ptr::null(),
             c_function_table_len: 0,
+            object_proto: Value::UNDEFINED,
             array_proto: Value::UNDEFINED,
             array_push_fn: Value::UNDEFINED,
             array_pop_fn: Value::UNDEFINED,
@@ -101,6 +103,10 @@ impl Context {
     pub fn set_array_proto_methods(&mut self, push: Value, pop: Value) {
         self.array_push_fn = push;
         self.array_pop_fn = pop;
+    }
+
+    pub fn set_object_proto_default(&mut self, proto: Value) {
+        self.object_proto = proto;
     }
 
     pub fn set_array_proto(&mut self, proto: Value) {
@@ -199,6 +205,11 @@ impl Context {
 
     pub fn new_object(&mut self, class_id: u32) -> Option<Value> {
         let obj = self.alloc_object(class_id)?;
+        if class_id == JSObjectClassEnum::Object as u32 && !self.object_proto.is_undefined() {
+            unsafe {
+                (*obj).proto = self.object_proto;
+            }
+        }
         Some(Value::from_ptr(obj as *mut u8))
     }
 
@@ -210,11 +221,13 @@ impl Context {
             }
         }
         let val = Value::from_ptr(obj as *mut u8);
-        if !self.array_push_fn.is_undefined() {
-            let _ = self.set_property_str(val, b"push", self.array_push_fn);
-        }
-        if !self.array_pop_fn.is_undefined() {
-            let _ = self.set_property_str(val, b"pop", self.array_pop_fn);
+        if self.array_proto.is_undefined() {
+            if !self.array_push_fn.is_undefined() {
+                let _ = self.set_property_str(val, b"push", self.array_push_fn);
+            }
+            if !self.array_pop_fn.is_undefined() {
+                let _ = self.set_property_str(val, b"pop", self.array_pop_fn);
+            }
         }
         Some(val)
     }

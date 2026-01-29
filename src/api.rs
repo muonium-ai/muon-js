@@ -527,6 +527,14 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
     let global = js_get_global_object(_ctx);
     let _ = js_set_property_str(_ctx, global, "Object", obj_ctor);
     let _ = js_set_property_str(_ctx, global, "Array", arr_ctor);
+    let object_proto = js_new_object(_ctx);
+    let _ = js_set_property_str(_ctx, obj_ctor, "prototype", object_proto);
+    _ctx.set_object_proto_default(object_proto);
+    let _ = _ctx.set_object_proto(global, object_proto);
+    let array_proto = js_new_object(_ctx);
+    let _ = _ctx.set_object_proto(array_proto, object_proto);
+    let _ = js_set_property_str(_ctx, arr_ctor, "prototype", array_proto);
+    _ctx.set_array_proto(array_proto);
     if _ctx.c_function_def(2).is_some() {
         let keys_fn = js_new_c_function_params(_ctx, 2, JSValue::UNDEFINED);
         let _ = js_set_property_str(_ctx, obj_ctor, "keys", keys_fn);
@@ -548,22 +556,19 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
         let _ = js_set_property_str(_ctx, obj_ctor, "getPrototypeOf", get_proto_fn);
     }
     if _ctx.c_function_def(8).is_some() || _ctx.c_function_def(9).is_some() {
-        let arr_proto = js_new_object(_ctx);
-        let _ = js_set_property_str(_ctx, arr_ctor, "prototype", arr_proto);
         let mut push_val = Value::UNDEFINED;
         let mut pop_val = Value::UNDEFINED;
         if _ctx.c_function_def(8).is_some() {
             let push_fn = js_new_c_function_params(_ctx, 8, JSValue::UNDEFINED);
-            let _ = js_set_property_str(_ctx, arr_proto, "push", push_fn);
+            let _ = js_set_property_str(_ctx, array_proto, "push", push_fn);
             push_val = push_fn;
         }
         if _ctx.c_function_def(9).is_some() {
             let pop_fn = js_new_c_function_params(_ctx, 9, JSValue::UNDEFINED);
-            let _ = js_set_property_str(_ctx, arr_proto, "pop", pop_fn);
+            let _ = js_set_property_str(_ctx, array_proto, "pop", pop_fn);
             pop_val = pop_fn;
         }
         _ctx.set_array_proto_methods(push_val, pop_val);
-        _ctx.set_array_proto(arr_proto);
     }
     if _ctx.c_function_def(5).is_some() {
         let math = js_new_object(_ctx);
