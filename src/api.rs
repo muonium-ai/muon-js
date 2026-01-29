@@ -357,6 +357,12 @@ pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
     if _val.is_undefined() {
         return js_new_string_len(_ctx, b"undefined");
     }
+    if let Some(class_id) = _ctx.object_class_id(_val) {
+        if class_id == JSObjectClassEnum::Array as u32 {
+            return js_new_string(_ctx, "[object Array]");
+        }
+        return js_new_string(_ctx, "[object Object]");
+    }
     Value::UNDEFINED
 }
 

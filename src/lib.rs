@@ -213,4 +213,19 @@ mod tests {
         let bad = JS_SetPropertyStr(&mut ctx, arr, "2", v);
         assert!(bad.is_exception());
     }
+
+    #[test]
+    fn object_to_string_defaults() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let obj = JS_NewObject(&mut ctx);
+        let arr = JS_NewArray(&mut ctx, 0);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let os_val = JS_ToString(&mut ctx, obj);
+        let os = JS_ToCString(&mut ctx, os_val, &mut buf);
+        assert_eq!(os, "[object Object]");
+        let as_val = JS_ToString(&mut ctx, arr);
+        let as_ = JS_ToCString(&mut ctx, as_val, &mut buf);
+        assert_eq!(as_, "[object Array]");
+    }
 }
