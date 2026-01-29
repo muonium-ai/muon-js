@@ -102,7 +102,14 @@ pub fn js_is_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
 }
 
 pub fn js_is_error(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
-    0
+    match _ctx.object_class_id(_val) {
+        Some(id) => {
+            let min = JSObjectClassEnum::Error as u32;
+            let max = JSObjectClassEnum::InternalError as u32;
+            if id >= min && id <= max { 1 } else { 0 }
+        }
+        None => 0,
+    }
 }
 
 pub fn js_is_function(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
@@ -110,7 +117,7 @@ pub fn js_is_function(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
 }
 
 pub fn js_get_class_id(_ctx: &mut JSContextImpl, _val: JSValue) -> i32 {
-    0
+    _ctx.object_class_id(_val).map(|v| v as i32).unwrap_or(-1)
 }
 
 pub fn js_set_opaque(_ctx: &mut JSContextImpl, _val: JSValue, _opaque: *mut core::ffi::c_void) {}
@@ -146,11 +153,11 @@ pub fn js_throw_out_of_memory(_ctx: &mut JSContextImpl) -> JSValue {
 }
 
 pub fn js_get_property_str(_ctx: &mut JSContextImpl, _this_obj: JSValue, _str: &str) -> JSValue {
-    Value::UNDEFINED
+    _ctx.get_property_str(_this_obj, _str.as_bytes()).unwrap_or(Value::UNDEFINED)
 }
 
 pub fn js_get_property_uint32(_ctx: &mut JSContextImpl, _obj: JSValue, _idx: u32) -> JSValue {
-    Value::UNDEFINED
+    _ctx.get_property_index(_obj, _idx).unwrap_or(Value::UNDEFINED)
 }
 
 pub fn js_set_property_str(
@@ -159,7 +166,11 @@ pub fn js_set_property_str(
     _str: &str,
     _val: JSValue,
 ) -> JSValue {
-    Value::UNDEFINED
+    if _ctx.set_property_str(_this_obj, _str.as_bytes(), _val) {
+        _val
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_set_property_uint32(
@@ -168,19 +179,31 @@ pub fn js_set_property_uint32(
     _idx: u32,
     _val: JSValue,
 ) -> JSValue {
-    Value::UNDEFINED
+    match _ctx.set_property_index(_this_obj, _idx, _val) {
+        Ok(()) => _val,
+        Err(()) => Value::EXCEPTION,
+    }
 }
 
 pub fn js_new_object_class_user(_ctx: &mut JSContextImpl, _class_id: i32) -> JSValue {
-    Value::UNDEFINED
+    _ctx
+        .new_object(_class_id as u32)
+        .unwrap_or(Value::EXCEPTION)
 }
 
 pub fn js_new_object(_ctx: &mut JSContextImpl) -> JSValue {
-    Value::UNDEFINED
+    _ctx
+        .new_object(JSObjectClassEnum::Object as u32)
+        .unwrap_or(Value::EXCEPTION)
 }
 
 pub fn js_new_array(_ctx: &mut JSContextImpl, _initial_len: i32) -> JSValue {
-    Value::UNDEFINED
+    if _initial_len < 0 {
+        return Value::EXCEPTION;
+    }
+    _ctx
+        .new_array(_initial_len as usize)
+        .unwrap_or(Value::EXCEPTION)
 }
 
 pub fn js_new_c_function_params(
