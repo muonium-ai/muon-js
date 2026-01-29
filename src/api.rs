@@ -900,6 +900,11 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         let inner = &s[1..s.len() - 1];
         return eval_expr(ctx, inner);
     }
+    if is_identifier(s) {
+        let global = js_get_global_object(ctx);
+        let v = js_get_property_str(ctx, global, s);
+        return Some(v);
+    }
     None
 }
 
@@ -907,6 +912,18 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.is_empty() {
         return None;
+    }
+    if let Some((lhs, rhs)) = split_assignment(s) {
+        let rhs_val = eval_expr(ctx, rhs)?;
+        let (base, key) = parse_lvalue(ctx, lhs)?;
+        let res = match key {
+            LValueKey::Index(idx) => js_set_property_uint32(ctx, base, idx, rhs_val),
+            LValueKey::Name(name) => js_set_property_str(ctx, base, &name, rhs_val),
+        };
+        if res.is_exception() {
+            return None;
+        }
+        return Some(rhs_val);
     }
     let (base, tail) = split_base_and_tail(s)?;
     let mut val = eval_value(ctx, base)?;
@@ -939,6 +956,108 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         return None;
     }
+}
+
+enum LValueKey {
+    Name(String),
+    Index(u32),
+}
+
+fn parse_lvalue(ctx: &mut JSContextImpl, src: &str) -> Option<(JSValue, LValueKey)> {
+    let s = src.trim();
+    let (base_str, tail) = split_base_and_tail(s)?;
+    let mut base = if is_identifier(base_str) {
+        let global = js_get_global_object(ctx);
+        if tail.trim().is_empty() {
+            return Some((global, LValueKey::Name(base_str.to_string())));
+        }
+        js_get_property_str(ctx, global, base_str)
+    } else {
+        eval_value(ctx, base_str)?
+    };
+    let mut rest = tail;
+    loop {
+        let rest_trim = rest.trim_start();
+        if rest_trim.is_empty() {
+            return None;
+        }
+        if rest_trim.starts_with('.') {
+            let (name, next) = parse_identifier(&rest_trim[1..])?;
+            if next.trim().is_empty() {
+                return Some((base, LValueKey::Name(name.to_string())));
+            }
+            base = js_get_property_str(ctx, base, name);
+            rest = next;
+            continue;
+        }
+        if rest_trim.starts_with('[') {
+            let (inside, next) = extract_bracket(rest_trim)?;
+            let key_val = eval_expr(ctx, inside)?;
+            let key = if let Some(i) = key_val.int32() {
+                LValueKey::Index(i as u32)
+            } else if let Some(bytes) = ctx.string_bytes(key_val) {
+                let owned = bytes.to_vec();
+                let name = core::str::from_utf8(&owned).ok()?.to_string();
+                LValueKey::Name(name)
+            } else {
+                return None;
+            };
+            if next.trim().is_empty() {
+                return Some((base, key));
+            }
+            match key {
+                LValueKey::Index(idx) => {
+                    base = js_get_property_uint32(ctx, base, idx);
+                }
+                LValueKey::Name(name) => {
+                    base = js_get_property_str(ctx, base, &name);
+                }
+            }
+            rest = next;
+            continue;
+        }
+        return None;
+    }
+}
+
+fn split_assignment(src: &str) -> Option<(&str, &str)> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            b'=' if depth == 0 => {
+                let prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(b'\0');
+                let next = bytes.get(i + 1).copied().unwrap_or(b'\0');
+                if prev == b'=' || next == b'=' {
+                    continue;
+                }
+                let lhs = src[..i].trim();
+                let rhs = src[i + 1..].trim();
+                if lhs.is_empty() || rhs.is_empty() {
+                    return None;
+                }
+                return Some((lhs, rhs));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
@@ -1055,6 +1174,14 @@ fn parse_identifier(src: &str) -> Option<(&str, &str)> {
 
 fn is_ident_start(b: u8) -> bool {
     (b'A'..=b'Z').contains(&b) || (b'a'..=b'z').contains(&b) || b == b'_'
+}
+
+fn is_identifier(s: &str) -> bool {
+    let (name, rest) = match parse_identifier(s) {
+        Some(v) => v,
+        None => return false,
+    };
+    !name.is_empty() && rest.trim().is_empty()
 }
 
 fn call_c_function(

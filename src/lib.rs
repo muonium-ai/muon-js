@@ -180,6 +180,13 @@ mod tests {
         assert_eq!(JS_ToInt32(&mut ctx, inner_val).unwrap(), 2);
         let expr = JS_Eval(&mut ctx, "([1,2])[0]", "test.js", 0);
         assert_eq!(JS_ToInt32(&mut ctx, expr).unwrap(), 1);
+        let _ = JS_Eval(&mut ctx, "x = 7", "test.js", 0);
+        let xv = JS_Eval(&mut ctx, "x", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, xv).unwrap(), 7);
+        let _ = JS_Eval(&mut ctx, "obj = {a: 1}", "test.js", 0);
+        let _ = JS_Eval(&mut ctx, "obj.a = 4", "test.js", 0);
+        let ov = JS_Eval(&mut ctx, "obj.a", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, ov).unwrap(), 4);
     }
 
     #[test]
