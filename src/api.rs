@@ -524,6 +524,28 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
         let create_fn = js_new_c_function_params(_ctx, 4, JSValue::UNDEFINED);
         let _ = js_set_property_str(_ctx, obj_ctor, "create", create_fn);
     }
+    if _ctx.c_function_def(5).is_some() {
+        let math = js_new_object(_ctx);
+        let _ = js_set_property_str(_ctx, global, "Math", math);
+        let abs_fn = js_new_c_function_params(_ctx, 5, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, math, "abs", abs_fn);
+        if _ctx.c_function_def(6).is_some() {
+            let floor_fn = js_new_c_function_params(_ctx, 6, JSValue::UNDEFINED);
+            let _ = js_set_property_str(_ctx, math, "floor", floor_fn);
+        }
+        if _ctx.c_function_def(7).is_some() {
+            let ceil_fn = js_new_c_function_params(_ctx, 7, JSValue::UNDEFINED);
+            let _ = js_set_property_str(_ctx, math, "ceil", ceil_fn);
+        }
+        if _ctx.c_function_def(8).is_some() {
+            let trunc_fn = js_new_c_function_params(_ctx, 8, JSValue::UNDEFINED);
+            let _ = js_set_property_str(_ctx, math, "trunc", trunc_fn);
+        }
+        if _ctx.c_function_def(9).is_some() {
+            let round_fn = js_new_c_function_params(_ctx, 9, JSValue::UNDEFINED);
+            let _ = js_set_property_str(_ctx, math, "round", round_fn);
+        }
+    }
     Value::UNDEFINED
 }
 

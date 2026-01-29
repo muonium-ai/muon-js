@@ -464,7 +464,27 @@ mod tests {
             arg_count: 1,
             magic: 0,
         };
-        let table = [def_obj, def_arr, def_keys, def_is_array, def_create];
+        fn math_abs(x: f64) -> f64 {
+            x.abs()
+        }
+        fn math_floor(x: f64) -> f64 {
+            x.floor()
+        }
+        let def_abs = JSCFunctionDef {
+            func: JSCFunctionType { f_f: Some(math_abs) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::FF as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let def_floor = JSCFunctionDef {
+            func: JSCFunctionType { f_f: Some(math_floor) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::FF as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let table = [def_obj, def_arr, def_keys, def_is_array, def_create, def_abs, def_floor];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
@@ -487,6 +507,11 @@ mod tests {
         assert_eq!(is_arr, JSValue::TRUE);
         let created = JS_Eval(&mut ctx, "Object.create({})", "test.js", 0);
         assert_eq!(JS_GetClassID(&mut ctx, created), JSObjectClassEnum::Object as i32);
+        let abs_v = JS_Eval(&mut ctx, "Math.abs(-3)", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, abs_v).unwrap(), 3);
+        let floor_v = JS_Eval(&mut ctx, "Math.floor(1.9)", "test.js", 0);
+        let fv = JS_ToNumber(&mut ctx, floor_v).unwrap();
+        assert!((fv - 1.0).abs() < 1e-9);
     }
 
     #[test]
