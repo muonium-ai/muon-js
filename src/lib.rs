@@ -81,4 +81,13 @@ mod tests {
         let got = JS_GetOpaque(&mut ctx, obj);
         assert_eq!(got, ptr);
     }
+
+    #[test]
+    fn bytecode_magic_check() {
+        let magic = JS_BYTECODE_MAGIC.to_ne_bytes();
+        let buf = [magic[0], magic[1], 0, 0];
+        assert_eq!(JS_IsBytecode(&buf), 1);
+        let bad = [0u8; 4];
+        assert_eq!(JS_IsBytecode(&bad), 0);
+    }
 }

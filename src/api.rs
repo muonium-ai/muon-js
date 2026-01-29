@@ -360,7 +360,11 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
 }
 
 pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
-    0
+    if _buf.len() < 2 {
+        return 0;
+    }
+    let magic = u16::from_ne_bytes([_buf[0], _buf[1]]);
+    if magic == JS_BYTECODE_MAGIC { 1 } else { 0 }
 }
 
 pub fn js_relocate_bytecode(_ctx: &mut JSContextImpl, _buf: &mut [u8]) -> i32 {
