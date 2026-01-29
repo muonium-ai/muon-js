@@ -137,4 +137,15 @@ mod tests {
         let func = JS_NewCFunctionParams(&mut ctx, 1, JSValue::UNDEFINED);
         assert_eq!(JS_IsFunction(&mut ctx, func), 1);
     }
+
+    #[test]
+    fn eval_basic_literals() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = JS_Eval(&mut ctx, "42", "test.js", 0);
+        let n = JS_ToInt32(&mut ctx, v).expect("int32");
+        assert_eq!(n, 42);
+        let t = JS_Eval(&mut ctx, "true", "test.js", 0);
+        assert_eq!(t, JSValue::TRUE);
+    }
 }

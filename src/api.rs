@@ -260,7 +260,23 @@ pub fn js_eval(
     _filename: &str,
     _eval_flags: i32,
 ) -> JSValue {
-    Value::UNDEFINED
+    let src = _input.trim();
+    if src == "null" {
+        return Value::NULL;
+    }
+    if src == "undefined" {
+        return Value::UNDEFINED;
+    }
+    if src == "true" {
+        return Value::TRUE;
+    }
+    if src == "false" {
+        return Value::FALSE;
+    }
+    if let Ok(num) = src.parse::<i64>() {
+        return js_new_int64(_ctx, num);
+    }
+    Value::EXCEPTION
 }
 
 pub fn js_gc(_ctx: &mut JSContextImpl) {}
