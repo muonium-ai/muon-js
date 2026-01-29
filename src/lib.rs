@@ -413,6 +413,20 @@ mod tests {
             js_array_is_array(ctx, val)
         }
 
+        fn object_create(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            if argc < 1 {
+                return JSValue::EXCEPTION;
+            }
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let proto = unsafe { *argv };
+            js_object_create(ctx, proto)
+        }
+
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
         let def_obj = JSCFunctionDef {
@@ -443,7 +457,14 @@ mod tests {
             arg_count: 1,
             magic: 0,
         };
-        let table = [def_obj, def_arr, def_keys, def_is_array];
+        let def_create = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(object_create) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let table = [def_obj, def_arr, def_keys, def_is_array, def_create];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
@@ -464,6 +485,8 @@ mod tests {
         assert_eq!(ks, "a");
         let is_arr = JS_Eval(&mut ctx, "Array.isArray([])", "test.js", 0);
         assert_eq!(is_arr, JSValue::TRUE);
+        let created = JS_Eval(&mut ctx, "Object.create({})", "test.js", 0);
+        assert_eq!(JS_GetClassID(&mut ctx, created), JSObjectClassEnum::Object as i32);
     }
 
     #[test]

@@ -520,6 +520,10 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
         let is_array_fn = js_new_c_function_params(_ctx, 3, JSValue::UNDEFINED);
         let _ = js_set_property_str(_ctx, arr_ctor, "isArray", is_array_fn);
     }
+    if _ctx.c_function_def(4).is_some() {
+        let create_fn = js_new_c_function_params(_ctx, 4, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, obj_ctor, "create", create_fn);
+    }
     Value::UNDEFINED
 }
 
@@ -545,6 +549,13 @@ pub fn js_array_is_array(_ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
     } else {
         Value::FALSE
     }
+}
+
+pub fn js_object_create(_ctx: &mut JSContextImpl, proto: JSValue) -> JSValue {
+    if _ctx.object_class_id(proto).is_none() {
+        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid prototype");
+    }
+    js_new_object(_ctx)
 }
 
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
