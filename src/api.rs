@@ -394,9 +394,14 @@ pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSVal
     if let Some(v) = _val.int32() {
         Ok(v)
     } else if let Some(f) = _ctx.float_value(_val) {
-        Ok(f as i32)
+        if f.is_finite() { Ok(f as i32) } else { Ok(0) }
     } else {
-        Err(Value::EXCEPTION)
+        let n = js_to_number(_ctx, _val)?;
+        if !n.is_finite() {
+            Ok(0)
+        } else {
+            Ok(n as i32)
+        }
     }
 }
 
@@ -404,9 +409,14 @@ pub fn js_to_uint32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<u32, JSVa
     if let Some(v) = _val.int32() {
         Ok(v as u32)
     } else if let Some(f) = _ctx.float_value(_val) {
-        Ok(f as u32)
+        if f.is_finite() { Ok(f as u32) } else { Ok(0) }
     } else {
-        Err(Value::EXCEPTION)
+        let n = js_to_number(_ctx, _val)?;
+        if !n.is_finite() {
+            Ok(0)
+        } else {
+            Ok(n as u32)
+        }
     }
 }
 
@@ -424,7 +434,16 @@ pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, J
             Ok(f as i32)
         }
     } else {
-        Err(Value::EXCEPTION)
+        let n = js_to_number(_ctx, _val)?;
+        if n.is_nan() {
+            Ok(0)
+        } else if n > i32::MAX as f64 {
+            Ok(i32::MAX)
+        } else if n < i32::MIN as f64 {
+            Ok(i32::MIN)
+        } else {
+            Ok(n as i32)
+        }
     }
 }
 

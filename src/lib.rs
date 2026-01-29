@@ -85,6 +85,12 @@ mod tests {
         let hex = JS_NewString(&mut ctx, "0x10");
         let hv = JS_ToNumber(&mut ctx, hex).unwrap();
         assert!((hv - 16.0).abs() < 1e-9);
+        let s_int = JS_NewString(&mut ctx, "42");
+        let iv = JS_ToInt32(&mut ctx, s_int).unwrap();
+        assert_eq!(iv, 42);
+        let s_nan = JS_NewString(&mut ctx, "NaN");
+        let nv = JS_ToInt32(&mut ctx, s_nan).unwrap();
+        assert_eq!(nv, 0);
         let undef = JSValue::UNDEFINED;
         let uv = JS_ToNumber(&mut ctx, undef).unwrap();
         assert!(uv.is_nan());
