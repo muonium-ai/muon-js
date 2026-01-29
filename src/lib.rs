@@ -76,6 +76,21 @@ mod tests {
     }
 
     #[test]
+    fn to_number_strings() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let s = JS_NewString(&mut ctx, "  -3.5 ");
+        let v = JS_ToNumber(&mut ctx, s).unwrap();
+        assert!((v + 3.5).abs() < 1e-9);
+        let hex = JS_NewString(&mut ctx, "0x10");
+        let hv = JS_ToNumber(&mut ctx, hex).unwrap();
+        assert!((hv - 16.0).abs() < 1e-9);
+        let undef = JSValue::UNDEFINED;
+        let uv = JS_ToNumber(&mut ctx, undef).unwrap();
+        assert!(uv.is_nan());
+    }
+
+    #[test]
     fn opaque_roundtrip() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

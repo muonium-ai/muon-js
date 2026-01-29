@@ -437,6 +437,40 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
         Ok(if _val == Value::TRUE { 1.0 } else { 0.0 })
     } else if _val.is_null() {
         Ok(0.0)
+    } else if _val.is_undefined() {
+        Ok(f64::NAN)
+    } else if let Some(bytes) = _ctx.string_bytes(_val) {
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(0.0);
+            }
+            match trimmed {
+                "Infinity" | "+Infinity" => return Ok(f64::INFINITY),
+                "-Infinity" => return Ok(f64::NEG_INFINITY),
+                "NaN" => return Ok(f64::NAN),
+                _ => {}
+            }
+            if let Some(rest) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+                if let Ok(v) = u64::from_str_radix(rest, 16) {
+                    return Ok(v as f64);
+                }
+            }
+            if let Some(rest) = trimmed.strip_prefix("0o").or_else(|| trimmed.strip_prefix("0O")) {
+                if let Ok(v) = u64::from_str_radix(rest, 8) {
+                    return Ok(v as f64);
+                }
+            }
+            if let Some(rest) = trimmed.strip_prefix("0b").or_else(|| trimmed.strip_prefix("0B")) {
+                if let Ok(v) = u64::from_str_radix(rest, 2) {
+                    return Ok(v as f64);
+                }
+            }
+            return Ok(trimmed.parse::<f64>().unwrap_or(f64::NAN));
+        }
+        Ok(f64::NAN)
+    } else if _ctx.object_class_id(_val).is_some() {
+        Ok(f64::NAN)
     } else {
         Err(Value::EXCEPTION)
     }
@@ -1886,7 +1920,7 @@ fn call_c_function(
         x if x == JSCFunctionDefEnum::FF as u8 => {
             if args.len() == 1 {
                 if let Some(f) = unsafe { def.func.f_f } {
-                    let v = js_to_number(_ctx, args[0]).unwrap_or(0.0);
+                    let v = js_to_number(_ctx, args[0]).unwrap_or(f64::NAN);
                     return js_new_float64(_ctx, f(v));
                 }
             }
