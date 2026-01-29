@@ -262,6 +262,12 @@ pub fn js_parse(
     _filename: &str,
     _eval_flags: i32,
 ) -> JSValue {
+    if (_eval_flags & JS_EVAL_JSON) != 0 {
+        if let Some(val) = parse_json(_ctx, _input) {
+            return val;
+        }
+        return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
+    }
     js_new_string(_ctx, _input)
 }
 
@@ -272,7 +278,10 @@ pub fn js_run(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
             return js_eval(_ctx, &owned, "<run>", 0);
         }
     }
-    Value::EXCEPTION
+    if _val.is_exception() {
+        return _val;
+    }
+    _val
 }
 
 pub fn js_eval(
@@ -282,6 +291,12 @@ pub fn js_eval(
     _eval_flags: i32,
 ) -> JSValue {
     let src = _input.trim();
+    if (_eval_flags & JS_EVAL_JSON) != 0 {
+        if let Some(val) = parse_json(_ctx, src) {
+            return val;
+        }
+        return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
+    }
     if let Some(val) = eval_expr(_ctx, src) {
         return val;
     }
@@ -1219,6 +1234,293 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         return None;
     }
+}
+
+fn parse_json(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let mut parser = JsonParser::new(src.as_bytes());
+    let val = parser.parse_value(ctx)?;
+    parser.skip_ws();
+    if parser.pos != parser.input.len() {
+        return None;
+    }
+    Some(val)
+}
+
+struct JsonParser<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek() {
+            if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let b = self.peek()?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn expect(&mut self, b: u8) -> bool {
+        if self.peek() == Some(b) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_value(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        self.skip_ws();
+        match self.peek()? {
+            b'{' => self.parse_object(ctx),
+            b'[' => self.parse_array(ctx),
+            b'"' => {
+                let bytes = self.parse_string_bytes()?;
+                let s = core::str::from_utf8(&bytes).ok()?;
+                Some(js_new_string(ctx, s))
+            }
+            b'-' | b'0'..=b'9' => self.parse_number(ctx),
+            b't' => {
+                if self.consume_literal(b"true") {
+                    Some(Value::TRUE)
+                } else {
+                    None
+                }
+            }
+            b'f' => {
+                if self.consume_literal(b"false") {
+                    Some(Value::FALSE)
+                } else {
+                    None
+                }
+            }
+            b'n' => {
+                if self.consume_literal(b"null") {
+                    Some(Value::NULL)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn consume_literal(&mut self, lit: &[u8]) -> bool {
+        if self.input.len().saturating_sub(self.pos) < lit.len() {
+            return false;
+        }
+        if &self.input[self.pos..self.pos + lit.len()] == lit {
+            self.pos += lit.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_array(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        if !self.expect(b'[') {
+            return None;
+        }
+        self.skip_ws();
+        let arr = js_new_array(ctx, 0);
+        if arr.is_exception() {
+            return None;
+        }
+        if self.expect(b']') {
+            return Some(arr);
+        }
+        loop {
+            let val = self.parse_value(ctx)?;
+            let res = js_array_push(ctx, arr, val);
+            if res.is_exception() {
+                return None;
+            }
+            self.skip_ws();
+            if self.expect(b',') {
+                self.skip_ws();
+                continue;
+            }
+            if self.expect(b']') {
+                break;
+            }
+            return None;
+        }
+        Some(arr)
+    }
+
+    fn parse_object(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        if !self.expect(b'{') {
+            return None;
+        }
+        self.skip_ws();
+        let obj = js_new_object(ctx);
+        if obj.is_exception() {
+            return None;
+        }
+        if self.expect(b'}') {
+            return Some(obj);
+        }
+        loop {
+            self.skip_ws();
+            let key_bytes = self.parse_string_bytes()?;
+            let key = core::str::from_utf8(&key_bytes).ok()?;
+            self.skip_ws();
+            if !self.expect(b':') {
+                return None;
+            }
+            let val = self.parse_value(ctx)?;
+            let res = js_set_property_str(ctx, obj, key, val);
+            if res.is_exception() {
+                return None;
+            }
+            self.skip_ws();
+            if self.expect(b',') {
+                continue;
+            }
+            if self.expect(b'}') {
+                break;
+            }
+            return None;
+        }
+        Some(obj)
+    }
+
+    fn parse_string_bytes(&mut self) -> Option<Vec<u8>> {
+        if !self.expect(b'"') {
+            return None;
+        }
+        let mut out = Vec::new();
+        while let Some(b) = self.next() {
+            match b {
+                b'"' => return Some(out),
+                b'\\' => {
+                    let esc = self.next()?;
+                    match esc {
+                        b'"' => out.push(b'"'),
+                        b'\\' => out.push(b'\\'),
+                        b'/' => out.push(b'/'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0c),
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        b'u' => {
+                            let code = self.parse_hex4()? as u32;
+                            let code = if is_high_surrogate(code) {
+                                if self.next() != Some(b'\\') || self.next() != Some(b'u') {
+                                    return None;
+                                }
+                                let low = self.parse_hex4()? as u32;
+                                if !is_low_surrogate(low) {
+                                    return None;
+                                }
+                                0x10000 + (((code - 0xD800) << 10) | (low - 0xDC00))
+                            } else {
+                                if is_low_surrogate(code) {
+                                    return None;
+                                }
+                                code
+                            };
+                            let ch = char::from_u32(code)?;
+                            let mut buf = [0u8; 4];
+                            let s = ch.encode_utf8(&mut buf);
+                            out.extend_from_slice(s.as_bytes());
+                        }
+                        _ => return None,
+                    }
+                }
+                b if b < 0x20 => return None,
+                _ => out.push(b),
+            }
+        }
+        None
+    }
+
+    fn parse_hex4(&mut self) -> Option<u16> {
+        let mut val = 0u16;
+        for _ in 0..4 {
+            let b = self.next()?;
+            let digit = hex_val(b)? as u16;
+            val = (val << 4) | digit;
+        }
+        Some(val)
+    }
+
+    fn parse_number(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        match self.peek()? {
+            b'0' => {
+                self.pos += 1;
+            }
+            b'1'..=b'9' => {
+                self.pos += 1;
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            _ => return None,
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return None;
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return None;
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        let s = core::str::from_utf8(&self.input[start..self.pos]).ok()?;
+        let num = s.parse::<f64>().ok()?;
+        Some(number_to_value(ctx, num))
+    }
+}
+
+fn hex_val(b: u8) -> Option<u32> {
+    match b {
+        b'0'..=b'9' => Some((b - b'0') as u32),
+        b'a'..=b'f' => Some((b - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((b - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
+fn is_high_surrogate(code: u32) -> bool {
+    (0xD800..=0xDBFF).contains(&code)
+}
+
+fn is_low_surrogate(code: u32) -> bool {
+    (0xDC00..=0xDFFF).contains(&code)
 }
 
 enum LValueKey {

@@ -703,6 +703,24 @@ mod tests {
     }
 
     #[test]
+    fn eval_json_flag() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = JS_Eval(&mut ctx, "{\"a\": [1, true, null]}", "test.js", JS_EVAL_JSON);
+        let arr = JS_GetPropertyStr(&mut ctx, v, "a");
+        let v0 = JS_GetPropertyUint32(&mut ctx, arr, 0);
+        let v1 = JS_GetPropertyUint32(&mut ctx, arr, 1);
+        let v2 = JS_GetPropertyUint32(&mut ctx, arr, 2);
+        assert_eq!(JS_ToInt32(&mut ctx, v0).unwrap(), 1);
+        assert_eq!(v1, JSValue::TRUE);
+        assert_eq!(v2, JSValue::NULL);
+        let parsed = JS_Parse(&mut ctx, "{\"x\": 2}", "test.js", JS_EVAL_JSON);
+        let ran = JS_Run(&mut ctx, parsed);
+        let xv = JS_GetPropertyStr(&mut ctx, ran, "x");
+        assert_eq!(JS_ToInt32(&mut ctx, xv).unwrap(), 2);
+    }
+
+    #[test]
     fn throw_sets_exception() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
