@@ -1193,7 +1193,7 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     Ok(value)
 }
 
-fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<f64, ()> {
+fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
     let mut parser = ArithParser::new(ctx, src.as_bytes());
     let value = parser.parse_expr()?;
     parser.skip_ws();
@@ -1236,6 +1236,33 @@ fn contains_arith_op(src: &str) -> bool {
     false
 }
 
+fn is_simple_string_literal(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let quote = bytes[0];
+    if quote != b'\"' && quote != b'\'' {
+        return false;
+    }
+    if bytes[bytes.len() - 1] != quote {
+        return false;
+    }
+    let mut i = 1usize;
+    while i + 1 < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b == quote {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.starts_with('[') && s.ends_with(']') {
@@ -1256,15 +1283,13 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "false" {
         return Some(Value::FALSE);
     }
-    if (s.starts_with('\"') && s.ends_with('\"') && s.len() >= 2)
-        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
-    {
+    if is_simple_string_literal(s) {
         let inner = &s[1..s.len() - 1];
         return Some(js_new_string(ctx, inner));
     }
     if contains_arith_op(s) {
-        if let Ok(num) = parse_arith_expr(ctx, s) {
-            return Some(number_to_value(ctx, num));
+        if let Ok(val) = parse_arith_expr(ctx, s) {
+            return Some(val);
         }
     }
     if let Ok(num) = parse_numeric_expr(s) {
@@ -2288,7 +2313,7 @@ impl<'a> ArithParser<'a> {
         Self { ctx, input, pos: 0 }
     }
 
-    fn parse_expr(&mut self) -> Result<f64, ()> {
+    fn parse_expr(&mut self) -> Result<JSValue, ()> {
         let mut value = self.parse_term()?;
         loop {
             self.skip_ws();
@@ -2299,16 +2324,16 @@ impl<'a> ArithParser<'a> {
             };
             self.pos += 1;
             let rhs = self.parse_term()?;
-            if op == b'+' {
-                value += rhs;
+            value = if op == b'+' {
+                self.add_values(value, rhs)?
             } else {
-                value -= rhs;
-            }
+                self.sub_values(value, rhs)?
+            };
         }
         Ok(value)
     }
 
-    fn parse_term(&mut self) -> Result<f64, ()> {
+    fn parse_term(&mut self) -> Result<JSValue, ()> {
         let mut value = self.parse_factor()?;
         loop {
             self.skip_ws();
@@ -2319,24 +2344,24 @@ impl<'a> ArithParser<'a> {
             };
             self.pos += 1;
             let rhs = self.parse_factor()?;
-            if op == b'*' {
-                value *= rhs;
+            value = if op == b'*' {
+                self.mul_values(value, rhs)?
             } else {
-                value /= rhs;
-            }
+                self.div_values(value, rhs)?
+            };
         }
         Ok(value)
     }
 
-    fn parse_factor(&mut self) -> Result<f64, ()> {
+    fn parse_factor(&mut self) -> Result<JSValue, ()> {
         self.skip_ws();
         if let Some(b'+') = self.peek() {
             self.pos += 1;
-            return self.parse_factor();
+            return self.parse_factor().and_then(|val| self.unary_plus(val));
         }
         if let Some(b'-') = self.peek() {
             self.pos += 1;
-            return Ok(-self.parse_factor()?);
+            return self.parse_factor().and_then(|val| self.unary_minus(val));
         }
         if let Some(b'(') = self.peek() {
             self.pos += 1;
@@ -2348,24 +2373,68 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
             return Ok(value);
         }
-        if matches!(self.peek(), Some(b'0'..=b'9') | Some(b'.')) {
-            return self.parse_number();
+        if self.peek() == Some(b'\"') || self.peek() == Some(b'\'') {
+            return self.parse_string();
         }
-        self.parse_identifier_number()
+        if matches!(self.peek(), Some(b'0'..=b'9') | Some(b'.')) {
+            return self.parse_number_value();
+        }
+        self.parse_identifier_value()
     }
 
-    fn parse_identifier_number(&mut self) -> Result<f64, ()> {
+    fn parse_identifier_value(&mut self) -> Result<JSValue, ()> {
         let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
         let (name, remaining) = parse_identifier(rest).ok_or(())?;
         let consumed = rest.len() - remaining.len();
         self.pos += consumed;
+        match name {
+            "true" => return Ok(Value::TRUE),
+            "false" => return Ok(Value::FALSE),
+            "null" => return Ok(Value::NULL),
+            "undefined" => return Ok(Value::UNDEFINED),
+            _ => {}
+        }
         let ctx = unsafe { &mut *self.ctx };
         let global = js_get_global_object(ctx);
-        let val = js_get_property_str(ctx, global, name);
-        js_to_number(ctx, val).map_err(|_| ())
+        Ok(js_get_property_str(ctx, global, name))
     }
 
-    fn parse_number(&mut self) -> Result<f64, ()> {
+    fn parse_string(&mut self) -> Result<JSValue, ()> {
+        let quote = self.peek().ok_or(())?;
+        self.pos += 1;
+        let mut out = Vec::new();
+        while let Some(b) = self.peek() {
+            self.pos += 1;
+            if b == quote {
+                let s = core::str::from_utf8(&out).map_err(|_| ())?;
+                let ctx = unsafe { &mut *self.ctx };
+                return Ok(js_new_string(ctx, s));
+            }
+            if b == b'\\' {
+                if let Some(esc) = self.peek() {
+                    self.pos += 1;
+                    out.push(esc);
+                } else {
+                    return Err(());
+                }
+            } else {
+                out.push(b);
+            }
+        }
+        Err(())
+    }
+
+    fn parse_number_value(&mut self) -> Result<JSValue, ()> {
+        let num = self.parse_number_raw()?;
+        let ctx = unsafe { &mut *self.ctx };
+        let val = number_to_value(ctx, num);
+        if val.is_exception() {
+            return Err(());
+        }
+        Ok(val)
+    }
+
+    fn parse_number_raw(&mut self) -> Result<f64, ()> {
         self.skip_ws();
         let start = self.pos;
         if self.peek() == Some(b'-') {
@@ -2409,6 +2478,74 @@ impl<'a> ArithParser<'a> {
         }
         let s = core::str::from_utf8(&self.input[start..self.pos]).map_err(|_| ())?;
         s.parse::<f64>().map_err(|_| ())
+    }
+
+    fn add_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let left_is_string = ctx.string_bytes(left).is_some();
+        let right_is_string = ctx.string_bytes(right).is_some();
+        let left_is_obj = ctx.object_class_id(left).is_some();
+        let right_is_obj = ctx.object_class_id(right).is_some();
+        if left_is_string || right_is_string || left_is_obj || right_is_obj {
+            let ls = js_to_string(ctx, left);
+            let rs = js_to_string(ctx, right);
+            let lb = ctx.string_bytes(ls).ok_or(())?;
+            let rb = ctx.string_bytes(rs).ok_or(())?;
+            let mut out = Vec::with_capacity(lb.len() + rb.len());
+            out.extend_from_slice(lb);
+            out.extend_from_slice(rb);
+            let val = js_new_string_len(ctx, &out);
+            if val.is_exception() {
+                return Err(());
+            }
+            return Ok(val);
+        }
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln + rn);
+        if val.is_exception() {
+            Err(())
+        } else {
+            Ok(val)
+        }
+    }
+
+    fn sub_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln - rn);
+        if val.is_exception() { Err(()) } else { Ok(val) }
+    }
+
+    fn mul_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln * rn);
+        if val.is_exception() { Err(()) } else { Ok(val) }
+    }
+
+    fn div_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln / rn);
+        if val.is_exception() { Err(()) } else { Ok(val) }
+    }
+
+    fn unary_plus(&mut self, val: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let n = js_to_number(ctx, val).map_err(|_| ())?;
+        let out = number_to_value(ctx, n);
+        if out.is_exception() { Err(()) } else { Ok(out) }
+    }
+
+    fn unary_minus(&mut self, val: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let n = js_to_number(ctx, val).map_err(|_| ())?;
+        let out = number_to_value(ctx, -n);
+        if out.is_exception() { Err(()) } else { Ok(out) }
     }
 
     fn skip_ws(&mut self) {

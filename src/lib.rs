@@ -728,6 +728,22 @@ mod tests {
     }
 
     #[test]
+    fn eval_string_concat() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "\"a\" + \"b\"");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let vs = JS_ToString(&mut ctx, v);
+        let s = JS_ToCString(&mut ctx, vs, &mut buf);
+        assert_eq!(s, "ab");
+        let _ = JS_Eval(&mut ctx, "o = {}", "test.js", 0);
+        let ov = eval_ret(&mut ctx, "o + 1");
+        let ovs = JS_ToString(&mut ctx, ov);
+        let os = JS_ToCString(&mut ctx, ovs, &mut buf);
+        assert_eq!(os, "[object Object]1");
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
