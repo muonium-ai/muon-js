@@ -1,6 +1,8 @@
 use crate::types::JSObjectClassEnum;
 use crate::value::Value;
 
+const PROTO_SEARCH_LIMIT: usize = 64;
+
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
 pub struct Context {
     mem: MemoryRegion,
@@ -16,6 +18,7 @@ pub struct Context {
     last_exception: Value,
     c_function_table: *const crate::types::JSCFunctionDef,
     c_function_table_len: usize,
+    array_proto: Value,
     array_push_fn: Value,
     array_pop_fn: Value,
 }
@@ -36,6 +39,7 @@ impl Context {
             last_exception: Value::UNDEFINED,
             c_function_table: core::ptr::null(),
             c_function_table_len: 0,
+            array_proto: Value::UNDEFINED,
             array_push_fn: Value::UNDEFINED,
             array_pop_fn: Value::UNDEFINED,
         };
@@ -97,6 +101,10 @@ impl Context {
     pub fn set_array_proto_methods(&mut self, push: Value, pop: Value) {
         self.array_push_fn = push;
         self.array_pop_fn = pop;
+    }
+
+    pub fn set_array_proto(&mut self, proto: Value) {
+        self.array_proto = proto;
     }
 
     pub fn c_function_def(&self, idx: usize) -> Option<&crate::types::JSCFunctionDef> {
@@ -196,6 +204,11 @@ impl Context {
 
     pub fn new_array(&mut self, initial_len: usize) -> Option<Value> {
         let obj = self.alloc_array(initial_len)?;
+        if !self.array_proto.is_undefined() {
+            unsafe {
+                (*obj).proto = self.array_proto;
+            }
+        }
         let val = Value::from_ptr(obj as *mut u8);
         if !self.array_push_fn.is_undefined() {
             let _ = self.set_property_str(val, b"push", self.array_push_fn);
@@ -255,27 +268,59 @@ impl Context {
                 return Some(Value::from_int32(bytes.len() as i32));
             }
         }
-        let obj = self.object_ptr(val)?;
         if let Some(idx) = parse_index(name) {
             return self.get_property_index(val, idx);
         }
-        unsafe {
-            if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
-                return Some(Value::from_int32((*obj).array_len as i32));
-            }
-        }
         let atom = self.intern_string(name)?;
-        unsafe { self.find_prop_value(obj, PROP_KEY_ATOM, atom) }
+        self.get_property_atom(val, atom, name)
+    }
+
+    fn get_property_atom(&mut self, val: Value, atom: u32, name: &[u8]) -> Option<Value> {
+        let mut cur = val;
+        let mut depth = 0;
+        while depth < PROTO_SEARCH_LIMIT {
+            let obj = self.object_ptr(cur)?;
+            unsafe {
+                if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
+                    return Some(Value::from_int32((*obj).array_len as i32));
+                }
+                if let Some(found) = self.find_prop_value(obj, PROP_KEY_ATOM, atom) {
+                    return Some(found);
+                }
+                let proto = (*obj).proto;
+                if proto.is_null() || proto.is_undefined() {
+                    break;
+                }
+                cur = proto;
+            }
+            depth += 1;
+        }
+        Some(Value::UNDEFINED)
     }
 
     pub fn get_property_index(&mut self, val: Value, idx: u32) -> Option<Value> {
-        let obj = self.object_ptr(val)?;
-        unsafe {
-            if (*obj).tag == HEAP_TAG_ARRAY {
-                return Some(self.array_get(obj, idx));
+        let mut cur = val;
+        let mut depth = 0;
+        while depth < PROTO_SEARCH_LIMIT {
+            let obj = self.object_ptr(cur)?;
+            unsafe {
+                if (*obj).tag == HEAP_TAG_ARRAY {
+                    if idx < (*obj).array_len {
+                        return Some(self.array_get(obj, idx));
+                    }
+                }
+                if let Some(found) = self.find_prop_value(obj, PROP_KEY_INDEX, idx) {
+                    return Some(found);
+                }
+                let proto = (*obj).proto;
+                if proto.is_null() || proto.is_undefined() {
+                    break;
+                }
+                cur = proto;
             }
+            depth += 1;
         }
-        unsafe { self.find_prop_value(obj, PROP_KEY_INDEX, idx) }
+        Some(Value::UNDEFINED)
     }
 
     pub fn set_property_str(&mut self, val: Value, name: &[u8], value: Value) -> bool {
@@ -360,6 +405,22 @@ impl Context {
             }
         }
         Some(keys)
+    }
+
+    pub fn set_object_proto(&mut self, val: Value, proto: Value) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
+            None => return false,
+        };
+        unsafe {
+            (*obj).proto = proto;
+        }
+        true
+    }
+
+    pub fn object_proto(&self, val: Value) -> Option<Value> {
+        let obj = self.object_ptr(val)?;
+        unsafe { Some((*obj).proto) }
     }
 
     pub fn array_push(&mut self, val: Value, elem: Value) -> Option<u32> {
@@ -558,6 +619,7 @@ impl AtomEntry {
 struct HeapObject {
     tag: u32,
     class_id: u32,
+    proto: Value,
     prop_head: *mut Property,
     prop_count: u32,
     array_len: u32,
@@ -588,6 +650,7 @@ impl Context {
             };
             (*obj).tag = tag;
             (*obj).class_id = class_id;
+            (*obj).proto = Value::NULL;
             (*obj).prop_head = core::ptr::null_mut();
             (*obj).prop_count = 0;
             (*obj).array_len = 0;
@@ -650,7 +713,7 @@ impl Context {
             }
             cur = (*cur).next;
         }
-        Some(Value::UNDEFINED)
+        None
     }
 
     unsafe fn set_prop_value(&mut self, obj: *mut HeapObject, kind: u32, key: u32, value: Value) -> bool {

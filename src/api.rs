@@ -563,6 +563,7 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
             pop_val = pop_fn;
         }
         _ctx.set_array_proto_methods(push_val, pop_val);
+        _ctx.set_array_proto(arr_proto);
     }
     if _ctx.c_function_def(5).is_some() {
         let math = js_new_object(_ctx);
@@ -632,10 +633,15 @@ pub fn js_array_is_array(_ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
 }
 
 pub fn js_object_create(_ctx: &mut JSContextImpl, proto: JSValue) -> JSValue {
-    if _ctx.object_class_id(proto).is_none() {
+    if !proto.is_null() && _ctx.object_class_id(proto).is_none() {
         return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid prototype");
     }
-    js_new_object(_ctx)
+    let obj = js_new_object(_ctx);
+    if obj.is_exception() {
+        return obj;
+    }
+    let _ = _ctx.set_object_proto(obj, proto);
+    obj
 }
 
 pub fn js_object_define_property(_ctx: &mut JSContextImpl, obj: JSValue, key: JSValue, val: JSValue) -> JSValue {
@@ -666,7 +672,10 @@ pub fn js_object_get_prototype_of(_ctx: &mut JSContextImpl, obj: JSValue) -> JSV
     if _ctx.object_class_id(obj).is_none() {
         return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an object");
     }
-    Value::NULL
+    match _ctx.object_proto(obj) {
+        Some(proto) if !proto.is_undefined() => proto,
+        _ => Value::NULL,
+    }
 }
 
 pub fn js_array_push(_ctx: &mut JSContextImpl, arr: JSValue, elem: JSValue) -> JSValue {
