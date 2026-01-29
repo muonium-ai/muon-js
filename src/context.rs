@@ -196,6 +196,11 @@ impl Context {
     }
 
     pub fn get_property_str(&mut self, val: Value, name: &[u8]) -> Option<Value> {
+        if name == b"length" {
+            if let Some(bytes) = self.string_bytes(val) {
+                return Some(Value::from_int32(bytes.len() as i32));
+            }
+        }
         let obj = self.object_ptr(val)?;
         if let Some(idx) = parse_index(name) {
             return self.get_property_index(val, idx);

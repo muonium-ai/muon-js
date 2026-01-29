@@ -152,6 +152,8 @@ mod tests {
         let ss = JS_ToString(&mut ctx, s);
         let out = JS_ToCString(&mut ctx, ss, &mut buf);
         assert_eq!(out, "hi");
+        let len = JS_GetPropertyStr(&mut ctx, s, "length");
+        assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
         let e = JS_Eval(&mut ctx, "1+2*3", "test.js", 0);
         let n = JS_ToNumber(&mut ctx, e).expect("number");
         assert!((n - 7.0).abs() < 1e-9);
