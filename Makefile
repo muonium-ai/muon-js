@@ -2,15 +2,18 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean
+.PHONY: build test release clean sync-version
 
-build:
+sync-version:
+	./scripts/sync_version.sh
+
+build: sync-version
 	$(CARGO) build
 
-test:
+test: sync-version
 	$(CARGO) test
 
-release:
+release: sync-version
 	$(CARGO) build --release
 
 clean:

@@ -6,6 +6,15 @@ pub type JSWord = usize;
 pub type JSValue = Value;
 pub type JSBool = i32;
 
+/// Muon JS version string (single source of truth in VERSION file).
+pub const MUON_JS_VERSION: &str = include_str!("../VERSION");
+
+/// Muon JS version without trailing newline.
+#[inline]
+pub fn muon_js_version() -> &'static str {
+    MUON_JS_VERSION.trim_end()
+}
+
 pub const JS_EX_NORMAL: i32 = 0;
 pub const JS_EX_CALL: i32 = 1;
 
