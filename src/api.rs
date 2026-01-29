@@ -78,11 +78,23 @@ pub fn js_new_int32(_ctx: &mut JSContextImpl, _val: i32) -> JSValue {
 }
 
 pub fn js_new_uint32(_ctx: &mut JSContextImpl, _val: u32) -> JSValue {
-    Value::from_int32(_val as i32)
+    if _val <= i32::MAX as u32 {
+        Value::from_int32(_val as i32)
+    } else if let Some(ptr) = _ctx.alloc_float(_val as f64) {
+        Value::from_ptr(ptr)
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_new_int64(_ctx: &mut JSContextImpl, _val: i64) -> JSValue {
-    Value::from_int32(_val as i32)
+    if _val >= i32::MIN as i64 && _val <= i32::MAX as i64 {
+        Value::from_int32(_val as i32)
+    } else if let Some(ptr) = _ctx.alloc_float(_val as f64) {
+        Value::from_ptr(ptr)
+    } else {
+        Value::EXCEPTION
+    }
 }
 
 pub fn js_is_number(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
@@ -320,6 +332,8 @@ pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
 pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v)
+    } else if let Some(f) = _ctx.float_value(_val) {
+        Ok(f as i32)
     } else {
         Err(Value::EXCEPTION)
     }
@@ -328,6 +342,8 @@ pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSVal
 pub fn js_to_uint32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<u32, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v as u32)
+    } else if let Some(f) = _ctx.float_value(_val) {
+        Ok(f as u32)
     } else {
         Err(Value::EXCEPTION)
     }
@@ -336,6 +352,16 @@ pub fn js_to_uint32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<u32, JSVa
 pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v)
+    } else if let Some(f) = _ctx.float_value(_val) {
+        if f.is_nan() {
+            Ok(0)
+        } else if f > i32::MAX as f64 {
+            Ok(i32::MAX)
+        } else if f < i32::MIN as f64 {
+            Ok(i32::MIN)
+        } else {
+            Ok(f as i32)
+        }
     } else {
         Err(Value::EXCEPTION)
     }

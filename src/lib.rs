@@ -117,4 +117,16 @@ mod tests {
         let s = JS_ToCString(&mut ctx, fs, &mut buf);
         assert!(s.starts_with('1'));
     }
+
+    #[test]
+    fn large_int_conversions() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let u = JS_NewUint32(&mut ctx, u32::MAX);
+        let nu = JS_ToNumber(&mut ctx, u).expect("number");
+        assert!((nu - 4_294_967_295.0).abs() < 1.0);
+        let i = JS_NewInt64(&mut ctx, 1_i64 << 40);
+        let ni = JS_ToNumber(&mut ctx, i).expect("number");
+        assert!(ni > 1.0e12);
+    }
 }
