@@ -370,12 +370,19 @@ mod tests {
             argv: *mut JSValue,
         ) -> JSValue {
             let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
-            let len = if argc > 0 {
-                js_to_int32(ctx, unsafe { *argv }).unwrap_or(0)
-            } else {
-                0
-            };
-            js_new_array(ctx, len)
+            if argc == 1 {
+                let len = js_to_int32(ctx, unsafe { *argv }).unwrap_or(0);
+                return js_new_array(ctx, len);
+            }
+            let arr = js_new_array(ctx, argc);
+            if arr.is_exception() {
+                return arr;
+            }
+            for i in 0..argc {
+                let v = unsafe { *argv.add(i as usize) };
+                let _ = js_set_property_uint32(ctx, arr, i as u32, v);
+            }
+            arr
         }
 
         fn object_keys(
@@ -444,6 +451,11 @@ mod tests {
         let arr = JS_Eval(&mut ctx, "Array(2)", "test.js", 0);
         let len = JS_GetPropertyStr(&mut ctx, arr, "length");
         assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
+        let arr2 = JS_Eval(&mut ctx, "Array(1,2)", "test.js", 0);
+        let v0 = JS_GetPropertyUint32(&mut ctx, arr2, 0);
+        let v1 = JS_GetPropertyUint32(&mut ctx, arr2, 1);
+        assert_eq!(JS_ToInt32(&mut ctx, v0).unwrap(), 1);
+        assert_eq!(JS_ToInt32(&mut ctx, v1).unwrap(), 2);
         let keys = JS_Eval(&mut ctx, "Object.keys({a:1})", "test.js", 0);
         let k0 = JS_GetPropertyUint32(&mut ctx, keys, 0);
         let mut buf = JSCStringBuf { buf: [0u8; 5] };
