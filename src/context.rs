@@ -11,6 +11,8 @@ pub struct Context {
     random_seed: u64,
     atoms: AtomTable,
     global_object: Value,
+    call_stack: Vec<Value>,
+    stack_limit: usize,
 }
 
 impl Context {
@@ -24,11 +26,37 @@ impl Context {
             random_seed: 0,
             atoms: AtomTable::new(),
             global_object: Value::UNDEFINED,
+            call_stack: Vec::new(),
+            stack_limit: 1024,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
         }
         ctx
+    }
+
+    pub fn push_arg(&mut self, val: Value) {
+        self.call_stack.push(val);
+    }
+
+    pub fn stack_check(&self, len: u32) -> i32 {
+        if self.call_stack.len() + len as usize <= self.stack_limit {
+            0
+        } else {
+            1
+        }
+    }
+
+    pub fn call(&mut self, call_flags: i32) -> Value {
+        let argc = (call_flags & 0xffff) as usize;
+        let need = argc + 2;
+        if self.call_stack.len() < need {
+            return Value::EXCEPTION;
+        }
+        for _ in 0..need {
+            let _ = self.call_stack.pop();
+        }
+        Value::EXCEPTION
     }
 
     pub fn gcref_head(&mut self) -> *mut crate::types::JSGCRef {

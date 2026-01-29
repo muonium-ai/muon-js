@@ -350,13 +350,15 @@ pub fn js_get_exception(_ctx: &mut JSContextImpl) -> JSValue {
 }
 
 pub fn js_stack_check(_ctx: &mut JSContextImpl, _len: u32) -> i32 {
-    0
+    _ctx.stack_check(_len)
 }
 
-pub fn js_push_arg(_ctx: &mut JSContextImpl, _val: JSValue) {}
+pub fn js_push_arg(_ctx: &mut JSContextImpl, _val: JSValue) {
+    _ctx.push_arg(_val);
+}
 
 pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
-    Value::UNDEFINED
+    _ctx.call(_call_flags)
 }
 
 pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
