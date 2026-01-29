@@ -352,6 +352,59 @@ mod tests {
     }
 
     #[test]
+    fn register_stdlib_minimal() {
+        fn object_ctor(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            _argc: i32,
+            _argv: *mut JSValue,
+        ) -> JSValue {
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            js_new_object(ctx)
+        }
+
+        fn array_ctor(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let len = if argc > 0 {
+                js_to_int32(ctx, unsafe { *argv }).unwrap_or(0)
+            } else {
+                0
+            };
+            js_new_array(ctx, len)
+        }
+
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let def_obj = JSCFunctionDef {
+            func: JSCFunctionType { constructor: Some(object_ctor) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Constructor as u8,
+            arg_count: 0,
+            magic: 0,
+        };
+        let def_arr = JSCFunctionDef {
+            func: JSCFunctionType { constructor: Some(array_ctor) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Constructor as u8,
+            arg_count: 1,
+            magic: 0,
+        };
+        let table = [def_obj, def_arr];
+        JS_SetCFunctionTable(&mut ctx, &table);
+        let _ = JS_RegisterStdlibMinimal(&mut ctx);
+        let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
+        assert_eq!(JS_GetClassID(&mut ctx, obj), JSObjectClassEnum::Object as i32);
+        let arr = JS_Eval(&mut ctx, "Array(2)", "test.js", 0);
+        let len = JS_GetPropertyStr(&mut ctx, arr, "length");
+        assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
+    }
+
+    #[test]
     fn eval_basic_literals() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

@@ -506,6 +506,15 @@ pub fn js_register_global_function(
     func
 }
 
+pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
+    let obj_ctor = js_new_c_function_params(_ctx, 0, JSValue::UNDEFINED);
+    let arr_ctor = js_new_c_function_params(_ctx, 1, JSValue::UNDEFINED);
+    let global = js_get_global_object(_ctx);
+    let _ = js_set_property_str(_ctx, global, "Object", obj_ctor);
+    let _ = js_set_property_str(_ctx, global, "Array", arr_ctor);
+    Value::UNDEFINED
+}
+
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
     let mut buf = JSCStringBuf { buf: [0u8; 5] };
     let owned = {
@@ -834,6 +843,10 @@ pub fn JS_RegisterGlobalFunction(
     params: JSValue,
 ) -> JSValue {
     js_register_global_function(ctx, name, func_idx, params)
+}
+
+pub fn JS_RegisterStdlibMinimal(ctx: &mut JSContextImpl) -> JSValue {
+    js_register_stdlib_minimal(ctx)
 }
 
 pub fn JS_PrintValue(ctx: &mut JSContextImpl, val: JSValue) {
