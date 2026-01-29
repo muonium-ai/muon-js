@@ -178,6 +178,8 @@ mod tests {
         let inner = JS_GetPropertyUint32(&mut ctx, nested, 1);
         let inner_val = JS_GetPropertyUint32(&mut ctx, inner, 0);
         assert_eq!(JS_ToInt32(&mut ctx, inner_val).unwrap(), 2);
+        let expr = JS_Eval(&mut ctx, "([1,2])[0]", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, expr).unwrap(), 1);
     }
 
     #[test]

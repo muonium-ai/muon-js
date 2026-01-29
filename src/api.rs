@@ -270,19 +270,10 @@ pub fn js_eval(
     _eval_flags: i32,
 ) -> JSValue {
     let src = _input.trim();
-    if src.starts_with('[') && src.ends_with(']') {
-        if let Some(val) = eval_array_literal(_ctx, src) {
-            return val;
-        }
-        return Value::EXCEPTION;
+    if let Some(val) = eval_expr(_ctx, src) {
+        return val;
     }
-    if src.starts_with('{') && src.ends_with('}') {
-        if let Some(val) = eval_object_literal(_ctx, src) {
-            return val;
-        }
-        return Value::EXCEPTION;
-    }
-    eval_literal(_ctx, src).unwrap_or(Value::EXCEPTION)
+    Value::EXCEPTION
 }
 
 pub fn js_gc(_ctx: &mut JSContextImpl) {}
@@ -854,7 +845,7 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     Ok(value)
 }
 
-fn eval_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.starts_with('[') && s.ends_with(']') {
         return eval_array_literal(ctx, s);
@@ -883,7 +874,165 @@ fn eval_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if let Ok(num) = parse_numeric_expr(s) {
         return Some(number_to_value(ctx, num));
     }
+    if s.starts_with('(') && s.ends_with(')') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        return eval_expr(ctx, inner);
+    }
     None
+}
+
+fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (base, tail) = split_base_and_tail(s)?;
+    let mut val = eval_value(ctx, base)?;
+    let mut rest = tail;
+    loop {
+        let rest_trim = rest.trim_start();
+        if rest_trim.is_empty() {
+            return Some(val);
+        }
+        if rest_trim.starts_with('.') {
+            let (name, next) = parse_identifier(&rest_trim[1..])?;
+            val = js_get_property_str(ctx, val, name);
+            rest = next;
+            continue;
+        }
+        if rest_trim.starts_with('[') {
+            let (inside, next) = extract_bracket(rest_trim)?;
+            let idx_val = eval_expr(ctx, inside)?;
+            if let Some(i) = idx_val.int32() {
+                val = js_get_property_uint32(ctx, val, i as u32);
+            } else if let Some(bytes) = ctx.string_bytes(idx_val) {
+                let owned = bytes.to_vec();
+                let name = core::str::from_utf8(&owned).ok()?;
+                val = js_get_property_str(ctx, val, name);
+            } else {
+                return None;
+            }
+            rest = next;
+            continue;
+        }
+        return None;
+    }
+}
+
+fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
+    let s = src.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if depth == 0 && b == b'.' {
+            let next = bytes.get(i + 1).copied();
+            if next.map(is_ident_start).unwrap_or(false) {
+                let base = s[..i].trim();
+                let tail = &s[i..];
+                if base.is_empty() {
+                    return None;
+                }
+                return Some((base, tail));
+            }
+        }
+        if b == b'[' {
+            if depth == 0 && i > 0 {
+                let base = s[..i].trim();
+                let tail = &s[i..];
+                if base.is_empty() {
+                    return None;
+                }
+                return Some((base, tail));
+            }
+            depth += 1;
+            continue;
+        }
+        match b {
+            b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            _ => {}
+        }
+    }
+    Some((s, ""))
+}
+
+fn extract_bracket(src: &str) -> Option<(&str, &str)> {
+    let bytes = src.as_bytes();
+    if bytes.first().copied() != Some(b'[') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if b == b'[' {
+            depth += 1;
+            continue;
+        }
+        if b == b']' {
+            depth -= 1;
+            if depth == 0 {
+                let inside = &src[1..i];
+                let rest = &src[i + 1..];
+                return Some((inside, rest));
+            }
+        }
+    }
+    None
+}
+
+fn parse_identifier(src: &str) -> Option<(&str, &str)> {
+    let bytes = src.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    if !is_ident_start(bytes[0]) {
+        return None;
+    }
+    let mut end = 1usize;
+    for b in &bytes[1..] {
+        let ok = (b'A'..=b'Z').contains(b)
+            || (b'a'..=b'z').contains(b)
+            || (b'0'..=b'9').contains(b)
+            || *b == b'_';
+        if !ok {
+            break;
+        }
+        end += 1;
+    }
+    Some((&src[..end], &src[end..]))
+}
+
+fn is_ident_start(b: u8) -> bool {
+    (b'A'..=b'Z').contains(&b) || (b'a'..=b'z').contains(&b) || b == b'_'
 }
 
 fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
@@ -895,7 +1044,7 @@ fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return None;
     }
     for (idx, item) in items.iter().enumerate() {
-        let val = eval_literal(ctx, item)?;
+        let val = eval_value(ctx, item)?;
         let res = js_set_property_uint32(ctx, arr, idx as u32, val);
         if res.is_exception() {
             return None;
@@ -923,7 +1072,7 @@ fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         } else {
             key
         };
-        let val = eval_literal(ctx, value_src)?;
+        let val = eval_value(ctx, value_src)?;
         let res = js_set_property_str(ctx, obj, key_str, val);
         if res.is_exception() {
             return None;
