@@ -379,15 +379,48 @@ pub fn js_set_log_func(_ctx: &mut JSContextImpl, _write_func: Option<JSWriteFunc
     _ctx.set_log_func(_write_func);
 }
 
-pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {}
+pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
+    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+    let owned = {
+        let s = js_to_cstring(_ctx, _val, &mut buf);
+        s.as_bytes().to_vec()
+    };
+    _ctx.write_log(&owned);
+    _ctx.write_log(b"\n");
+}
 
-pub fn js_print_value_f(_ctx: &mut JSContextImpl, _val: JSValue, _flags: i32) {}
+pub fn js_print_value_f(_ctx: &mut JSContextImpl, _val: JSValue, _flags: i32) {
+    js_print_value(_ctx, _val);
+}
 
-pub fn js_dump_value_f(_ctx: &mut JSContextImpl, _str: &str, _val: JSValue, _flags: i32) {}
+pub fn js_dump_value_f(_ctx: &mut JSContextImpl, _str: &str, _val: JSValue, _flags: i32) {
+    _ctx.write_log(_str.as_bytes());
+    _ctx.write_log(b": ");
+    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+    let owned = {
+        let s = js_to_cstring(_ctx, _val, &mut buf);
+        s.as_bytes().to_vec()
+    };
+    _ctx.write_log(&owned);
+    _ctx.write_log(b"\n");
+}
 
-pub fn js_dump_value(_ctx: &mut JSContextImpl, _str: &str, _val: JSValue) {}
+pub fn js_dump_value(_ctx: &mut JSContextImpl, _str: &str, _val: JSValue) {
+    js_dump_value_f(_ctx, _str, _val, 0);
+}
 
-pub fn js_dump_memory(_ctx: &mut JSContextImpl, _is_long: JSBool) {}
+pub fn js_dump_memory(_ctx: &mut JSContextImpl, _is_long: JSBool) {
+    let (used, size) = _ctx.memory_usage();
+    let mut buf = [0u8; 64];
+    let mut idx = 0;
+    idx += write_decimal(&mut buf[idx..], used);
+    buf[idx] = b'/';
+    idx += 1;
+    idx += write_decimal(&mut buf[idx..], size);
+    buf[idx] = b'\n';
+    idx += 1;
+    _ctx.write_log(&buf[..idx]);
+}
 
 // --- C-API style aliases for compatibility ---
 
@@ -692,4 +725,26 @@ fn int_to_decimal_bytes(mut value: i32, buf: &mut [u8; 12]) -> &[u8] {
         buf[idx] = b'-';
     }
     &buf[idx..]
+}
+
+fn write_decimal(buf: &mut [u8], mut value: usize) -> usize {
+    if value == 0 {
+        if !buf.is_empty() {
+            buf[0] = b'0';
+            return 1;
+        }
+        return 0;
+    }
+    let mut tmp = [0u8; 20];
+    let mut idx = tmp.len();
+    while value > 0 {
+        let digit = (value % 10) as u8;
+        value /= 10;
+        idx -= 1;
+        tmp[idx] = b'0' + digit;
+    }
+    let len = tmp.len() - idx;
+    let out_len = len.min(buf.len());
+    buf[..out_len].copy_from_slice(&tmp[idx..idx + out_len]);
+    out_len
 }

@@ -63,12 +63,22 @@ impl Context {
         self.log_func
     }
 
+    pub fn write_log(&self, bytes: &[u8]) {
+        if let Some(log) = self.log_func {
+            log(self.opaque, bytes.as_ptr(), bytes.len());
+        }
+    }
+
     pub fn set_random_seed(&mut self, seed: u64) {
         self.random_seed = seed;
     }
 
     pub fn random_seed(&self) -> u64 {
         self.random_seed
+    }
+
+    pub fn memory_usage(&self) -> (usize, usize) {
+        self.mem.used()
     }
 
     pub fn alloc_string(&mut self, bytes: &[u8]) -> Option<*mut u8> {
@@ -238,6 +248,10 @@ impl MemoryRegion {
         let ptr = unsafe { self.start.add(aligned) };
         self.offset = new_offset;
         Some(ptr)
+    }
+
+    fn used(&self) -> (usize, usize) {
+        (self.offset, self.size)
     }
 }
 
