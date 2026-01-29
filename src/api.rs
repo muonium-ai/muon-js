@@ -422,7 +422,29 @@ pub fn js_push_arg(_ctx: &mut JSContextImpl, _val: JSValue) {
 }
 
 pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
-    _ctx.call(_call_flags)
+    let argc = (_call_flags & 0xffff) as usize;
+    let need = argc + 2;
+    if _ctx.stack_check(need as u32) != 0 {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "stack overflow");
+    }
+    let stack_len = _ctx.call_stack_len();
+    if stack_len < need {
+        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "stack underflow");
+    }
+    let this_idx = stack_len - 1;
+    let func_idx = stack_len - 2;
+    let func_val = _ctx.call_stack_get(func_idx);
+    let _this_val = _ctx.call_stack_get(this_idx);
+    let mut args = Vec::with_capacity(argc);
+    for i in 0..argc {
+        let arg = _ctx.call_stack_get(stack_len - 3 - i);
+        args.push(arg);
+    }
+    _ctx.call_stack_truncate(stack_len - need);
+    if let Some((idx, params)) = _ctx.c_function_info(func_val) {
+        return call_c_function(_ctx, idx, params, _this_val, &args);
+    }
+    js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not a function")
 }
 
 pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
@@ -1033,6 +1055,84 @@ fn parse_identifier(src: &str) -> Option<(&str, &str)> {
 
 fn is_ident_start(b: u8) -> bool {
     (b'A'..=b'Z').contains(&b) || (b'a'..=b'z').contains(&b) || b == b'_'
+}
+
+fn call_c_function(
+    _ctx: &mut JSContextImpl,
+    func_idx: i32,
+    params: JSValue,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    let def = match _ctx.c_function_def(func_idx as usize) {
+        Some(def) => *def,
+        None => return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "unknown c function"),
+    };
+    match def.def_type {
+        x if x == JSCFunctionDefEnum::Generic as u8 => {
+            if let Some(f) = unsafe { def.func.generic } {
+                return f(
+                    _ctx as *mut JSContextImpl as *mut JSContext,
+                    &this_val as *const JSValue as *mut JSValue,
+                    args.len() as i32,
+                    args.as_ptr() as *mut JSValue,
+                );
+            }
+        }
+        x if x == JSCFunctionDefEnum::GenericMagic as u8 => {
+            if let Some(f) = unsafe { def.func.generic_magic } {
+                return f(
+                    _ctx as *mut JSContextImpl as *mut JSContext,
+                    &this_val as *const JSValue as *mut JSValue,
+                    args.len() as i32,
+                    args.as_ptr() as *mut JSValue,
+                    def.magic as i32,
+                );
+            }
+        }
+        x if x == JSCFunctionDefEnum::Constructor as u8 => {
+            if let Some(f) = unsafe { def.func.constructor } {
+                return f(
+                    _ctx as *mut JSContextImpl as *mut JSContext,
+                    &this_val as *const JSValue as *mut JSValue,
+                    args.len() as i32,
+                    args.as_ptr() as *mut JSValue,
+                );
+            }
+        }
+        x if x == JSCFunctionDefEnum::ConstructorMagic as u8 => {
+            if let Some(f) = unsafe { def.func.constructor_magic } {
+                return f(
+                    _ctx as *mut JSContextImpl as *mut JSContext,
+                    &this_val as *const JSValue as *mut JSValue,
+                    args.len() as i32,
+                    args.as_ptr() as *mut JSValue,
+                    def.magic as i32,
+                );
+            }
+        }
+        x if x == JSCFunctionDefEnum::GenericParams as u8 => {
+            if let Some(f) = unsafe { def.func.generic_params } {
+                return f(
+                    _ctx as *mut JSContextImpl as *mut JSContext,
+                    &this_val as *const JSValue as *mut JSValue,
+                    args.len() as i32,
+                    args.as_ptr() as *mut JSValue,
+                    params,
+                );
+            }
+        }
+        x if x == JSCFunctionDefEnum::FF as u8 => {
+            if args.len() == 1 {
+                if let Some(f) = unsafe { def.func.f_f } {
+                    let v = js_to_number(_ctx, args[0]).unwrap_or(0.0);
+                    return js_new_float64(_ctx, f(v));
+                }
+            }
+        }
+        _ => {}
+    }
+    js_throw_error(_ctx, JSObjectClassEnum::TypeError, "unsupported c function")
 }
 
 fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {

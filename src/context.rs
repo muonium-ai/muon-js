@@ -14,6 +14,8 @@ pub struct Context {
     call_stack: Vec<Value>,
     stack_limit: usize,
     last_exception: Value,
+    c_function_table: *const crate::types::JSCFunctionDef,
+    c_function_table_len: usize,
 }
 
 impl Context {
@@ -30,6 +32,8 @@ impl Context {
             call_stack: Vec::new(),
             stack_limit: 1024,
             last_exception: Value::UNDEFINED,
+            c_function_table: core::ptr::null(),
+            c_function_table_len: 0,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -61,12 +65,36 @@ impl Context {
         Value::EXCEPTION
     }
 
+    pub fn call_stack_len(&self) -> usize {
+        self.call_stack.len()
+    }
+
+    pub fn call_stack_get(&self, idx: usize) -> Value {
+        self.call_stack[idx]
+    }
+
+    pub fn call_stack_truncate(&mut self, len: usize) {
+        self.call_stack.truncate(len);
+    }
+
     pub fn set_exception(&mut self, val: Value) {
         self.last_exception = val;
     }
 
     pub fn get_exception(&self) -> Value {
         self.last_exception
+    }
+
+    pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
+        self.c_function_table = ptr;
+        self.c_function_table_len = len;
+    }
+
+    pub fn c_function_def(&self, idx: usize) -> Option<&crate::types::JSCFunctionDef> {
+        if self.c_function_table.is_null() || idx >= self.c_function_table_len {
+            return None;
+        }
+        unsafe { Some(&*self.c_function_table.add(idx)) }
     }
 
     pub fn gcref_head(&mut self) -> *mut crate::types::JSGCRef {
@@ -169,6 +197,16 @@ impl Context {
             (*obj).func_params = params;
         }
         Some(Value::from_ptr(obj as *mut u8))
+    }
+
+    pub fn c_function_info(&self, val: Value) -> Option<(i32, Value)> {
+        let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).class_id != JSObjectClassEnum::CFunction as u32 {
+                return None;
+            }
+            Some(((*obj).func_idx, (*obj).func_params))
+        }
     }
 
     pub fn object_class_id(&self, val: Value) -> Option<u32> {
