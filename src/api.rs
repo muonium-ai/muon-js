@@ -949,6 +949,26 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         if rest_trim.is_empty() {
             return Some(val);
         }
+        if rest_trim.starts_with('(') {
+            let (inside, next) = extract_paren(rest_trim)?;
+            let arg_list = split_top_level(inside)?;
+            let mut args = Vec::new();
+            for arg in arg_list {
+                if arg.is_empty() {
+                    continue;
+                }
+                let v = eval_expr(ctx, arg)?;
+                args.push(v);
+            }
+            for arg in args.iter().rev() {
+                js_push_arg(ctx, *arg);
+            }
+            js_push_arg(ctx, val);
+            js_push_arg(ctx, Value::UNDEFINED);
+            val = js_call(ctx, args.len() as i32);
+            rest = next;
+            continue;
+        }
         if rest_trim.starts_with('.') {
             let (name, next) = parse_identifier(&rest_trim[1..])?;
             val = js_get_property_str(ctx, val, name);
@@ -1155,6 +1175,43 @@ fn extract_bracket(src: &str) -> Option<(&str, &str)> {
             continue;
         }
         if b == b']' {
+            depth -= 1;
+            if depth == 0 {
+                let inside = &src[1..i];
+                let rest = &src[i + 1..];
+                return Some((inside, rest));
+            }
+        }
+    }
+    None
+}
+
+fn extract_paren(src: &str) -> Option<(&str, &str)> {
+    let bytes = src.as_bytes();
+    if bytes.first().copied() != Some(b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if b == b'(' {
+            depth += 1;
+            continue;
+        }
+        if b == b')' {
             depth -= 1;
             if depth == 0 {
                 let inside = &src[1..i];
