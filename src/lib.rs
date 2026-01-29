@@ -170,4 +170,19 @@ mod tests {
         let s = JS_ToCString(&mut ctx, es, &mut buf);
         assert_eq!(s, "boom");
     }
+
+    #[test]
+    fn numeric_property_names_on_arrays() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let arr = JS_NewArray(&mut ctx, 0);
+        let v = JS_NewInt32(&mut ctx, 3);
+        let ok = JS_SetPropertyStr(&mut ctx, arr, "0", v);
+        assert!(!ok.is_exception());
+        let got = JS_GetPropertyUint32(&mut ctx, arr, 0);
+        let n = JS_ToInt32(&mut ctx, got).expect("int32");
+        assert_eq!(n, 3);
+        let bad = JS_SetPropertyStr(&mut ctx, arr, "2", v);
+        assert!(bad.is_exception());
+    }
 }

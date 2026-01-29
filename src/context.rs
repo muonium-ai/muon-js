@@ -197,6 +197,9 @@ impl Context {
 
     pub fn get_property_str(&mut self, val: Value, name: &[u8]) -> Option<Value> {
         let obj = self.object_ptr(val)?;
+        if let Some(idx) = parse_index(name) {
+            return self.get_property_index(val, idx);
+        }
         unsafe {
             if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
                 return Some(Value::from_int32((*obj).array_len as i32));
@@ -221,6 +224,9 @@ impl Context {
             Some(obj) => obj,
             None => return false,
         };
+        if let Some(idx) = parse_index(name) {
+            return self.set_property_index(val, idx, value).is_ok();
+        }
         unsafe {
             if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
                 return self.array_set_length(obj, value).is_ok();
@@ -359,6 +365,21 @@ fn align_up(value: usize, align: usize) -> usize {
         return value;
     }
     (value + align - 1) & !(align - 1)
+}
+
+fn parse_index(name: &[u8]) -> Option<u32> {
+    if name.is_empty() {
+        return None;
+    }
+    let mut value: u32 = 0;
+    for &b in name {
+        if b < b'0' || b > b'9' {
+            return None;
+        }
+        let digit = (b - b'0') as u32;
+        value = value.checked_mul(10)?.checked_add(digit)?;
+    }
+    Some(value)
 }
 
 struct AtomTable {
