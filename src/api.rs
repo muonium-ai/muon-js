@@ -69,7 +69,7 @@ pub fn js_new_float64(_ctx: &mut JSContextImpl, _d: f64) -> JSValue {
     if let Some(ptr) = _ctx.alloc_float(_d) {
         Value::from_ptr(ptr)
     } else {
-        Value::EXCEPTION
+        js_throw_out_of_memory(_ctx)
     }
 }
 
@@ -83,7 +83,7 @@ pub fn js_new_uint32(_ctx: &mut JSContextImpl, _val: u32) -> JSValue {
     } else if let Some(ptr) = _ctx.alloc_float(_val as f64) {
         Value::from_ptr(ptr)
     } else {
-        Value::EXCEPTION
+        js_throw_out_of_memory(_ctx)
     }
 }
 
@@ -93,7 +93,7 @@ pub fn js_new_int64(_ctx: &mut JSContextImpl, _val: i64) -> JSValue {
     } else if let Some(ptr) = _ctx.alloc_float(_val as f64) {
         Value::from_ptr(ptr)
     } else {
-        Value::EXCEPTION
+        js_throw_out_of_memory(_ctx)
     }
 }
 
@@ -216,13 +216,13 @@ pub fn js_set_property_uint32(
 pub fn js_new_object_class_user(_ctx: &mut JSContextImpl, _class_id: i32) -> JSValue {
     _ctx
         .new_object(_class_id as u32)
-        .unwrap_or(Value::EXCEPTION)
+        .unwrap_or_else(|| js_throw_out_of_memory(_ctx))
 }
 
 pub fn js_new_object(_ctx: &mut JSContextImpl) -> JSValue {
     _ctx
         .new_object(JSObjectClassEnum::Object as u32)
-        .unwrap_or(Value::EXCEPTION)
+        .unwrap_or_else(|| js_throw_out_of_memory(_ctx))
 }
 
 pub fn js_new_array(_ctx: &mut JSContextImpl, _initial_len: i32) -> JSValue {
@@ -231,7 +231,7 @@ pub fn js_new_array(_ctx: &mut JSContextImpl, _initial_len: i32) -> JSValue {
     }
     _ctx
         .new_array(_initial_len as usize)
-        .unwrap_or(Value::EXCEPTION)
+        .unwrap_or_else(|| js_throw_out_of_memory(_ctx))
 }
 
 pub fn js_new_c_function_params(
@@ -291,7 +291,7 @@ pub fn js_new_string_len(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
     if let Some(header) = _ctx.alloc_string(_buf) {
         Value::from_ptr(header)
     } else {
-        Value::EXCEPTION
+        js_throw_out_of_memory(_ctx)
     }
 }
 
@@ -830,6 +830,7 @@ fn write_decimal(buf: &mut [u8], mut value: usize) -> usize {
 
 fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
     if !val.is_finite() {
+        ctx.set_exception(Value::UNDEFINED);
         return Value::EXCEPTION;
     }
     if val.fract() == 0.0 && val >= i32::MIN as f64 && val <= i32::MAX as f64 {
@@ -838,6 +839,7 @@ fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
     if let Some(ptr) = ctx.alloc_float(val) {
         Value::from_ptr(ptr)
     } else {
+        ctx.set_exception(Value::UNDEFINED);
         Value::EXCEPTION
     }
 }
