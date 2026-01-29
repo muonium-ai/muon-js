@@ -270,28 +270,19 @@ pub fn js_eval(
     _eval_flags: i32,
 ) -> JSValue {
     let src = _input.trim();
-    if src == "null" {
-        return Value::NULL;
+    if src.starts_with('[') && src.ends_with(']') {
+        if let Some(val) = eval_array_literal(_ctx, src) {
+            return val;
+        }
+        return Value::EXCEPTION;
     }
-    if src == "undefined" {
-        return Value::UNDEFINED;
+    if src.starts_with('{') && src.ends_with('}') {
+        if let Some(val) = eval_object_literal(_ctx, src) {
+            return val;
+        }
+        return Value::EXCEPTION;
     }
-    if src == "true" {
-        return Value::TRUE;
-    }
-    if src == "false" {
-        return Value::FALSE;
-    }
-    if (src.starts_with('\"') && src.ends_with('\"') && src.len() >= 2)
-        || (src.starts_with('\'') && src.ends_with('\'') && src.len() >= 2)
-    {
-        let inner = &src[1..src.len() - 1];
-        return js_new_string(_ctx, inner);
-    }
-    if let Ok(num) = parse_numeric_expr(src) {
-        return number_to_value(_ctx, num);
-    }
-    Value::EXCEPTION
+    eval_literal(_ctx, src).unwrap_or(Value::EXCEPTION)
 }
 
 pub fn js_gc(_ctx: &mut JSContextImpl) {}
@@ -849,6 +840,116 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
         return Err(());
     }
     Ok(value)
+}
+
+fn eval_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    if s == "null" {
+        return Some(Value::NULL);
+    }
+    if s == "undefined" {
+        return Some(Value::UNDEFINED);
+    }
+    if s == "true" {
+        return Some(Value::TRUE);
+    }
+    if s == "false" {
+        return Some(Value::FALSE);
+    }
+    if (s.starts_with('\"') && s.ends_with('\"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        let inner = &s[1..s.len() - 1];
+        return Some(js_new_string(ctx, inner));
+    }
+    if let Ok(num) = parse_numeric_expr(s) {
+        return Some(number_to_value(ctx, num));
+    }
+    None
+}
+
+fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let inner = src.trim();
+    let inner = &inner[1..inner.len().saturating_sub(1)];
+    let items = split_top_level(inner)?;
+    let arr = js_new_array(ctx, items.len() as i32);
+    if arr.is_exception() {
+        return None;
+    }
+    for (idx, item) in items.iter().enumerate() {
+        let val = eval_literal(ctx, item)?;
+        let res = js_set_property_uint32(ctx, arr, idx as u32, val);
+        if res.is_exception() {
+            return None;
+        }
+    }
+    Some(arr)
+}
+
+fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let inner = src.trim();
+    let inner = &inner[1..inner.len().saturating_sub(1)];
+    let entries = split_top_level(inner)?;
+    let obj = js_new_object(ctx);
+    if obj.is_exception() {
+        return None;
+    }
+    for entry in entries {
+        let mut parts = entry.splitn(2, ':');
+        let key = parts.next()?.trim();
+        let value_src = parts.next()?.trim();
+        let key_str = if (key.starts_with('\"') && key.ends_with('\"') && key.len() >= 2)
+            || (key.starts_with('\'') && key.ends_with('\'') && key.len() >= 2)
+        {
+            &key[1..key.len() - 1]
+        } else {
+            key
+        };
+        let val = eval_literal(ctx, value_src)?;
+        let res = js_set_property_str(ctx, obj, key_str, val);
+        if res.is_exception() {
+            return None;
+        }
+    }
+    Some(obj)
+}
+
+fn split_top_level(src: &str) -> Option<Vec<&str>> {
+    let s = src.trim();
+    if s.is_empty() {
+        return Some(Vec::new());
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if b == b'[' || b == b'{' || b == b'(' {
+            return None;
+        }
+        if b == b',' {
+            let part = s[start..i].trim();
+            out.push(part);
+            start = i + 1;
+        }
+    }
+    let part = s[start..].trim();
+    if !part.is_empty() {
+        out.push(part);
+    }
+    Some(out)
 }
 
 struct ExprParser<'a> {

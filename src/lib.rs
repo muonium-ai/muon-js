@@ -161,6 +161,14 @@ mod tests {
         let e3 = JS_Eval(&mut ctx, "1.5+1", "test.js", 0);
         let n3 = JS_ToNumber(&mut ctx, e3).expect("number");
         assert!((n3 - 2.5).abs() < 1e-9);
+        let arr = JS_Eval(&mut ctx, "[1, 2]", "test.js", 0);
+        let a1 = JS_GetPropertyUint32(&mut ctx, arr, 0);
+        let a2 = JS_GetPropertyUint32(&mut ctx, arr, 1);
+        assert_eq!(JS_ToInt32(&mut ctx, a1).unwrap(), 1);
+        assert_eq!(JS_ToInt32(&mut ctx, a2).unwrap(), 2);
+        let obj = JS_Eval(&mut ctx, "{a: 3}", "test.js", 0);
+        let oa = JS_GetPropertyStr(&mut ctx, obj, "a");
+        assert_eq!(JS_ToInt32(&mut ctx, oa).unwrap(), 3);
     }
 
     #[test]
