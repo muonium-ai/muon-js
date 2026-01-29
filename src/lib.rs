@@ -427,6 +427,23 @@ mod tests {
             js_object_create(ctx, proto)
         }
 
+        fn object_define_property(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            if argc < 3 {
+                return JSValue::EXCEPTION;
+            }
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let obj = unsafe { *argv };
+            let key = unsafe { *argv.add(1) };
+            let desc = unsafe { *argv.add(2) };
+            let val = js_get_property_str(ctx, desc, "value");
+            js_object_define_property(ctx, obj, key, val)
+        }
+
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
         let def_obj = JSCFunctionDef {
@@ -464,6 +481,13 @@ mod tests {
             arg_count: 1,
             magic: 0,
         };
+        let def_define = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(object_define_property) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 3,
+            magic: 0,
+        };
         fn math_abs(x: f64) -> f64 {
             x.abs()
         }
@@ -484,7 +508,7 @@ mod tests {
             arg_count: 1,
             magic: 0,
         };
-        let table = [def_obj, def_arr, def_keys, def_is_array, def_create, def_abs, def_floor];
+        let table = [def_obj, def_arr, def_keys, def_is_array, def_create, def_abs, def_floor, def_define];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
@@ -512,6 +536,10 @@ mod tests {
         let floor_v = JS_Eval(&mut ctx, "Math.floor(1.9)", "test.js", 0);
         let fv = JS_ToNumber(&mut ctx, floor_v).unwrap();
         assert!((fv - 1.0).abs() < 1e-9);
+        let _ = JS_Eval(&mut ctx, "o = {}", "test.js", 0);
+        let _ = JS_Eval(&mut ctx, "Object.defineProperty(o, \"x\", {value: 7})", "test.js", 0);
+        let ox = JS_Eval(&mut ctx, "o.x", "test.js", 0);
+        assert_eq!(JS_ToInt32(&mut ctx, ox).unwrap(), 7);
     }
 
     #[test]

@@ -524,6 +524,10 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
         let create_fn = js_new_c_function_params(_ctx, 4, JSValue::UNDEFINED);
         let _ = js_set_property_str(_ctx, obj_ctor, "create", create_fn);
     }
+    if _ctx.c_function_def(7).is_some() {
+        let define_fn = js_new_c_function_params(_ctx, 7, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, obj_ctor, "defineProperty", define_fn);
+    }
     if _ctx.c_function_def(5).is_some() {
         let math = js_new_object(_ctx);
         let _ = js_set_property_str(_ctx, global, "Math", math);
@@ -578,6 +582,30 @@ pub fn js_object_create(_ctx: &mut JSContextImpl, proto: JSValue) -> JSValue {
         return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid prototype");
     }
     js_new_object(_ctx)
+}
+
+pub fn js_object_define_property(_ctx: &mut JSContextImpl, obj: JSValue, key: JSValue, val: JSValue) -> JSValue {
+    if _ctx.object_class_id(obj).is_none() {
+        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an object");
+    }
+    if let Some(bytes) = _ctx.string_bytes(key) {
+        let owned = bytes.to_vec();
+        if let Ok(name) = core::str::from_utf8(&owned) {
+            let res = js_set_property_str(_ctx, obj, name, val);
+            if res.is_exception() {
+                return res;
+            }
+            return obj;
+        }
+    }
+    if let Some(i) = key.int32() {
+        let res = js_set_property_uint32(_ctx, obj, i as u32, val);
+        if res.is_exception() {
+            return res;
+        }
+        return obj;
+    }
+    js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid property key")
 }
 
 pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
@@ -1511,7 +1539,7 @@ fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         } else {
             key
         };
-        let val = eval_value(ctx, value_src)?;
+        let val = eval_expr(ctx, value_src)?;
         let res = js_set_property_str(ctx, obj, key_str, val);
         if res.is_exception() {
             return None;
