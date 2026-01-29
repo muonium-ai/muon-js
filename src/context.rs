@@ -16,6 +16,8 @@ pub struct Context {
     last_exception: Value,
     c_function_table: *const crate::types::JSCFunctionDef,
     c_function_table_len: usize,
+    array_push_fn: Value,
+    array_pop_fn: Value,
 }
 
 impl Context {
@@ -34,6 +36,8 @@ impl Context {
             last_exception: Value::UNDEFINED,
             c_function_table: core::ptr::null(),
             c_function_table_len: 0,
+            array_push_fn: Value::UNDEFINED,
+            array_pop_fn: Value::UNDEFINED,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -88,6 +92,11 @@ impl Context {
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
         self.c_function_table = ptr;
         self.c_function_table_len = len;
+    }
+
+    pub fn set_array_proto_methods(&mut self, push: Value, pop: Value) {
+        self.array_push_fn = push;
+        self.array_pop_fn = pop;
     }
 
     pub fn c_function_def(&self, idx: usize) -> Option<&crate::types::JSCFunctionDef> {
@@ -187,7 +196,14 @@ impl Context {
 
     pub fn new_array(&mut self, initial_len: usize) -> Option<Value> {
         let obj = self.alloc_array(initial_len)?;
-        Some(Value::from_ptr(obj as *mut u8))
+        let val = Value::from_ptr(obj as *mut u8);
+        if !self.array_push_fn.is_undefined() {
+            let _ = self.set_property_str(val, b"push", self.array_push_fn);
+        }
+        if !self.array_pop_fn.is_undefined() {
+            let _ = self.set_property_str(val, b"pop", self.array_pop_fn);
+        }
+        Some(val)
     }
 
     pub fn new_c_function(&mut self, func_idx: i32, params: Value) -> Option<Value> {
@@ -344,6 +360,35 @@ impl Context {
             }
         }
         Some(keys)
+    }
+
+    pub fn array_push(&mut self, val: Value, elem: Value) -> Option<u32> {
+        let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).tag != HEAP_TAG_ARRAY {
+                return None;
+            }
+            let idx = (*obj).array_len;
+            let _ = self.array_set(obj, idx, elem).ok()?;
+            Some((*obj).array_len)
+        }
+    }
+
+    pub fn array_pop(&mut self, val: Value) -> Option<Value> {
+        let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).tag != HEAP_TAG_ARRAY {
+                return None;
+            }
+            let len = (*obj).array_len as usize;
+            if len == 0 {
+                return Some(Value::UNDEFINED);
+            }
+            let idx = (len - 1) as u32;
+            let v = self.array_get(obj, idx);
+            (*obj).array_len = idx;
+            Some(v)
+        }
     }
 
     pub fn alloc_float(&mut self, value: f64) -> Option<*mut u8> {
