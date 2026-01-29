@@ -90,4 +90,17 @@ mod tests {
         let bad = [0u8; 4];
         assert_eq!(JS_IsBytecode(&bad), 0);
     }
+
+    #[test]
+    fn global_object_property() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let global = JS_GetGlobalObject(&mut ctx);
+        let v = JS_NewInt32(&mut ctx, 99);
+        let r = JS_SetPropertyStr(&mut ctx, global, "g", v);
+        assert!(!r.is_exception());
+        let got = JS_GetPropertyStr(&mut ctx, global, "g");
+        let val = JS_ToInt32(&mut ctx, got).expect("int32");
+        assert_eq!(val, 99);
+    }
 }
