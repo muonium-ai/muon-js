@@ -528,6 +528,10 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
         let define_fn = js_new_c_function_params(_ctx, 7, JSValue::UNDEFINED);
         let _ = js_set_property_str(_ctx, obj_ctor, "defineProperty", define_fn);
     }
+    if _ctx.c_function_def(10).is_some() {
+        let get_proto_fn = js_new_c_function_params(_ctx, 10, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, obj_ctor, "getPrototypeOf", get_proto_fn);
+    }
     if _ctx.c_function_def(8).is_some() || _ctx.c_function_def(9).is_some() {
         let arr_proto = js_new_object(_ctx);
         let _ = js_set_property_str(_ctx, arr_ctor, "prototype", arr_proto);
@@ -560,24 +564,30 @@ pub fn js_register_stdlib_minimal(_ctx: &mut JSContextImpl) -> JSValue {
                 let _ = js_set_property_str(_ctx, math, "floor", floor_fn);
             }
         }
-        if let Some(def) = _ctx.c_function_def(7) {
+        if let Some(def) = _ctx.c_function_def(15) {
             if def.def_type == JSCFunctionDefEnum::FF as u8 {
-                let ceil_fn = js_new_c_function_params(_ctx, 7, JSValue::UNDEFINED);
+                let ceil_fn = js_new_c_function_params(_ctx, 15, JSValue::UNDEFINED);
                 let _ = js_set_property_str(_ctx, math, "ceil", ceil_fn);
             }
         }
-        if let Some(def) = _ctx.c_function_def(8) {
+        if let Some(def) = _ctx.c_function_def(16) {
             if def.def_type == JSCFunctionDefEnum::FF as u8 {
-                let trunc_fn = js_new_c_function_params(_ctx, 8, JSValue::UNDEFINED);
+                let trunc_fn = js_new_c_function_params(_ctx, 16, JSValue::UNDEFINED);
                 let _ = js_set_property_str(_ctx, math, "trunc", trunc_fn);
             }
         }
-        if let Some(def) = _ctx.c_function_def(9) {
+        if let Some(def) = _ctx.c_function_def(17) {
             if def.def_type == JSCFunctionDefEnum::FF as u8 {
-                let round_fn = js_new_c_function_params(_ctx, 9, JSValue::UNDEFINED);
+                let round_fn = js_new_c_function_params(_ctx, 17, JSValue::UNDEFINED);
                 let _ = js_set_property_str(_ctx, math, "round", round_fn);
             }
         }
+    }
+    if _ctx.c_function_def(11).is_some() {
+        let date = js_new_object(_ctx);
+        let _ = js_set_property_str(_ctx, global, "Date", date);
+        let now_fn = js_new_c_function_params(_ctx, 11, JSValue::UNDEFINED);
+        let _ = js_set_property_str(_ctx, date, "now", now_fn);
     }
     Value::UNDEFINED
 }
@@ -637,6 +647,13 @@ pub fn js_object_define_property(_ctx: &mut JSContextImpl, obj: JSValue, key: JS
     js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid property key")
 }
 
+pub fn js_object_get_prototype_of(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {
+    if _ctx.object_class_id(obj).is_none() {
+        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an object");
+    }
+    Value::NULL
+}
+
 pub fn js_array_push(_ctx: &mut JSContextImpl, arr: JSValue, elem: JSValue) -> JSValue {
     match _ctx.array_push(arr, elem) {
         Some(len) => Value::from_int32(len as i32),
@@ -648,6 +665,18 @@ pub fn js_array_pop(_ctx: &mut JSContextImpl, arr: JSValue) -> JSValue {
     match _ctx.array_pop(arr) {
         Some(val) => val,
         None => js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an array"),
+    }
+}
+
+pub fn js_date_now(_ctx: &mut JSContextImpl) -> JSValue {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH);
+    match now {
+        Ok(dur) => {
+            let ms = dur.as_millis() as f64;
+            js_new_float64(_ctx, ms)
+        }
+        Err(_) => js_throw_error(_ctx, JSObjectClassEnum::InternalError, "time error"),
     }
 }
 

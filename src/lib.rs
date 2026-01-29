@@ -468,6 +468,30 @@ mod tests {
             js_array_pop(ctx, unsafe { *this_val })
         }
 
+        fn object_get_prototype_of(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            argc: i32,
+            argv: *mut JSValue,
+        ) -> JSValue {
+            if argc < 1 {
+                return JSValue::EXCEPTION;
+            }
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            let obj = unsafe { *argv };
+            js_object_get_prototype_of(ctx, obj)
+        }
+
+        fn date_now(
+            ctx: *mut JSContext,
+            _this_val: *mut JSValue,
+            _argc: i32,
+            _argv: *mut JSValue,
+        ) -> JSValue {
+            let ctx = unsafe { &mut *(ctx as *mut JSContextImpl) };
+            js_date_now(ctx)
+        }
+
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
         let def_obj = JSCFunctionDef {
@@ -512,6 +536,13 @@ mod tests {
             arg_count: 3,
             magic: 0,
         };
+        let def_get_proto = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(object_get_prototype_of) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 1,
+            magic: 0,
+        };
         fn math_abs(x: f64) -> f64 {
             x.abs()
         }
@@ -546,7 +577,27 @@ mod tests {
             arg_count: 0,
             magic: 0,
         };
-        let table = [def_obj, def_arr, def_keys, def_is_array, def_create, def_abs, def_floor, def_define, def_push, def_pop];
+        let def_date_now = JSCFunctionDef {
+            func: JSCFunctionType { generic: Some(date_now) },
+            name: JSValue::UNDEFINED,
+            def_type: JSCFunctionDefEnum::Generic as u8,
+            arg_count: 0,
+            magic: 0,
+        };
+        let table = [
+            def_obj,
+            def_arr,
+            def_keys,
+            def_is_array,
+            def_create,
+            def_abs,
+            def_floor,
+            def_define,
+            def_push,
+            def_pop,
+            def_get_proto,
+            def_date_now,
+        ];
         JS_SetCFunctionTable(&mut ctx, &table);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let obj = JS_Eval(&mut ctx, "Object()", "test.js", 0);
@@ -582,6 +633,11 @@ mod tests {
         let _ = JS_Eval(&mut ctx, "arr.push(1)", "test.js", 0);
         let pv = JS_Eval(&mut ctx, "arr.pop()", "test.js", 0);
         assert_eq!(JS_ToInt32(&mut ctx, pv).unwrap(), 1);
+        let proto = JS_Eval(&mut ctx, "Object.getPrototypeOf({})", "test.js", 0);
+        assert_eq!(proto, JSValue::NULL);
+        let now = JS_Eval(&mut ctx, "Date.now()", "test.js", 0);
+        let n = JS_ToNumber(&mut ctx, now).unwrap();
+        assert!(n > 0.0);
     }
 
     #[test]
