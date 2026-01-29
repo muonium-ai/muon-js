@@ -169,6 +169,10 @@ mod tests {
         let obj = JS_Eval(&mut ctx, "{a: 3}", "test.js", 0);
         let oa = JS_GetPropertyStr(&mut ctx, obj, "a");
         assert_eq!(JS_ToInt32(&mut ctx, oa).unwrap(), 3);
+        let nested = JS_Eval(&mut ctx, "[1, [2, 3]]", "test.js", 0);
+        let inner = JS_GetPropertyUint32(&mut ctx, nested, 1);
+        let inner_val = JS_GetPropertyUint32(&mut ctx, inner, 0);
+        assert_eq!(JS_ToInt32(&mut ctx, inner_val).unwrap(), 2);
     }
 
     #[test]

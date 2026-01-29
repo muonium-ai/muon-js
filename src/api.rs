@@ -844,6 +844,12 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
 
 fn eval_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
+    if s.starts_with('[') && s.ends_with(']') {
+        return eval_array_literal(ctx, s);
+    }
+    if s.starts_with('{') && s.ends_with('}') {
+        return eval_object_literal(ctx, s);
+    }
     if s == "null" {
         return Some(Value::NULL);
     }
@@ -924,6 +930,7 @@ fn split_top_level(src: &str) -> Option<Vec<&str>> {
     let mut start = 0usize;
     let mut in_string = false;
     let mut string_delim = 0u8;
+    let mut depth: i32 = 0;
     for (i, &b) in bytes.iter().enumerate() {
         if in_string {
             if b == string_delim {
@@ -937,13 +944,24 @@ fn split_top_level(src: &str) -> Option<Vec<&str>> {
             continue;
         }
         if b == b'[' || b == b'{' || b == b'(' {
-            return None;
+            depth += 1;
+            continue;
         }
-        if b == b',' {
+        if b == b']' || b == b'}' || b == b')' {
+            depth -= 1;
+            if depth < 0 {
+                return None;
+            }
+            continue;
+        }
+        if b == b',' && depth == 0 {
             let part = s[start..i].trim();
             out.push(part);
             start = i + 1;
         }
+    }
+    if depth != 0 {
+        return None;
     }
     let part = s[start..].trim();
     if !part.is_empty() {
