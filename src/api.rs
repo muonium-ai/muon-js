@@ -297,7 +297,7 @@ pub fn js_eval(
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
     }
-    if let Some(val) = eval_expr(_ctx, src) {
+    if let Some(val) = eval_program(_ctx, src) {
         if val.is_exception() {
             return val;
         }
@@ -1309,6 +1309,21 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
 }
 
+fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let stmts = split_statements(src)?;
+    let mut last = Value::UNDEFINED;
+    let mut any = false;
+    for stmt in stmts {
+        let trimmed = stmt.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        last = eval_expr(ctx, trimmed)?;
+        any = true;
+    }
+    if any { Some(last) } else { None }
+}
+
 fn parse_json(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let mut parser = JsonParser::new(src.as_bytes());
     let val = parser.parse_value(ctx)?;
@@ -2030,6 +2045,56 @@ fn split_top_level(src: &str) -> Option<Vec<&str>> {
             continue;
         }
         if b == b',' && depth == 0 {
+            let part = s[start..i].trim();
+            out.push(part);
+            start = i + 1;
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let part = s[start..].trim();
+    if !part.is_empty() {
+        out.push(part);
+    }
+    Some(out)
+}
+
+fn split_statements(src: &str) -> Option<Vec<&str>> {
+    let s = src.trim();
+    if s.is_empty() {
+        return Some(Vec::new());
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if b == b'[' || b == b'{' || b == b'(' {
+            depth += 1;
+            continue;
+        }
+        if b == b']' || b == b'}' || b == b')' {
+            depth -= 1;
+            if depth < 0 {
+                return None;
+            }
+            continue;
+        }
+        if b == b';' && depth == 0 {
             let part = s[start..i].trim();
             out.push(part);
             start = i + 1;

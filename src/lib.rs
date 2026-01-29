@@ -736,6 +736,18 @@ mod tests {
     }
 
     #[test]
+    fn eval_semicolon_sequence() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "x = 1; x");
+        assert_eq!(JS_ToInt32(&mut ctx, v).unwrap(), 1);
+        let v2 = JS_Eval(&mut ctx, "y = 2; y", "test.js", 0);
+        assert_eq!(v2, JSValue::UNDEFINED);
+        let yv = eval_ret(&mut ctx, "y");
+        assert_eq!(JS_ToInt32(&mut ctx, yv).unwrap(), 2);
+    }
+
+    #[test]
     fn parse_and_run() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
