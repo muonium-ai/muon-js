@@ -165,15 +165,18 @@ pub fn js_get_global_object(_ctx: &mut JSContextImpl) -> JSValue {
 }
 
 pub fn js_throw(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {
-    let _ = obj;
+    _ctx.set_exception(obj);
     Value::EXCEPTION
 }
 
 pub fn js_throw_error(_ctx: &mut JSContextImpl, _error_num: JSObjectClassEnum, _msg: &str) -> JSValue {
+    let msg = js_new_string(_ctx, _msg);
+    _ctx.set_exception(msg);
     Value::EXCEPTION
 }
 
 pub fn js_throw_out_of_memory(_ctx: &mut JSContextImpl) -> JSValue {
+    _ctx.set_exception(Value::UNDEFINED);
     Value::EXCEPTION
 }
 
@@ -413,7 +416,7 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
 }
 
 pub fn js_get_exception(_ctx: &mut JSContextImpl) -> JSValue {
-    Value::UNDEFINED
+    _ctx.get_exception()
 }
 
 pub fn js_stack_check(_ctx: &mut JSContextImpl, _len: u32) -> i32 {

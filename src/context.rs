@@ -13,6 +13,7 @@ pub struct Context {
     global_object: Value,
     call_stack: Vec<Value>,
     stack_limit: usize,
+    last_exception: Value,
 }
 
 impl Context {
@@ -28,6 +29,7 @@ impl Context {
             global_object: Value::UNDEFINED,
             call_stack: Vec::new(),
             stack_limit: 1024,
+            last_exception: Value::UNDEFINED,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -57,6 +59,14 @@ impl Context {
             let _ = self.call_stack.pop();
         }
         Value::EXCEPTION
+    }
+
+    pub fn set_exception(&mut self, val: Value) {
+        self.last_exception = val;
+    }
+
+    pub fn get_exception(&self) -> Value {
+        self.last_exception
     }
 
     pub fn gcref_head(&mut self) -> *mut crate::types::JSGCRef {

@@ -158,4 +158,16 @@ mod tests {
         let n = JS_ToInt32(&mut ctx, res).expect("int32");
         assert_eq!(n, 42);
     }
+
+    #[test]
+    fn throw_sets_exception() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let _ = JS_ThrowError(&mut ctx, JSObjectClassEnum::TypeError, "boom");
+        let ex = JS_GetException(&mut ctx);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let es = JS_ToString(&mut ctx, ex);
+        let s = JS_ToCString(&mut ctx, es, &mut buf);
+        assert_eq!(s, "boom");
+    }
 }
