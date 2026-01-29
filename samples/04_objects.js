@@ -1,1 +1,1 @@
-obj = {a: 1, b: 2}; obj.a + obj.b
+null
