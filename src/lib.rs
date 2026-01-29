@@ -38,4 +38,21 @@ mod tests {
         let val = JS_ToInt32(&mut ctx, got).expect("int32");
         assert_eq!(val, 7);
     }
+
+    #[test]
+    fn array_length_rules() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let arr = JS_NewArray(&mut ctx, 0);
+        let zero = JS_NewInt32(&mut ctx, 0);
+        let ok = JS_SetPropertyStr(&mut ctx, arr, "length", zero);
+        assert!(!ok.is_exception());
+        let one = JS_NewInt32(&mut ctx, 1);
+        let bad = JS_SetPropertyStr(&mut ctx, arr, "length", one);
+        assert!(bad.is_exception());
+        let five = JS_NewInt32(&mut ctx, 5);
+        let _ = JS_SetPropertyUint32(&mut ctx, arr, 0, five);
+        let shrink = JS_SetPropertyStr(&mut ctx, arr, "length", zero);
+        assert!(!shrink.is_exception());
+    }
 }

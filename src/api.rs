@@ -136,7 +136,7 @@ pub fn js_set_random_seed(_ctx: &mut JSContextImpl, _seed: u64) {
 }
 
 pub fn js_get_global_object(_ctx: &mut JSContextImpl) -> JSValue {
-    Value::UNDEFINED
+    _ctx.global_object()
 }
 
 pub fn js_throw(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {

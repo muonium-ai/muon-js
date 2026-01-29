@@ -10,11 +10,12 @@ pub struct Context {
     log_func: Option<crate::types::JSWriteFunc>,
     random_seed: u64,
     atoms: AtomTable,
+    global_object: Value,
 }
 
 impl Context {
     pub fn new(mem: &mut [u8]) -> Self {
-        Self {
+        let mut ctx = Self {
             mem: MemoryRegion::new(mem),
             gcref_head: core::ptr::null_mut(),
             opaque: core::ptr::null_mut(),
@@ -22,7 +23,12 @@ impl Context {
             log_func: None,
             random_seed: 0,
             atoms: AtomTable::new(),
+            global_object: Value::UNDEFINED,
+        };
+        if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
+            ctx.global_object = obj;
         }
+        ctx
     }
 
     pub fn gcref_head(&mut self) -> *mut crate::types::JSGCRef {
@@ -94,6 +100,10 @@ impl Context {
         }
     }
 
+    pub fn global_object(&self) -> Value {
+        self.global_object
+    }
+
     pub fn new_object(&mut self, class_id: u32) -> Option<Value> {
         let obj = self.alloc_object(class_id)?;
         Some(Value::from_ptr(obj as *mut u8))
@@ -111,6 +121,11 @@ impl Context {
 
     pub fn get_property_str(&mut self, val: Value, name: &[u8]) -> Option<Value> {
         let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
+                return Some(Value::from_int32((*obj).array_len as i32));
+            }
+        }
         let atom = self.intern_string(name)?;
         unsafe { self.find_prop_value(obj, PROP_KEY_ATOM, atom) }
     }
@@ -130,6 +145,11 @@ impl Context {
             Some(obj) => obj,
             None => return false,
         };
+        unsafe {
+            if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
+                return self.array_set_length(obj, value).is_ok();
+            }
+        }
         let atom = match self.intern_string(name) {
             Some(atom) => atom,
             None => return false,
@@ -441,6 +461,19 @@ impl Context {
             return Err(());
         }
         *(*obj).elements.add(idx as usize) = value;
+        Ok(())
+    }
+
+    unsafe fn array_set_length(&mut self, obj: *mut HeapObject, value: Value) -> Result<(), ()> {
+        let new_len = match value.int32() {
+            Some(v) if v >= 0 => v as usize,
+            _ => return Err(()),
+        };
+        let current = (*obj).array_len as usize;
+        if new_len > current {
+            return Err(());
+        }
+        (*obj).array_len = new_len as u32;
         Ok(())
     }
 
