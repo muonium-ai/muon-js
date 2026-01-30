@@ -1,4 +1,16 @@
 #![allow(non_snake_case)]
+//!
+//! # Module Organization
+//! This file contains the public API and core evaluation logic.
+//!
+//! Related functionality has been extracted to:
+//! - `helpers.rs` (156 lines) - Utility functions (number_to_value, is_identifier, etc.)
+//! - `json.rs` (388 lines) - JSON parsing and stringification
+//! - `evals.rs` (303 lines) - Evaluation utilities (eval_value, split_statements, etc.)
+//! - `parser.rs` (1,270 lines) - Statement parsing (if, while, for, switch, try, functions)
+//!
+//! The main `eval_expr()` function (~2,600 lines) remains here with 83 embedded
+//! built-in method implementations due to architectural constraints.
 
 use crate::context::Context;
 use crate::types::*;
@@ -6,6 +18,12 @@ use crate::value::Value;
 
 /// Opaque handle to a VM instance.
 pub type JSContextImpl = Context;
+
+// ============================================================================
+// PUBLIC API FUNCTIONS
+// ============================================================================
+// These functions mirror the mquickjs C API and provide the embedder-facing
+// interface. They must maintain API/ABI compatibility with mquickjs.
 
 /// Create a new context with a caller-provided memory buffer.
 /// This mirrors JS_NewContext in mquickjs.h and must stay API-compatible.
@@ -1183,6 +1201,12 @@ fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
     }
 }
 
+// ============================================================================
+// ARITHMETIC EXPRESSION PARSING
+// ============================================================================
+// These parsers handle numeric expressions and arithmetic operations.
+// Used by eval_expr and exported for use by evals.rs module.
+
 pub fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     let mut parser = ExprParser::new(src.as_bytes());
     let value = parser.parse_expr()?;
@@ -1316,6 +1340,19 @@ fn is_simple_string_literal(src: &str) -> bool {
     true
 }
 
+// ============================================================================
+// EXPRESSION EVALUATION
+// ============================================================================
+// NOTE: Core evaluation utilities have been extracted to evals.rs:
+// - eval_value() - Also available in evals.rs as public API
+// - eval_array_literal() - Extracted to evals.rs
+// - eval_object_literal() - Extracted to evals.rs
+// - split_top_level() - Extracted to evals.rs
+// - split_statements() - Extracted to evals.rs
+//
+// The massive eval_expr() function (~2,600 lines) remains here because it
+// contains 83 inline built-in method handlers that are tightly coupled.
+
 fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.starts_with('[') && s.ends_with(']') {
@@ -1412,6 +1449,20 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     None
 }
+
+// ============================================================================
+// MAIN EXPRESSION EVALUATOR (eval_expr)
+// ============================================================================
+// This ~2,600 line function handles:
+// - Variable declarations and assignments
+// - Operators (arithmetic, comparison, logical, ternary)
+// - Property access and method calls
+// - 83 built-in method implementations (String.*, Array.*, Object.*, Math.*, etc.)
+//
+// Built-in methods are implemented inline using marker strings like:
+// "__builtin_string_charAt__", "__builtin_array_map__", etc.
+//
+// Future refactoring: Extract built-ins to separate handlers (Phase 2)
 
 pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
@@ -3970,6 +4021,13 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
 }
 
+// ============================================================================
+// CLOSURE HANDLING
+// ============================================================================
+// NOTE: Also available in parser.rs:
+// - call_closure() - Extracted and public in parser.rs
+// - create_function() - Extracted and public in parser.rs
+
 /// Call a closure with arguments
 fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Option<JSValue> {
     // Get params and body from function object
@@ -4117,6 +4175,24 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
     
     Some(last)
 }
+
+// ============================================================================
+// STATEMENT PARSING
+// ============================================================================
+// NOTE: All statement parsing has been EXTRACTED to parser.rs (1,270 lines):
+// - parse_function_declaration() - Function definitions
+// - parse_if_statement() - if/else statements
+// - parse_while_loop() - while loops
+// - parse_for_loop() - for/for-in/for-of loops
+// - parse_do_while_loop() - do-while loops
+// - parse_switch_statement() - switch/case statements
+// - parse_try_catch() - try/catch/finally statements
+// - parse_lvalue() - Left-value parsing for assignments
+// - extract_braces(), extract_paren(), extract_bracket() - Delimiter extraction
+// - split_assignment(), split_ternary(), split_base_and_tail() - Expression splitting
+//
+// These functions remain here as internal helpers but are also available
+// as public APIs through parser.rs for code organization.
 
 /// Parse function declaration: "function name(params) { body }"
 /// Stores the function in the global object.
@@ -5049,6 +5125,8 @@ fn find_case_body_end(s: &str) -> usize {
     bytes.len()
 }
 
+// NOTE: create_function() is also available in parser.rs
+
 /// Create a function object with parameters and body
 fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
     // Encode params as a comma-separated string
@@ -5178,6 +5256,16 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     if any { Some(last) } else { None }
 }
+
+// ============================================================================
+// JSON PARSING
+// ============================================================================
+// NOTE: JSON functionality has been EXTRACTED to json.rs (388 lines):
+// - parse_json() - Main JSON parser (also available in json.rs as public API)
+// - json_stringify_value() - Value to JSON string conversion
+// - JsonParser struct - Full JSON parsing implementation
+//
+// These helper functions remain here for internal use by eval_expr.
 
 fn parse_json(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let mut parser = JsonParser::new(src.as_bytes());
@@ -5739,6 +5827,14 @@ fn extract_bracket(src: &str) -> Option<(&str, &str)> {
     None
 }
 
+// ============================================================================
+// DELIMITER EXTRACTION HELPERS
+// ============================================================================
+// NOTE: These functions are also EXTRACTED to parser.rs:
+// - extract_paren() - Extract content within ()
+// - extract_bracket() - Extract content within []
+// - extract_braces() - Extract content within {}
+
 fn extract_paren(src: &str) -> Option<(&str, &str)> {
     let bytes = src.as_bytes();
     if bytes.first().copied() != Some(b'(') {
@@ -5809,6 +5905,12 @@ fn is_identifier(s: &str) -> bool {
     };
     !name.is_empty() && rest.trim().is_empty()
 }
+
+// ============================================================================
+// C FUNCTION CALL INFRASTRUCTURE
+// ============================================================================
+// Handles calls to C functions registered via JS_SetCFunctionTable.
+// Supports multiple calling conventions (generic, constructor, magic, etc.)
 
 fn is_truthy(val: JSValue) -> bool {
     if val.is_bool() {
@@ -5922,6 +6024,14 @@ fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     Some(arr)
 }
+
+// ============================================================================
+// LITERAL EVALUATION HELPERS
+// ============================================================================
+// NOTE: These functions are also EXTRACTED to evals.rs:
+// - eval_array_literal() - Parse [1,2,3] syntax
+// - eval_object_literal() - Parse {a:1, b:2} syntax
+// - split_top_level() - Split comma-separated lists
 
 fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let inner = src.trim();
