@@ -1704,37 +1704,64 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_join__" {
-                        if args.len() == 1 {
+                        // Ported from mquickjs js_array_join (mquickjs.c:14253)
+                        // Get separator (default to comma)
+                        let separator = if args.len() > 0 && args[0] != Value::UNDEFINED {
+                            // Convert separator to string
                             if let Some(sep_bytes) = ctx.string_bytes(args[0]) {
-                                let sep_owned = sep_bytes.to_vec();
-                                let len_val = js_get_property_str(ctx, this_val, "length");
-                                if let Some(len) = len_val.int32() {
-                                    let mut result = String::new();
-                                    for i in 0..len {
-                                        if i > 0 {
-                                            if let Ok(sep) = core::str::from_utf8(&sep_owned) {
-                                                result.push_str(sep);
-                                            }
-                                        }
-                                        let elem = js_get_property_uint32(ctx, this_val, i as u32);
-                                        if let Some(n) = elem.int32() {
-                                            result.push_str(&n.to_string());
-                                        } else if let Some(bytes) = ctx.string_bytes(elem) {
-                                            if let Ok(s) = core::str::from_utf8(bytes) {
-                                                result.push_str(s);
-                                            }
-                                        }
-                                    }
-                                    val = js_new_string(ctx, &result);
+                                if let Ok(sep_str) = core::str::from_utf8(sep_bytes) {
+                                    sep_str.to_string()
                                 } else {
-                                    val = js_new_string(ctx, "");
+                                    ",".to_string()
                                 }
+                            } else if let Some(n) = args[0].int32() {
+                                n.to_string()
                             } else {
-                                val = js_new_string(ctx, "");
+                                ",".to_string()
                             }
                         } else {
-                            val = js_new_string(ctx, "");
+                            ",".to_string()
+                        };
+                        
+                        // Get array length
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = if let Some(n) = len_val.int32() {
+                            n.max(0) as u32
+                        } else {
+                            0
+                        };
+                        
+                        // Build result string
+                        let mut result = String::new();
+                        for i in 0..len {
+                            if i > 0 {
+                                result.push_str(&separator);
+                            }
+                            
+                            // Get array element
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            
+                            // Skip undefined and null (mquickjs behavior)
+                            if elem.is_undefined() || elem.is_null() {
+                                continue;
+                            }
+                            
+                            // Convert element to string
+                            if let Some(n) = elem.int32() {
+                                result.push_str(&n.to_string());
+                            } else if let Some(bytes) = ctx.string_bytes(elem) {
+                                if let Ok(s) = core::str::from_utf8(bytes) {
+                                    result.push_str(s);
+                                }
+                            } else if elem == Value::TRUE {
+                                result.push_str("true");
+                            } else if elem == Value::FALSE {
+                                result.push_str("false");
+                            }
+                            // TODO: Add float64 support when available
                         }
+                        
+                        val = js_new_string(ctx, &result);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
