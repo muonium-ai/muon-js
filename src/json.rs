@@ -147,8 +147,7 @@ impl<'a> JsonParser<'a> {
     }
 
     fn parse_value(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
-        use crate::api::{js_new_string, js_new_array, js_new_object, js_set_property_str, js_array_push};
-        use crate::helpers::number_to_value;
+        use crate::api::js_new_string;
         
         self.skip_ws();
         match self.peek()? {

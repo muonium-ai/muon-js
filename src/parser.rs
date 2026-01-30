@@ -4,10 +4,8 @@
 //! function declarations, and expression decomposition.
 
 use crate::api::*;
-use crate::context::*;
 use crate::types::*;
 use crate::value::*;
-use crate::helpers::*;
 use crate::evals::*;
 
 /// LValue key type for property access
@@ -599,10 +597,8 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
     }
     let (condition, _) = extract_paren(after_while)?;
 
-    let mut last = Value::UNDEFINED;
+    let mut last = eval_function_body(ctx, body)?;
     loop {
-        last = eval_function_body(ctx, body)?;
-
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
@@ -621,6 +617,7 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
         if !is_truthy(cond_val) {
             break;
         }
+        last = eval_function_body(ctx, body)?;
     }
 
     Some(last)

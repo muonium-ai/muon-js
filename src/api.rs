@@ -19,8 +19,8 @@ use crate::value::Value;
 
 // Import extracted functionality
 use crate::helpers::{number_to_value, is_identifier, flatten_array, contains_arith_op};
-use crate::json::{parse_json, json_stringify_value};
-use crate::evals::{eval_value, eval_array_literal, eval_object_literal, split_top_level, split_statements, is_truthy};
+use crate::json::parse_json;
+use crate::evals::{eval_value, split_top_level, split_statements, is_truthy};
 use crate::parser::*;
 
 /// Opaque handle to a VM instance.
@@ -4876,214 +4876,7 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
 // - extract_braces(), extract_paren(), extract_bracket() - Delimiter extraction
 // - split_assignment(), split_ternary(), split_base_and_tail() - Expression splitting
 //
-// These functions remain here as internal helpers but are also available
-// as public APIs through parser.rs for code organization.
-
-
-
-fn find_for_in_keyword(header: &str) -> Option<usize> {
-    // Look for " in " in the header (not inside strings or nested expressions)
-    let bytes = header.as_bytes();
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut string_delim = 0u8;
-
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_string {
-            if b == string_delim {
-                in_string = false;
-            } else if b == b'\\' && i + 1 < bytes.len() {
-                i += 1; // Skip escaped character
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'\'' || b == b'"' {
-            in_string = true;
-            string_delim = b;
-            i += 1;
-            continue;
-        }
-        match b {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            _ => {}
-        }
-
-        // Check for " in " at depth 0
-        if depth == 0 && i + 4 <= bytes.len() {
-            if &bytes[i..i + 4] == b" in " {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_for_of_keyword(header: &str) -> Option<usize> {
-    // Look for " of " pattern (with spaces to avoid matching "of" in variable names)
-    let bytes = header.as_bytes();
-    for i in 0..header.len().saturating_sub(4) {
-        if bytes[i] == b' ' && bytes[i+1] == b'o' && bytes[i+2] == b'f' && bytes[i+3] == b' ' {
-            return Some(i + 1);
-        }
-    }
-    None
-}
-
-fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, after_header: &str) -> Option<JSValue> {
-    // Parse: var_name of iterable_expr
-    let var_part = header[..of_pos].trim();
-    let iter_expr = header[of_pos + 3..].trim();
-
-    // Handle "var x" or "const x" or just "x"
-    let var_name = if var_part.starts_with("var ") {
-        var_part[4..].trim()
-    } else if var_part.starts_with("const ") {
-        var_part[6..].trim()
-    } else if var_part.starts_with("let ") {
-        var_part[4..].trim()
-    } else {
-        var_part
-    };
-
-    // Parse body block
-    if !after_header.starts_with('{') {
-        return None;
-    }
-    let (body, _) = extract_braces(after_header)?;
-
-    // Evaluate the iterable expression
-    let iter_val = eval_expr(ctx, iter_expr)?;
-
-    // Check if it's an array
-    if let Some(class_id) = ctx.object_class_id(iter_val) {
-        if class_id == JSObjectClassEnum::Array as u32 {
-            // Get array length
-            if let Some(len_val) = ctx.get_property_str(iter_val, b"length") {
-                if let Some(len) = len_val.int32() {
-                    // Iterate over array elements
-                    let mut last = Value::UNDEFINED;
-                    let global = js_get_global_object(ctx);
-
-                    for i in 0..len {
-                        // Get element at index
-                        let elem = js_get_property_uint32(ctx, iter_val, i as u32);
-                        
-                        // Set the loop variable
-                        js_set_property_str(ctx, global, var_name, elem);
-
-                        // Execute body
-                        last = eval_function_body(ctx, body)?;
-
-                        // Check for loop control
-                        match ctx.get_loop_control() {
-                            crate::context::LoopControl::Break => {
-                                ctx.set_loop_control(crate::context::LoopControl::None);
-                                break;
-                            }
-                            crate::context::LoopControl::Continue => {
-                                ctx.set_loop_control(crate::context::LoopControl::None);
-                                continue;
-                            }
-                            crate::context::LoopControl::Return => {
-                                // Propagate return up
-                                return Some(last);
-                            }
-                            crate::context::LoopControl::None => {}
-                        }
-                    }
-
-                    return Some(last);
-                }
-            }
-        }
-    }
-
-    // Not an array or not iterable, return undefined
-    Some(Value::UNDEFINED)
-}
-
-fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, after_header: &str) -> Option<JSValue> {
-    // Parse: var_name in object_expr
-    let var_part = header[..in_pos].trim();
-    let obj_expr = header[in_pos + 4..].trim();
-
-    // Handle "var x" or just "x"
-    let var_name = if var_part.starts_with("var ") {
-        var_part[4..].trim()
-    } else {
-        var_part
-    };
-
-    // Parse body block
-    if !after_header.starts_with('{') {
-        return None;
-    }
-    let (body, _) = extract_braces(after_header)?;
-
-    // Evaluate the object expression
-    let obj_val = eval_expr(ctx, obj_expr)?;
-
-    // Get the keys of the object
-    let keys = get_object_keys(ctx, obj_val)?;
-
-    // Iterate over keys
-    let mut last = Value::UNDEFINED;
-    let global = js_get_global_object(ctx);
-
-    for key in keys {
-        // Set the loop variable
-        let key_val = js_new_string(ctx, &key);
-        js_set_property_str(ctx, global, var_name, key_val);
-
-        // Execute body
-        last = eval_function_body(ctx, body)?;
-
-        // Check for loop control
-        match ctx.get_loop_control() {
-            crate::context::LoopControl::Break => {
-                ctx.set_loop_control(crate::context::LoopControl::None);
-                break;
-            }
-            crate::context::LoopControl::Continue => {
-                ctx.set_loop_control(crate::context::LoopControl::None);
-                // Continue to next iteration
-            }
-            crate::context::LoopControl::Return => {
-                // Propagate return up
-                break;
-            }
-            crate::context::LoopControl::None => {}
-        }
-    }
-
-    Some(last)
-}
-
-fn get_object_keys(ctx: &mut JSContextImpl, obj: JSValue) -> Option<Vec<String>> {
-    // Check if it's an array - return indices as strings
-    if let Some(class_id) = ctx.object_class_id(obj) {
-        if class_id == JSObjectClassEnum::Array as u32 {
-            let len_val = js_get_property_str(ctx, obj, "length");
-            let len = len_val.int32().unwrap_or(0);
-            let mut keys = Vec::new();
-            for i in 0..len {
-                keys.push(i.to_string());
-            }
-            return Some(keys);
-        }
-    }
-
-    // For objects, use the existing object_keys method
-    ctx.object_keys(obj)
-}
-
-
-
+// Parsing helpers live in parser.rs and are imported above.
 
 
 pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
@@ -5219,10 +5012,6 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 // - extract_braces() - Extract content within {}
 
 
-
-fn is_ident_start(b: u8) -> bool {
-    (b'A'..=b'Z').contains(&b) || (b'a'..=b'z').contains(&b) || b == b'_'
-}
 
 // ============================================================================
 // C FUNCTION CALL INFRASTRUCTURE

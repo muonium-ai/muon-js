@@ -4,7 +4,6 @@
 //! It handles variable declarations, assignments, operators, control flow, and built-in methods.
 
 use crate::api::*;
-use crate::context::*;
 use crate::types::*;
 use crate::value::*;
 use crate::helpers::*;
@@ -123,12 +122,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 /// Due to its size (~2600 lines with built-in method handlers), it remains in api.rs
 /// and is re-exported here for use by other modules.
 pub use crate::api::eval_expr;
-
-/// Execute a function body (handles control flow statements)
-pub use crate::api::eval_function_body;
-
-/// Execute a program (top-level statements including function declarations)
-pub use crate::api::eval_program;
 
 /// Check if a value is truthy in JavaScript semantics
 pub fn is_truthy(val: JSValue) -> bool {
