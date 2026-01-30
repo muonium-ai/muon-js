@@ -1984,35 +1984,63 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_concat__" {
-                        if args.len() == 1 {
-                            if let Some(class_id) = ctx.object_class_id(args[0]) {
+                        // Ported from mquickjs.c:14347-14395 js_array_concat
+                        // Calculate total length needed
+                        let this_len_val = js_get_property_str(ctx, this_val, "length");
+                        let mut total_len = this_len_val.int32().unwrap_or(0);
+                        
+                        for arg in &args {
+                            if let Some(class_id) = ctx.object_class_id(*arg) {
                                 if class_id == JSObjectClassEnum::Array as u32 {
-                                    let arr = js_new_array(ctx, 0);
-                                    let len1_val = js_get_property_str(ctx, this_val, "length");
-                                    let len2_val = js_get_property_str(ctx, args[0], "length");
-                                    if let (Some(len1), Some(len2)) = (len1_val.int32(), len2_val.int32()) {
-                                        let mut idx = 0u32;
-                                        for i in 0..len1 {
-                                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
-                                            js_set_property_uint32(ctx, arr, idx, elem);
-                                            idx += 1;
-                                        }
-                                        for i in 0..len2 {
-                                            let elem = js_get_property_uint32(ctx, args[0], i as u32);
-                                            js_set_property_uint32(ctx, arr, idx, elem);
-                                            idx += 1;
-                                        }
-                                    }
-                                    val = arr;
+                                    let arg_len_val = js_get_property_str(ctx, *arg, "length");
+                                    total_len += arg_len_val.int32().unwrap_or(0);
                                 } else {
-                                    val = this_val;
+                                    total_len += 1;
                                 }
                             } else {
-                                val = this_val;
+                                total_len += 1;
                             }
-                        } else {
-                            val = this_val;
                         }
+                        
+                        // Create new array and fill it
+                        let arr = js_new_array(ctx, total_len);
+                        let mut pos = 0u32;
+                        
+                        // First add this_val (the original array)
+                        if let Some(this_len) = this_len_val.int32() {
+                            for i in 0..this_len {
+                                let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                js_set_property_uint32(ctx, arr, pos, elem);
+                                pos += 1;
+                            }
+                        }
+                        
+                        // Then add all arguments
+                        for arg in &args {
+                            if let Some(class_id) = ctx.object_class_id(*arg) {
+                                if class_id == JSObjectClassEnum::Array as u32 {
+                                    // It's an array - add all elements
+                                    let arg_len_val = js_get_property_str(ctx, *arg, "length");
+                                    if let Some(arg_len) = arg_len_val.int32() {
+                                        for i in 0..arg_len {
+                                            let elem = js_get_property_uint32(ctx, *arg, i as u32);
+                                            js_set_property_uint32(ctx, arr, pos, elem);
+                                            pos += 1;
+                                        }
+                                    }
+                                } else {
+                                    // Not an array - add as single element
+                                    js_set_property_uint32(ctx, arr, pos, *arg);
+                                    pos += 1;
+                                }
+                            } else {
+                                // Not an object - add as single element
+                                js_set_property_uint32(ctx, arr, pos, *arg);
+                                pos += 1;
+                            }
+                        }
+                        
+                        val = arr;
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
