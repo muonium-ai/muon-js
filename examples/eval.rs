@@ -18,20 +18,22 @@ fn main() {
     
     if val.is_exception() {
         println!("Exception");
-    } else if let Some(n) = val.int32() {
-        println!("{}", n);
     } else if val.is_bool() {
         println!("{}", val == muon_js::JSValue::TRUE);
     } else if val.is_null() {
         println!("null");
     } else if val.is_undefined() {
         println!("undefined");
+    } else if let Some(n) = val.int32() {
+        println!("{}", n);
     } else if let Some(bytes) = ctx.string_bytes(val) {
         if let Ok(s) = std::str::from_utf8(bytes) {
             println!("{}", s);
         } else {
             println!("Result: {:?}", val);
         }
+    } else if let Ok(n) = muon_js::js_to_number(&mut ctx, val) {
+        println!("{}", n);
     } else {
         println!("Result: {:?}", val);
     }

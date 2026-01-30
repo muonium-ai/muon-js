@@ -1332,6 +1332,27 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         // Return a special marker for Math object
         return Some(js_new_string(ctx, "__builtin_Math__"));
     }
+    if s == "Object" {
+        return Some(js_new_string(ctx, "__builtin_Object__"));
+    }
+    if s == "parseInt" {
+        return Some(js_new_string(ctx, "__builtin_parseInt__"));
+    }
+    if s == "parseFloat" {
+        return Some(js_new_string(ctx, "__builtin_parseFloat__"));
+    }
+    if s == "isNaN" {
+        return Some(js_new_string(ctx, "__builtin_isNaN__"));
+    }
+    if s == "isFinite" {
+        return Some(js_new_string(ctx, "__builtin_isFinite__"));
+    }
+    if s == "NaN" {
+        return Some(number_to_value(ctx, f64::NAN));
+    }
+    if s == "Infinity" {
+        return Some(number_to_value(ctx, f64::INFINITY));
+    }
     if is_simple_string_literal(s) {
         let inner = &s[1..s.len() - 1];
         return Some(js_new_string(ctx, inner));
@@ -2016,6 +2037,124 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_string_repeat__" {
+                        if args.len() == 1 {
+                            if let Some(count) = args[0].int32() {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                        let repeated = s.repeat(count.max(0) as usize);
+                                        val = js_new_string(ctx, &repeated);
+                                    } else {
+                                        val = this_val;
+                                    }
+                                } else {
+                                    val = this_val;
+                                }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_parseInt__" {
+                        if args.len() >= 1 {
+                            if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                                if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                    if let Ok(n) = s.trim().parse::<i32>() {
+                                        val = Value::from_int32(n);
+                                    } else {
+                                        val = number_to_value(ctx, f64::NAN);
+                                    }
+                                } else {
+                                    val = number_to_value(ctx, f64::NAN);
+                                }
+                            } else if let Some(n) = args[0].int32() {
+                                val = Value::from_int32(n);
+                            } else {
+                                val = number_to_value(ctx, f64::NAN);
+                            }
+                        } else {
+                            val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_parseFloat__" {
+                        if args.len() >= 1 {
+                            if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                                if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                    if let Ok(n) = s.trim().parse::<f64>() {
+                                        val = number_to_value(ctx, n);
+                                    } else {
+                                        val = number_to_value(ctx, f64::NAN);
+                                    }
+                                } else {
+                                    val = number_to_value(ctx, f64::NAN);
+                                }
+                            } else if let Ok(n) = js_to_number(ctx, args[0]) {
+                                val = number_to_value(ctx, n);
+                            } else {
+                                val = number_to_value(ctx, f64::NAN);
+                            }
+                        } else {
+                            val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_isNaN__" {
+                        if args.len() >= 1 {
+                            if let Ok(n) = js_to_number(ctx, args[0]) {
+                                val = Value::new_bool(n.is_nan());
+                            } else {
+                                val = Value::TRUE;
+                            }
+                        } else {
+                            val = Value::TRUE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_isFinite__" {
+                        if args.len() >= 1 {
+                            if let Ok(n) = js_to_number(ctx, args[0]) {
+                                val = Value::new_bool(n.is_finite());
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_pow__" {
+                        if args.len() == 2 {
+                            let base = js_to_number(ctx, args[0]).ok()?;
+                            let exp = js_to_number(ctx, args[1]).ok()?;
+                            val = number_to_value(ctx, base.powf(exp));
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_keys__" {
+                        if args.len() == 1 {
+                            let _obj = args[0];
+                            let arr = js_new_array(ctx, 0);
+                            // This is a simplified version - real JS would iterate all enumerable properties
+                            // For now, just return an empty array since we don't have a way to iterate object keys
+                            val = arr;
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     }
                 }
             }
@@ -2212,6 +2351,15 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
             
+            // String.repeat
+            if name == "repeat" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_repeat__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
             // Array.concat
             if name == "concat" {
                 if let Some(class_id) = ctx.object_class_id(val) {
@@ -2293,6 +2441,20 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "sqrt" => {
                                 val = js_new_string(ctx, "__builtin_Math_sqrt__");
+                                rest = next;
+                                continue;
+                            }
+                            "pow" => {
+                                val = js_new_string(ctx, "__builtin_Math_pow__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_Object__" {
+                        match name {
+                            "keys" => {
+                                val = js_new_string(ctx, "__builtin_Object_keys__");
                                 rest = next;
                                 continue;
                             }
