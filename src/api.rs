@@ -2046,6 +2046,22 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_fill__" {
+                        if args.len() >= 1 {
+                            let fill_val = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            if let Some(len) = len_val.int32() {
+                                for i in 0..len {
+                                    js_set_property_uint32(ctx, this_val, i as u32, fill_val);
+                                }
+                            }
+                            val = this_val;
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_includes__" {
                         if args.len() == 1 {
                             let len_val = js_get_property_str(ctx, this_val, "length");
@@ -2174,6 +2190,105 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             if let Ok(s) = core::str::from_utf8(str_bytes) {
                                 let trimmed = s.trim_end().to_string();
                                 val = js_new_string(ctx, &trimmed);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_padStart__" {
+                        if args.len() >= 1 {
+                            if let Some(target_len) = args[0].int32() {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                        let pad_str = if args.len() >= 2 {
+                                            if let Some(pad_bytes) = ctx.string_bytes(args[1]) {
+                                                core::str::from_utf8(pad_bytes).unwrap_or(" ")
+                                            } else {
+                                                " "
+                                            }
+                                        } else {
+                                            " "
+                                        };
+                                        
+                                        let current_len = s.len();
+                                        if target_len as usize > current_len {
+                                            let pad_len = target_len as usize - current_len;
+                                            let mut result = String::new();
+                                            let pad_str_len = pad_str.len();
+                                            if pad_str_len > 0 {
+                                                let full_repeats = pad_len / pad_str_len;
+                                                let remainder = pad_len % pad_str_len;
+                                                for _ in 0..full_repeats {
+                                                    result.push_str(pad_str);
+                                                }
+                                                if remainder > 0 {
+                                                    result.push_str(&pad_str[..remainder]);
+                                                }
+                                            }
+                                            result.push_str(s);
+                                            val = js_new_string(ctx, &result);
+                                        } else {
+                                            val = this_val;
+                                        }
+                                    } else {
+                                        val = this_val;
+                                    }
+                                } else {
+                                    val = this_val;
+                                }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_padEnd__" {
+                        if args.len() >= 1 {
+                            if let Some(target_len) = args[0].int32() {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                        let pad_str = if args.len() >= 2 {
+                                            if let Some(pad_bytes) = ctx.string_bytes(args[1]) {
+                                                core::str::from_utf8(pad_bytes).unwrap_or(" ")
+                                            } else {
+                                                " "
+                                            }
+                                        } else {
+                                            " "
+                                        };
+                                        
+                                        let current_len = s.len();
+                                        if target_len as usize > current_len {
+                                            let pad_len = target_len as usize - current_len;
+                                            let mut result = String::from(s);
+                                            let pad_str_len = pad_str.len();
+                                            if pad_str_len > 0 {
+                                                let full_repeats = pad_len / pad_str_len;
+                                                let remainder = pad_len % pad_str_len;
+                                                for _ in 0..full_repeats {
+                                                    result.push_str(pad_str);
+                                                }
+                                                if remainder > 0 {
+                                                    result.push_str(&pad_str[..remainder]);
+                                                }
+                                            }
+                                            val = js_new_string(ctx, &result);
+                                        } else {
+                                            val = this_val;
+                                        }
+                                    } else {
+                                        val = this_val;
+                                    }
+                                } else {
+                                    val = this_val;
+                                }
                             } else {
                                 val = this_val;
                             }
@@ -2571,6 +2686,24 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
             
+            // String.padStart
+            if name == "padStart" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_padStart__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.padEnd
+            if name == "padEnd" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_padEnd__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
             // Array.concat
             if name == "concat" {
                 if let Some(class_id) = ctx.object_class_id(val) {
@@ -2587,6 +2720,17 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_lastIndexOf__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.fill
+            if name == "fill" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_fill__");
                         rest = next;
                         continue;
                     }
