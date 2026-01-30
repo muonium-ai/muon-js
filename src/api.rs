@@ -665,6 +665,9 @@ pub fn js_load_bytecode(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
     if hdr.base_addr != expected_base {
         return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "bytecode not relocated");
     }
+    if !_ctx.add_rom_atom_table(hdr.unique_strings) {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "too many rom atom tables");
+    }
     hdr.main_func
 }
 
@@ -678,6 +681,7 @@ pub fn js_set_c_function_table(_ctx: &mut JSContextImpl, table: &[JSCFunctionDef
 
 pub fn js_set_stdlib_def(_ctx: &mut JSContextImpl, def: &JSSTDLibraryDef, cfunc_len: usize) {
     _ctx.set_c_function_table(def.c_function_table, cfunc_len);
+    _ctx.set_stdlib_def(def);
 }
 
 pub fn js_register_global_function(

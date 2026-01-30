@@ -1,7 +1,8 @@
-use crate::types::JSObjectClassEnum;
+use crate::types::{JSObjectClassEnum, JSWord, JSSTDLibraryDef};
 use crate::value::Value;
 
 const PROTO_SEARCH_LIMIT: usize = 64;
+const MAX_ROM_ATOM_TABLES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopControl {
@@ -34,6 +35,13 @@ pub struct Context {
     return_value: Value,
     gc_objects: Vec<*mut u8>,
     gc_marks: Vec<*mut u8>,
+    rom_atom_tables: Vec<Value>,
+    stdlib_table: *const JSWord,
+    stdlib_table_len: u32,
+    stdlib_table_align: u32,
+    stdlib_sorted_atoms_offset: u32,
+    stdlib_global_object_offset: u32,
+    stdlib_class_count: u32,
 }
 
 impl Context {
@@ -60,6 +68,13 @@ impl Context {
             loop_control: LoopControl::None,
             gc_objects: Vec::new(),
             gc_marks: Vec::new(),
+            rom_atom_tables: Vec::new(),
+            stdlib_table: core::ptr::null(),
+            stdlib_table_len: 0,
+            stdlib_table_align: 0,
+            stdlib_sorted_atoms_offset: 0,
+            stdlib_global_object_offset: 0,
+            stdlib_class_count: 0,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -130,6 +145,23 @@ impl Context {
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
         self.c_function_table = ptr;
         self.c_function_table_len = len;
+    }
+
+    pub fn set_stdlib_def(&mut self, def: &JSSTDLibraryDef) {
+        self.stdlib_table = def.stdlib_table;
+        self.stdlib_table_len = def.stdlib_table_len;
+        self.stdlib_table_align = def.stdlib_table_align;
+        self.stdlib_sorted_atoms_offset = def.sorted_atoms_offset;
+        self.stdlib_global_object_offset = def.global_object_offset;
+        self.stdlib_class_count = def.class_count;
+    }
+
+    pub fn add_rom_atom_table(&mut self, table: Value) -> bool {
+        if self.rom_atom_tables.len() >= MAX_ROM_ATOM_TABLES {
+            return false;
+        }
+        self.rom_atom_tables.push(table);
+        true
     }
 
     pub fn set_array_proto_methods(&mut self, push: Value, pop: Value) {
