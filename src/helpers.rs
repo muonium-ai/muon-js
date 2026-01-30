@@ -61,31 +61,15 @@ pub fn contains_arith_op(s: &str) -> bool {
         match b {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
-            b'+' | b'-' | b'*' | b'/' | b'%' => {
-                if depth == 0 {
-                    if i > 0 && i + 1 < bytes.len() {
-                        let prev = bytes[i - 1];
-                        let next = bytes[i + 1];
-                        if b == b'+' && prev == b'+' {
-                            continue;
-                        }
-                        if b == b'+' && next == b'+' {
-                            continue;
-                        }
-                        if b == b'-' && prev == b'-' {
-                            continue;
-                        }
-                        if b == b'-' && next == b'-' {
-                            continue;
-                        }
-                        if b == b'*' && next == b'*' {
-                            continue;
-                        }
-                        return true;
-                    }
-                }
-            }
             _ => {}
+        }
+        if depth == 0 {
+            match b {
+                b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'=' | b'!' | b'&' | b'|' | b'^' | b'~' => {
+                    return true;
+                }
+                _ => {}
+            }
         }
     }
     false

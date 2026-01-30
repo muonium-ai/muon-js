@@ -316,6 +316,72 @@ impl Context {
         self.get_property_atom(val, atom, name)
     }
 
+    pub fn has_property_str(&mut self, val: Value, name: &[u8]) -> bool {
+        if name == b"length" {
+            if self.string_bytes(val).is_some() {
+                return true;
+            }
+        }
+        if let Some(idx) = parse_index(name) {
+            return self.has_property_index(val, idx);
+        }
+        let atom = match self.intern_string(name) {
+            Some(atom) => atom,
+            None => return false,
+        };
+        let mut cur = val;
+        let mut depth = 0;
+        while depth < PROTO_SEARCH_LIMIT {
+            let obj = match self.object_ptr(cur) {
+                Some(obj) => obj,
+                None => return false,
+            };
+            unsafe {
+                if (*obj).tag == HEAP_TAG_ARRAY && name == b"length" {
+                    return true;
+                }
+                if self.find_prop_value(obj, PROP_KEY_ATOM, atom).is_some() {
+                    return true;
+                }
+                let proto = (*obj).proto;
+                if proto.is_null() || proto.is_undefined() {
+                    break;
+                }
+                cur = proto;
+            }
+            depth += 1;
+        }
+        false
+    }
+
+    fn has_property_index(&mut self, val: Value, idx: u32) -> bool {
+        let mut cur = val;
+        let mut depth = 0;
+        while depth < PROTO_SEARCH_LIMIT {
+            let obj = match self.object_ptr(cur) {
+                Some(obj) => obj,
+                None => return false,
+            };
+            unsafe {
+                if (*obj).tag == HEAP_TAG_ARRAY {
+                    if idx < (*obj).array_len {
+                        return true;
+                    }
+                }
+                if self.find_prop_value(obj, PROP_KEY_INDEX, idx).is_some() {
+                    return true;
+                }
+                let proto = (*obj).proto;
+                if proto.is_null() || proto.is_undefined() {
+                    break;
+                }
+                cur = proto;
+            }
+            depth += 1;
+        }
+        false
+    }
+
     fn get_property_atom(&mut self, val: Value, atom: u32, name: &[u8]) -> Option<Value> {
         let mut cur = val;
         let mut depth = 0;

@@ -30,51 +30,60 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "false" {
         return Some(Value::FALSE);
     }
+    let global = js_get_global_object(ctx);
+    let mut builtin_or_global = |name: &str, marker: &str| -> JSValue {
+        let val = js_get_property_str(ctx, global, name);
+        if val.is_undefined() && !ctx.has_property_str(global, name.as_bytes()) {
+            js_new_string(ctx, marker)
+        } else {
+            val
+        }
+    };
     if s == "Math" {
-        return Some(js_new_string(ctx, "__builtin_Math__"));
+        return Some(builtin_or_global("Math", "__builtin_Math__"));
     }
     if s == "Object" {
-        return Some(js_new_string(ctx, "__builtin_Object__"));
+        return Some(builtin_or_global("Object", "__builtin_Object__"));
     }
     if s == "Array" {
-        return Some(js_new_string(ctx, "__builtin_Array__"));
+        return Some(builtin_or_global("Array", "__builtin_Array__"));
     }
     if s == "JSON" {
-        return Some(js_new_string(ctx, "__builtin_JSON__"));
+        return Some(builtin_or_global("JSON", "__builtin_JSON__"));
     }
     if s == "Number" {
-        return Some(js_new_string(ctx, "__builtin_Number__"));
+        return Some(builtin_or_global("Number", "__builtin_Number__"));
     }
     if s == "String" {
-        return Some(js_new_string(ctx, "__builtin_String__"));
+        return Some(builtin_or_global("String", "__builtin_String__"));
     }
     if s == "parseInt" {
-        return Some(js_new_string(ctx, "__builtin_parseInt__"));
+        return Some(builtin_or_global("parseInt", "__builtin_parseInt__"));
     }
     if s == "parseFloat" {
-        return Some(js_new_string(ctx, "__builtin_parseFloat__"));
+        return Some(builtin_or_global("parseFloat", "__builtin_parseFloat__"));
     }
     if s == "isNaN" {
-        return Some(js_new_string(ctx, "__builtin_isNaN__"));
+        return Some(builtin_or_global("isNaN", "__builtin_isNaN__"));
     }
     if s == "isFinite" {
-        return Some(js_new_string(ctx, "__builtin_isFinite__"));
+        return Some(builtin_or_global("isFinite", "__builtin_isFinite__"));
     }
     // Error constructors
     if s == "Error" {
-        return Some(js_new_string(ctx, "__builtin_Error__"));
+        return Some(builtin_or_global("Error", "__builtin_Error__"));
     }
     if s == "TypeError" {
-        return Some(js_new_string(ctx, "__builtin_TypeError__"));
+        return Some(builtin_or_global("TypeError", "__builtin_TypeError__"));
     }
     if s == "ReferenceError" {
-        return Some(js_new_string(ctx, "__builtin_ReferenceError__"));
+        return Some(builtin_or_global("ReferenceError", "__builtin_ReferenceError__"));
     }
     if s == "SyntaxError" {
-        return Some(js_new_string(ctx, "__builtin_SyntaxError__"));
+        return Some(builtin_or_global("SyntaxError", "__builtin_SyntaxError__"));
     }
     if s == "RangeError" {
-        return Some(js_new_string(ctx, "__builtin_RangeError__"));
+        return Some(builtin_or_global("RangeError", "__builtin_RangeError__"));
     }
     if s == "NaN" {
         return Some(number_to_value(ctx, f64::NAN));
@@ -99,7 +108,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return eval_expr(ctx, inner);
     }
     if is_identifier(s) {
-        let global = js_get_global_object(ctx);
         let v = js_get_property_str(ctx, global, s);
         return Some(v);
     }
