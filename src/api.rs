@@ -1505,6 +1505,38 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 continue;
             }
             
+            // Check for built-in method markers
+            if let Some(bytes) = ctx.string_bytes(val) {
+                if let Ok(marker) = core::str::from_utf8(bytes) {
+                    if marker == "__builtin_array_pop__" {
+                        val = js_array_pop(ctx, this_val);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_charAt__" {
+                        if args.len() == 1 {
+                            if let Some(idx) = args[0].int32() {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    if idx >= 0 && (idx as usize) < str_bytes.len() {
+                                        let ch = str_bytes[idx as usize];
+                                        // Create a vector to own the byte
+                                        let mut ch_buf = [0u8; 4];
+                                        ch_buf[0] = ch;
+                                        let ch_str = core::str::from_utf8(&ch_buf[..1]).unwrap_or("");
+                                        val = js_new_string(ctx, ch_str);
+                                    } else {
+                                        val = js_new_string(ctx, "");
+                                    }
+                                    this_val = Value::UNDEFINED;
+                                    rest = next;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             // Otherwise use the standard call mechanism
             for arg in args.iter().rev() {
                 js_push_arg(ctx, *arg);
@@ -1519,6 +1551,50 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         if rest_trim.starts_with('.') {
             let (name, next) = parse_identifier(&rest_trim[1..])?;
             this_val = val;
+            
+            // Handle special properties and methods
+            // Array.length
+            if name == "length" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        // Get array length through a public method
+                        let len_val = js_get_property_str(ctx, val, "length");
+                        if !len_val.is_undefined() {
+                            val = len_val;
+                            rest = next;
+                            continue;
+                        }
+                    }
+                }
+                // String.length
+                if let Some(bytes) = ctx.string_bytes(val) {
+                    val = Value::from_int32(bytes.len() as i32);
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // Array.pop - create a callable wrapper
+            if name == "pop" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        // Set val to a special marker that we'll detect in the call
+                        val = js_new_string(ctx, "__builtin_array_pop__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // String.charAt - create a callable wrapper
+            if name == "charAt" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_charAt__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
             val = js_get_property_str(ctx, val, name);
             rest = next;
             continue;
