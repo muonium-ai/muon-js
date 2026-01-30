@@ -6,6 +6,15 @@
 
 Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquickjs), a tiny JavaScript engine designed for embedded systems. This document tracks what has been ported and what remains.
 
+### mquickjs Reference
+- **Upstream**: https://github.com/bellard/mquickjs (submodule at `vendor/mquickjs`)
+- **Official tests**: 45 test functions across ~3,000 lines
+  - `test_language.js` (355 lines) - operators, control flow
+  - `test_builtin.js` (875 lines) - String, Array, Math, Number, JSON, RegExp
+  - `test_loop.js` (395 lines) - loops, switch, try/catch
+  - `test_closure.js` (106 lines) - closure semantics
+  - Plus: mandelbrot, microbench, test_rect
+
 ---
 
 ## ✅ What's Been Ported
@@ -301,6 +310,16 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 
 ## 📚 References
 
-- **mquickjs upstream**: https://github.com/bellard/mquickjs
+- **mquickjs upstream**: https://github.com/bellard/mquickjs (submodule at `vendor/mquickjs/`)
 - **Commit history**: See git log for incremental feature additions
-- **Integration tests**: `tests/integration/*.js`
+- **Integration tests**: `tests/integration/*.js` (10 tests, 8 passing)
+- **mquickjs official tests**: `vendor/mquickjs/tests/` (45 test functions, ~3k lines)
+
+### Next: Run mquickjs Tests Against muon-js
+
+To measure true compatibility, we should:
+1. Run `vendor/mquickjs/tests/test_language.js` → Test operators, control flow
+2. Run `vendor/mquickjs/tests/test_builtin.js` → Test String/Array/Math methods
+3. Run `vendor/mquickjs/tests/test_loop.js` → Test while/for/switch/try-catch
+
+Expected pass rate: **~20-30%** (we have basic features but missing try/catch, switch, bitwise ops, etc.)
