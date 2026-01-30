@@ -231,6 +231,16 @@ mod tests {
     }
 
     #[test]
+    fn gc_smoke() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let obj = JS_NewObject(&mut ctx);
+        let val = JS_NewString(&mut ctx, "data");
+        let _ = JS_SetPropertyStr(&mut ctx, obj, "k", val);
+        JS_GC(&mut ctx);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

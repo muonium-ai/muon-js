@@ -349,7 +349,9 @@ pub fn js_eval(
     Value::EXCEPTION
 }
 
-pub fn js_gc(_ctx: &mut JSContextImpl) {}
+pub fn js_gc(_ctx: &mut JSContextImpl) {
+    _ctx.gc_collect();
+}
 
 pub fn js_new_string_len(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
     if let Some(header) = _ctx.alloc_string(_buf) {

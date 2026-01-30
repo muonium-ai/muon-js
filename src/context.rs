@@ -32,6 +32,8 @@ pub struct Context {
     array_pop_fn: Value,
     loop_control: LoopControl,
     return_value: Value,
+    gc_objects: Vec<*mut u8>,
+    gc_marks: Vec<*mut u8>,
 }
 
 impl Context {
@@ -56,6 +58,8 @@ impl Context {
             array_push_fn: Value::UNDEFINED,
             array_pop_fn: Value::UNDEFINED,
             loop_control: LoopControl::None,
+            gc_objects: Vec::new(),
+            gc_marks: Vec::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -202,9 +206,32 @@ impl Context {
         self.mem.used()
     }
 
+    pub fn gc_collect(&mut self) {
+        self.gc_clear_marks();
+        let mut stack = Vec::new();
+        self.gc_mark_value(self.global_object, &mut stack);
+        let call_stack = self.call_stack.clone();
+        for val in call_stack {
+            self.gc_mark_value(val, &mut stack);
+        }
+        self.gc_mark_value(self.last_exception, &mut stack);
+        self.gc_mark_value(self.return_value, &mut stack);
+        self.gc_mark_value(self.object_proto, &mut stack);
+        self.gc_mark_value(self.array_proto, &mut stack);
+        self.gc_mark_value(self.array_push_fn, &mut stack);
+        self.gc_mark_value(self.array_pop_fn, &mut stack);
+        self.gc_mark_gcref(&mut stack);
+        self.atoms.mark_live(&mut stack);
+
+        while let Some(val) = stack.pop() {
+            self.gc_mark_value(val, &mut stack);
+        }
+    }
+
     pub fn alloc_string(&mut self, bytes: &[u8]) -> Option<*mut u8> {
         let total = core::mem::size_of::<StringHeader>() + bytes.len() + 1;
         let raw = self.mem.alloc(total, core::mem::align_of::<usize>())?;
+        self.gc_objects.push(raw);
         unsafe {
             let header = raw as *mut StringHeader;
             (*header).tag = HEAP_TAG_STRING;
@@ -576,6 +603,7 @@ impl Context {
         let raw = self
             .mem
             .alloc(core::mem::size_of::<FloatHeader>(), core::mem::align_of::<f64>())?;
+        self.gc_objects.push(raw);
         unsafe {
             let header = raw as *mut FloatHeader;
             (*header).tag = HEAP_TAG_FLOAT;
@@ -713,6 +741,14 @@ impl AtomTable {
         self.entries.get_mut(id as usize)
     }
 
+    fn mark_live(&self, stack: &mut Vec<Value>) {
+        for entry in &self.entries {
+            if entry.ref_count > 0 && !entry.bytes.is_null() {
+                stack.push(Value::from_ptr(entry.bytes));
+            }
+        }
+    }
+
     fn add_ref(&mut self, id: u32) -> bool {
         if let Some(entry) = self.get_mut(id) {
             entry.ref_count = entry.ref_count.saturating_add(1);
@@ -783,6 +819,7 @@ struct Property {
 impl Context {
     fn alloc_object(&mut self, class_id: u32) -> Option<*mut HeapObject> {
         let raw = self.mem.alloc(core::mem::size_of::<HeapObject>(), core::mem::align_of::<usize>())?;
+        self.gc_objects.push(raw);
         unsafe {
             let obj = raw as *mut HeapObject;
             let tag = if class_id == JSObjectClassEnum::Array as u32 {
@@ -960,5 +997,63 @@ impl Context {
         (*obj).elements = new_elems;
         (*obj).array_cap = new_cap as u32;
         Ok(())
+    }
+
+    fn gc_clear_marks(&mut self) {
+        self.gc_marks.clear();
+    }
+
+    fn gc_mark_value(&mut self, val: Value, stack: &mut Vec<Value>) {
+        if !val.is_ptr() {
+            return;
+        }
+        let ptr = val.as_ptr();
+        if ptr.is_null() {
+            return;
+        }
+        if self.gc_marks.iter().any(|&p| p == ptr) {
+            return;
+        }
+        self.gc_marks.push(ptr);
+        let tag = unsafe { *(ptr as *const u32) };
+        match tag {
+            HEAP_TAG_STRING => {
+                // Strings have no children.
+            }
+            HEAP_TAG_FLOAT => {
+                // Floats have no children.
+            }
+            HEAP_TAG_OBJECT | HEAP_TAG_ARRAY => {
+                let obj = ptr as *mut HeapObject;
+                unsafe {
+                    stack.push((*obj).proto);
+                    if !(*obj).func_params.is_undefined() {
+                        stack.push((*obj).func_params);
+                    }
+                    let mut cur = (*obj).prop_head;
+                    while !cur.is_null() {
+                        stack.push((*cur).value);
+                        cur = (*cur).next;
+                    }
+                    if (*obj).tag == HEAP_TAG_ARRAY && !(*obj).elements.is_null() {
+                        let len = (*obj).array_len as usize;
+                        for i in 0..len {
+                            stack.push(*(*obj).elements.add(i));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn gc_mark_gcref(&mut self, stack: &mut Vec<Value>) {
+        let mut cur = self.gcref_head;
+        while !cur.is_null() {
+            unsafe {
+                stack.push((*cur).val);
+                cur = (*cur).prev;
+            }
+        }
     }
 }
