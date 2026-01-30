@@ -1845,6 +1845,177 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_string_trim__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let trimmed = s.trim().to_string();
+                                val = js_new_string(ctx, &trimmed);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_startsWith__" {
+                        if args.len() == 1 {
+                            if let (Some(str_bytes), Some(prefix_bytes)) = (ctx.string_bytes(this_val), ctx.string_bytes(args[0])) {
+                                if let (Ok(s), Ok(prefix)) = (core::str::from_utf8(str_bytes), core::str::from_utf8(prefix_bytes)) {
+                                    val = Value::new_bool(s.starts_with(prefix));
+                                } else {
+                                    val = Value::FALSE;
+                                }
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_endsWith__" {
+                        if args.len() == 1 {
+                            if let (Some(str_bytes), Some(suffix_bytes)) = (ctx.string_bytes(this_val), ctx.string_bytes(args[0])) {
+                                if let (Ok(s), Ok(suffix)) = (core::str::from_utf8(str_bytes), core::str::from_utf8(suffix_bytes)) {
+                                    val = Value::new_bool(s.ends_with(suffix));
+                                } else {
+                                    val = Value::FALSE;
+                                }
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_includes__" {
+                        if args.len() == 1 {
+                            if let (Some(str_bytes), Some(search_bytes)) = (ctx.string_bytes(this_val), ctx.string_bytes(args[0])) {
+                                if let (Ok(s), Ok(search)) = (core::str::from_utf8(str_bytes), core::str::from_utf8(search_bytes)) {
+                                    val = Value::new_bool(s.contains(search));
+                                } else {
+                                    val = Value::FALSE;
+                                }
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_concat__" {
+                        if args.len() == 1 {
+                            if let Some(class_id) = ctx.object_class_id(args[0]) {
+                                if class_id == JSObjectClassEnum::Array as u32 {
+                                    let arr = js_new_array(ctx, 0);
+                                    let len1_val = js_get_property_str(ctx, this_val, "length");
+                                    let len2_val = js_get_property_str(ctx, args[0], "length");
+                                    if let (Some(len1), Some(len2)) = (len1_val.int32(), len2_val.int32()) {
+                                        let mut idx = 0u32;
+                                        for i in 0..len1 {
+                                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                            js_set_property_uint32(ctx, arr, idx, elem);
+                                            idx += 1;
+                                        }
+                                        for i in 0..len2 {
+                                            let elem = js_get_property_uint32(ctx, args[0], i as u32);
+                                            js_set_property_uint32(ctx, arr, idx, elem);
+                                            idx += 1;
+                                        }
+                                    }
+                                    val = arr;
+                                } else {
+                                    val = this_val;
+                                }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_slice__" {
+                        if args.len() == 2 {
+                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
+                                let len_val = js_get_property_str(ctx, this_val, "length");
+                                if let Some(len) = len_val.int32() {
+                                    let start = start.max(0).min(len) as usize;
+                                    let end = end.max(0).min(len) as usize;
+                                    let arr = js_new_array(ctx, 0);
+                                    let mut idx = 0u32;
+                                    for i in start..end {
+                                        let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                        js_set_property_uint32(ctx, arr, idx, elem);
+                                        idx += 1;
+                                    }
+                                    val = arr;
+                                } else {
+                                    val = js_new_array(ctx, 0);
+                                }
+                            } else {
+                                val = js_new_array(ctx, 0);
+                            }
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_indexOf__" {
+                        if args.len() == 1 {
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            if let Some(len) = len_val.int32() {
+                                let search_val = args[0];
+                                let mut found_idx = -1;
+                                for i in 0..len {
+                                    let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                    if elem.0 == search_val.0 {
+                                        found_idx = i;
+                                        break;
+                                    }
+                                }
+                                val = Value::from_int32(found_idx);
+                            } else {
+                                val = Value::from_int32(-1);
+                            }
+                        } else {
+                            val = Value::from_int32(-1);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_includes__" {
+                        if args.len() == 1 {
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            if let Some(len) = len_val.int32() {
+                                let search_val = args[0];
+                                let mut found = false;
+                                for i in 0..len {
+                                    let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                    if elem.0 == search_val.0 {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                val = Value::new_bool(found);
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     }
                 }
             }
@@ -2002,6 +2173,86 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     val = js_new_string(ctx, "__builtin_string_toLowerCase__");
                     rest = next;
                     continue;
+                }
+            }
+            
+            // String.trim
+            if name == "trim" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_trim__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.startsWith
+            if name == "startsWith" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_startsWith__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.endsWith
+            if name == "endsWith" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_endsWith__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.includes
+            if name == "includes" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_includes__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // Array.concat
+            if name == "concat" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_concat__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.slice
+            if name == "slice" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_slice__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.indexOf
+            if name == "indexOf" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_indexOf__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.includes
+            if name == "includes" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_includes__");
+                        rest = next;
+                        continue;
+                    }
                 }
             }
             
