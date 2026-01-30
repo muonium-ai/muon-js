@@ -113,8 +113,21 @@ mod tests {
 
     #[test]
     fn bytecode_magic_check() {
-        let magic = JS_BYTECODE_MAGIC.to_ne_bytes();
-        let mut buf = [magic[0], magic[1], 0, 0];
+        let mut buf = vec![0u8; core::mem::size_of::<JSBytecodeHeader>()];
+        let hdr = JSBytecodeHeader {
+            magic: JS_BYTECODE_MAGIC,
+            version: JS_BYTECODE_VERSION,
+            base_addr: 0,
+            unique_strings: JSValue::UNDEFINED,
+            main_func: JSValue::UNDEFINED,
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &hdr as *const JSBytecodeHeader as *const u8,
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
+        }
         assert_eq!(JS_IsBytecode(&buf), 1);
         let mut mem = vec![0u8; 64];
         let mut ctx = JS_NewContext(&mut mem);

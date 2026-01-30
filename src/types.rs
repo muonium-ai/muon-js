@@ -136,6 +136,11 @@ pub const JS_EVAL_REGEXP: i32 = 1 << 4;
 pub const JS_EVAL_REGEXP_FLAGS_SHIFT: i32 = 8;
 
 pub const JS_BYTECODE_MAGIC: u16 = 0xacfb;
+pub const JS_BYTECODE_VERSION_32: u16 = 0x0001;
+#[cfg(target_pointer_width = "64")]
+pub const JS_BYTECODE_VERSION: u16 = JS_BYTECODE_VERSION_32 | 0x8000;
+#[cfg(not(target_pointer_width = "64"))]
+pub const JS_BYTECODE_VERSION: u16 = JS_BYTECODE_VERSION_32;
 
 pub const JS_ATOM_NULL: i32 = 0;
 

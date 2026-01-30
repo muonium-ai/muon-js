@@ -110,7 +110,7 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ❌ **Tracing & compacting GC** (mquickjs's key innovation)
 - ✅ **JSGCRef system** (`JS_PushGCRef` / `JS_PopGCRef`) (stubbed, no GC integration yet)
 - ❌ **Bytecode compiler & VM** (stack-based bytecode execution)
-- ❌ **Bytecode persistence** (`JS_SaveBytecode` / `JS_LoadBytecode` / `JS_RelocateBytecode`)
+- ⚠️ **Bytecode persistence** (`JS_PrepareBytecode` / `JS_LoadBytecode` / `JS_RelocateBytecode`): header checks + relocation metadata only; no compiler or VM yet
 - ✅ **Atom table** (string interning + refcounts; no GC integration yet)
 - ✅ **Memory buffer allocation** (fixed-size buffer for embedded systems)
 - ❌ **Standard library ROM generation** (`mquickjs_build.c` tool)

@@ -623,7 +623,7 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
 }
 
 pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
-    if _buf.len() < 2 {
+    if _buf.len() < core::mem::size_of::<JSBytecodeHeader>() {
         return 0;
     }
     let magic = u16::from_ne_bytes([_buf[0], _buf[1]]);
@@ -631,15 +631,39 @@ pub fn js_is_bytecode(_buf: &[u8]) -> JSBool {
 }
 
 pub fn js_relocate_bytecode(_ctx: &mut JSContextImpl, _buf: &mut [u8]) -> i32 {
-    if js_is_bytecode(_buf) != 0 { 0 } else { -1 }
+    let header_size = core::mem::size_of::<JSBytecodeHeader>();
+    if _buf.len() < header_size {
+        return -1;
+    }
+    if js_is_bytecode(_buf) == 0 {
+        return -1;
+    }
+    let hdr = unsafe { &mut *(_buf.as_mut_ptr() as *mut JSBytecodeHeader) };
+    if hdr.version != JS_BYTECODE_VERSION {
+        return -1;
+    }
+    let data_ptr = unsafe { _buf.as_ptr().add(header_size) } as usize;
+    hdr.base_addr = data_ptr;
+    0
 }
 
 pub fn js_load_bytecode(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
-    if js_is_bytecode(_buf) != 0 {
-        Value::UNDEFINED
-    } else {
-        Value::EXCEPTION
+    let header_size = core::mem::size_of::<JSBytecodeHeader>();
+    if _buf.len() < header_size {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "invalid bytecode buffer");
     }
+    if js_is_bytecode(_buf) == 0 {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "invalid bytecode magic");
+    }
+    let hdr = unsafe { &*(_buf.as_ptr() as *const JSBytecodeHeader) };
+    if hdr.version != JS_BYTECODE_VERSION {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "invalid bytecode version");
+    }
+    let expected_base = unsafe { _buf.as_ptr().add(header_size) } as usize;
+    if hdr.base_addr != expected_base {
+        return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "bytecode not relocated");
+    }
+    hdr.main_func
 }
 
 pub fn js_set_log_func(_ctx: &mut JSContextImpl, _write_func: Option<JSWriteFunc>) {
@@ -1193,6 +1217,43 @@ pub fn JS_NewString(ctx: &mut JSContextImpl, buf: &str) -> JSValue {
 
 pub fn JS_NewAtom(ctx: &mut JSContextImpl, buf: &[u8]) -> i32 {
     js_new_atom(ctx, buf)
+}
+
+pub fn JS_PrepareBytecode(
+    _ctx: &mut JSContextImpl,
+    _hdr: &mut JSBytecodeHeader,
+    _data_buf: &mut *const u8,
+    _data_len: &mut u32,
+    _eval_code: JSValue,
+) {
+    // Bytecode compiler not implemented yet.
+    *_data_buf = core::ptr::null();
+    *_data_len = 0;
+}
+
+pub fn JS_RelocateBytecode2(
+    _ctx: &mut JSContextImpl,
+    _hdr: &mut JSBytecodeHeader,
+    _buf: &mut [u8],
+    _new_base_addr: usize,
+    _update_atoms: JSBool,
+) -> i32 {
+    // Bytecode relocation not implemented yet.
+    -1
+}
+
+#[cfg(target_pointer_width = "64")]
+pub fn JS_PrepareBytecode64to32(
+    _ctx: &mut JSContextImpl,
+    _hdr: &mut JSBytecodeHeader32,
+    _data_buf: &mut *const u8,
+    _data_len: &mut u32,
+    _eval_code: JSValue,
+) -> i32 {
+    // Bytecode compiler not implemented yet.
+    *_data_buf = core::ptr::null();
+    *_data_len = 0;
+    -1
 }
 
 pub fn JS_DupAtom(ctx: &mut JSContextImpl, atom: i32) -> i32 {
