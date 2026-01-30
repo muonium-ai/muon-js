@@ -1235,7 +1235,11 @@ fn contains_arith_op(src: &str) -> bool {
                 depth -= 1;
                 last_was_operand = true;
             }
-            b'+' | b'-' | b'*' | b'/' | b'%' if depth == 0 && last_was_operand => {
+            b'+' | b'-' | b'/' | b'%' if depth == 0 && last_was_operand => {
+                return true;
+            }
+            b'*' if depth == 0 && last_was_operand => {
+                // Check for ** (exponentiation) or * (multiplication)
                 return true;
             }
             b'<' | b'>' if depth == 0 => {
@@ -3478,9 +3482,13 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_unary()?;
+        let mut value = self.parse_exponent()?;
         loop {
             self.skip_ws();
+            // Check for ** and skip it (handled by parse_exponent)
+            if self.peek() == Some(b'*') && self.peek_at(1) == Some(b'*') {
+                break;
+            }
             let op = match self.peek() {
                 Some(b'*') => b'*',
                 Some(b'/') => b'/',
@@ -3488,7 +3496,7 @@ impl<'a> ArithParser<'a> {
                 _ => break,
             };
             self.pos += 1;
-            let rhs = self.parse_unary()?;
+            let rhs = self.parse_exponent()?;
             value = if op == b'*' {
                 self.mul_values(value, rhs)?
             } else if op == b'/' {
@@ -3498,6 +3506,19 @@ impl<'a> ArithParser<'a> {
             };
         }
         Ok(value)
+    }
+
+    fn parse_exponent(&mut self) -> Result<JSValue, ()> {
+        let value = self.parse_unary()?;
+        self.skip_ws();
+        // Check for ** operator (right-associative)
+        if self.peek() == Some(b'*') && self.peek_at(1) == Some(b'*') {
+            self.pos += 2;
+            let rhs = self.parse_exponent()?;  // Right-associative recursion
+            self.pow_values(value, rhs)
+        } else {
+            Ok(value)
+        }
     }
 
     fn parse_unary(&mut self) -> Result<JSValue, ()> {
@@ -3762,6 +3783,14 @@ impl<'a> ArithParser<'a> {
         let ln = js_to_number(ctx, left).map_err(|_| ())?;
         let rn = js_to_number(ctx, right).map_err(|_| ())?;
         let val = number_to_value(ctx, ln % rn);
+        if val.is_exception() { Err(()) } else { Ok(val) }
+    }
+
+    fn pow_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln.powf(rn));
         if val.is_exception() { Err(()) } else { Ok(val) }
     }
 
