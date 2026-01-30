@@ -2,6 +2,7 @@
 
 mod helpers;
 mod json;
+mod evals;
 mod api;
 mod context;
 mod types;

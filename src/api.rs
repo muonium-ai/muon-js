@@ -1183,7 +1183,7 @@ fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
     }
 }
 
-fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
+pub fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     let mut parser = ExprParser::new(src.as_bytes());
     let value = parser.parse_expr()?;
     parser.skip_ws();
@@ -1193,7 +1193,7 @@ fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     Ok(value)
 }
 
-fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
+pub fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
     let mut parser = ArithParser::new(ctx, src.as_bytes());
     let value = parser.parse_expr()?;
     parser.skip_ws();
@@ -1413,7 +1413,7 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     None
 }
 
-fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.is_empty() {
         return None;
@@ -4014,7 +4014,7 @@ fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Opt
 }
 
 /// Execute a function body and handle return statements
-fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
+pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
     let stmts = split_statements(body)?;
     let mut last = Value::UNDEFINED;
     
@@ -5069,7 +5069,7 @@ fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Op
     Some(func)
 }
 
-fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let stmts = split_statements(src)?;
     let mut last = Value::UNDEFINED;
     let mut any = false;
