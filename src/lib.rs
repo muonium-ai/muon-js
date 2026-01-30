@@ -3,6 +3,7 @@
 mod helpers;
 mod json;
 mod evals;
+mod parser;
 mod api;
 mod context;
 mod types;
