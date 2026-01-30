@@ -1,0 +1,2 @@
+s = "WORLD"
+s.toLowerCase()

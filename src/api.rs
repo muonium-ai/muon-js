@@ -1653,6 +1653,110 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_join__" {
+                        if args.len() == 1 {
+                            if let Some(sep_bytes) = ctx.string_bytes(args[0]) {
+                                let sep_owned = sep_bytes.to_vec();
+                                let len_val = js_get_property_str(ctx, this_val, "length");
+                                if let Some(len) = len_val.int32() {
+                                    let mut result = String::new();
+                                    for i in 0..len {
+                                        if i > 0 {
+                                            if let Ok(sep) = core::str::from_utf8(&sep_owned) {
+                                                result.push_str(sep);
+                                            }
+                                        }
+                                        let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                        if let Some(n) = elem.int32() {
+                                            result.push_str(&n.to_string());
+                                        } else if let Some(bytes) = ctx.string_bytes(elem) {
+                                            if let Ok(s) = core::str::from_utf8(bytes) {
+                                                result.push_str(s);
+                                            }
+                                        }
+                                    }
+                                    val = js_new_string(ctx, &result);
+                                } else {
+                                    val = js_new_string(ctx, "");
+                                }
+                            } else {
+                                val = js_new_string(ctx, "");
+                            }
+                        } else {
+                            val = js_new_string(ctx, "");
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_reverse__" {
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        if let Some(len) = len_val.int32() {
+                            for i in 0..(len / 2) {
+                                let left = js_get_property_uint32(ctx, this_val, i as u32);
+                                let right = js_get_property_uint32(ctx, this_val, (len - 1 - i) as u32);
+                                js_set_property_uint32(ctx, this_val, i as u32, right);
+                                js_set_property_uint32(ctx, this_val, (len - 1 - i) as u32, left);
+                            }
+                            val = this_val;
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_split__" {
+                        if args.len() == 1 {
+                            if let (Some(str_bytes), Some(sep_bytes)) = (ctx.string_bytes(this_val), ctx.string_bytes(args[0])) {
+                                let str_owned = str_bytes.to_vec();
+                                let sep_owned = sep_bytes.to_vec();
+                                let arr = js_new_array(ctx, 0);
+                                if let (Ok(s), Ok(sep)) = (core::str::from_utf8(&str_owned), core::str::from_utf8(&sep_owned)) {
+                                    let mut idx = 0u32;
+                                    let parts: Vec<&str> = s.split(sep).collect();
+                                    for part in parts {
+                                        let part_val = js_new_string(ctx, part);
+                                        js_set_property_uint32(ctx, arr, idx, part_val);
+                                        idx += 1;
+                                    }
+                                }
+                                val = arr;
+                            } else {
+                                val = js_new_array(ctx, 0);
+                            }
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_toUpperCase__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let upper = s.to_uppercase();
+                                val = js_new_string(ctx, &upper);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_toLowerCase__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let lower = s.to_lowercase();
+                                val = js_new_string(ctx, &lower);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     }
                 }
             }
@@ -1761,6 +1865,55 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     }
+                }
+            }
+            
+            // Array.join
+            if name == "join" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_join__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.reverse
+            if name == "reverse" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_reverse__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // String.split
+            if name == "split" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_split__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.toUpperCase
+            if name == "toUpperCase" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_toUpperCase__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.toLowerCase
+            if name == "toLowerCase" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_toLowerCase__");
+                    rest = next;
+                    continue;
                 }
             }
             
