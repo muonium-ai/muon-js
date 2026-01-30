@@ -1346,6 +1346,9 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "Array" {
         return Some(js_new_string(ctx, "__builtin_Array__"));
     }
+    if s == "JSON" {
+        return Some(js_new_string(ctx, "__builtin_JSON__"));
+    }
     if s == "Number" {
         return Some(js_new_string(ctx, "__builtin_Number__"));
     }
@@ -1413,6 +1416,28 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.is_empty() {
+        return None;
+    }
+    // Handle var declarations: var x = expr OR var x
+    if s.starts_with("var ") {
+        let rest = s[4..].trim();
+        if let Some(eq_pos) = rest.find('=') {
+            let var_name = rest[..eq_pos].trim();
+            let init_expr = rest[eq_pos + 1..].trim();
+            if is_identifier(var_name) {
+                let val = eval_expr(ctx, init_expr)?;
+                let global = js_get_global_object(ctx);
+                js_set_property_str(ctx, global, var_name, val);
+                return Some(Value::UNDEFINED);
+            }
+        } else {
+            // var x; (no initialization)
+            if is_identifier(rest) {
+                let global = js_get_global_object(ctx);
+                js_set_property_str(ctx, global, rest, Value::UNDEFINED);
+                return Some(Value::UNDEFINED);
+            }
+        }
         return None;
     }
     // Check for compound assignment operators: +=, -=, *=, /=
@@ -1670,6 +1695,34 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                             if &haystack[i..i + needle.len()] == needle {
                                                 found = i as i32;
                                                 break;
+                                            }
+                                        }
+                                        val = Value::from_int32(found);
+                                    }
+                                    this_val = Value::UNDEFINED;
+                                    rest = next;
+                                    continue;
+                                }
+                            }
+                        }
+                    } else if marker == "__builtin_string_lastIndexOf__" {
+                        if args.len() == 1 {
+                            if let Some(needle_bytes) = ctx.string_bytes(args[0]) {
+                                if let Some(haystack_bytes) = ctx.string_bytes(this_val) {
+                                    // Search from end to find last occurrence
+                                    let needle = needle_bytes;
+                                    let haystack = haystack_bytes;
+                                    if needle.is_empty() {
+                                        val = Value::from_int32(haystack.len() as i32);
+                                    } else {
+                                        let mut found = -1;
+                                        // Search backwards
+                                        if haystack.len() >= needle.len() {
+                                            for i in (0..=(haystack.len() - needle.len())).rev() {
+                                                if &haystack[i..i + needle.len()] == needle {
+                                                    found = i as i32;
+                                                    break;
+                                                }
                                             }
                                         }
                                         val = Value::from_int32(found);
@@ -3075,6 +3128,92 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Object_assign__" {
+                        // ES2015 feature - copy properties from sources to target
+                        // Object.assign(target, ...sources) returns target
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert undefined or null to object");
+                            return None;
+                        }
+                        
+                        let target = args[0];
+                        
+                        // Copy properties from each source to target
+                        for i in 1..args.len() {
+                            let source = args[i];
+                            
+                            // Get all keys from source object
+                            if let Some(keys) = ctx.object_keys(source) {
+                                for key in keys.iter() {
+                                    let value = js_get_property_str(ctx, source, key);
+                                    js_set_property_str(ctx, target, key, value);
+                                }
+                            }
+                        }
+                        
+                        val = target;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_create__" {
+                        // ES5 Object.create(proto) - create new object with specified prototype
+                        // For now, we just create an empty object (no prototype chain support yet)
+                        if args.is_empty() {
+                            val = js_new_object(ctx);
+                        } else {
+                            // Create object with proto (simplified - no actual proto chain)
+                            val = js_new_object(ctx);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_freeze__" {
+                        // ES5 Object.freeze(obj) - prevent modifications to object
+                        // For now, just return the object (no actual freezing)
+                        // Full implementation would require object property flags
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert undefined to object");
+                            return None;
+                        }
+                        val = args[0];
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_JSON_stringify__" {
+                        // JSON.stringify(value) - convert value to JSON string
+                        if args.is_empty() {
+                            val = Value::UNDEFINED;
+                        } else {
+                            let value = args[0];
+                            let json_str = json_stringify_value(ctx, value);
+                            val = js_new_string(ctx, &json_str);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_JSON_parse__" {
+                        // JSON.parse(text) - parse JSON string to value
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "Unexpected end of JSON input");
+                            return None;
+                        }
+                        
+                        if let Some(json_bytes) = ctx.string_bytes(args[0]) {
+                            let json_str = core::str::from_utf8(json_bytes).unwrap_or("").to_string();
+                            match json_parse_string(ctx, &json_str) {
+                                Some(parsed_val) => val = parsed_val,
+                                None => {
+                                    js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "Unexpected token in JSON");
+                                    return None;
+                                }
+                            }
+                        } else {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert to string");
+                            return None;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Array_isArray__" {
                         if args.len() == 1 {
                             if let Some(class_id) = ctx.object_class_id(args[0]) {
@@ -3088,6 +3227,67 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_flat__" {
+                        // ES2019 Array.flat() - flatten nested arrays
+                        // Default depth is 1, can specify different depth
+                        let depth = if args.is_empty() { 1 } else {
+                            args[0].int32().unwrap_or(1)
+                        };
+                        
+                        let result = js_new_array(ctx, 0);
+                        flatten_array(ctx, this_val, result, depth);
+                        val = result;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_sort__" {
+                        // Array.sort() - sort array in place (lexicographic by default)
+                        // Without comparator, convert to strings and compare
+                        if let Some(arr_len_val) = ctx.get_property_str(this_val, b"length") {
+                            if let Some(len) = arr_len_val.int32() {
+                                // Simple bubble sort implementation
+                                for i in 0..len {
+                                    for j in 0..(len - i - 1) {
+                                        let a = js_get_property_uint32(ctx, this_val, j as u32);
+                                        let b = js_get_property_uint32(ctx, this_val, (j + 1) as u32);
+                                        
+                                        // Convert to numbers for comparison
+                                        let a_num = if let Some(n) = a.int32() {
+                                            n as f64
+                                        } else if let Ok(n) = js_to_number(ctx, a) {
+                                            n
+                                        } else {
+                                            0.0
+                                        };
+                                        
+                                        let b_num = if let Some(n) = b.int32() {
+                                            n as f64
+                                        } else if let Ok(n) = js_to_number(ctx, b) {
+                                            n
+                                        } else {
+                                            0.0
+                                        };
+                                        
+                                        // Swap if a > b
+                                        if a_num > b_num {
+                                            js_set_property_uint32(ctx, this_val, j as u32, b);
+                                            js_set_property_uint32(ctx, this_val, (j + 1) as u32, a);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        val = this_val;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_flatMap__" {
+                        // ES2019 Array.flatMap() - map then flatten by 1 level
+                        // Not yet supported due to callback function limitation
+                        val = js_new_array(ctx, 0);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Number_isInteger__" {
                         if args.len() == 1 {
                             if args[0].is_number() {
@@ -3096,6 +3296,39 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             } else if let Ok(n) = js_to_number(ctx, args[0]) {
                                 // Check if it's an integer value
                                 val = Value::new_bool(n.is_finite() && n.fract() == 0.0);
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Number_isNaN__" {
+                        // ES2015 Number.isNaN() - check if value is NaN without coercion
+                        // More robust than global isNaN() which coerces to number first
+                        if args.len() == 1 {
+                            if let Ok(n) = js_to_number(ctx, args[0]) {
+                                val = Value::new_bool(n.is_nan());
+                            } else {
+                                // If not a number at all, return false (unlike global isNaN)
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Number_isFinite__" {
+                        // ES2015 Number.isFinite() - check if value is finite without coercion
+                        // More robust than global isFinite() which coerces to number first
+                        if args.len() == 1 {
+                            if args[0].is_number() {
+                                val = Value::TRUE;
+                            } else if let Ok(n) = js_to_number(ctx, args[0]) {
+                                val = Value::new_bool(n.is_finite());
                             } else {
                                 val = Value::FALSE;
                             }
@@ -3640,6 +3873,35 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "assign" => {
+                                val = js_new_string(ctx, "__builtin_Object_assign__");
+                                rest = next;
+                                continue;
+                            }
+                            "create" => {
+                                val = js_new_string(ctx, "__builtin_Object_create__");
+                                rest = next;
+                                continue;
+                            }
+                            "freeze" => {
+                                val = js_new_string(ctx, "__builtin_Object_freeze__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_JSON__" {
+                        match name {
+                            "stringify" => {
+                                val = js_new_string(ctx, "__builtin_JSON_stringify__");
+                                rest = next;
+                                continue;
+                            }
+                            "parse" => {
+                                val = js_new_string(ctx, "__builtin_JSON_parse__");
+                                rest = next;
+                                continue;
+                            }
                             _ => {}
                         }
                     } else if marker == "__builtin_Array__" {
@@ -3655,6 +3917,16 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         match name {
                             "isInteger" => {
                                 val = js_new_string(ctx, "__builtin_Number_isInteger__");
+                                rest = next;
+                                continue;
+                            }
+                            "isNaN" => {
+                                val = js_new_string(ctx, "__builtin_Number_isNaN__");
+                                rest = next;
+                                continue;
+                            }
+                            "isFinite" => {
+                                val = js_new_string(ctx, "__builtin_Number_isFinite__");
                                 rest = next;
                                 continue;
                             }
@@ -4108,6 +4380,90 @@ fn find_for_in_keyword(header: &str) -> Option<usize> {
     None
 }
 
+fn find_for_of_keyword(header: &str) -> Option<usize> {
+    // Look for " of " pattern (with spaces to avoid matching "of" in variable names)
+    let bytes = header.as_bytes();
+    for i in 0..header.len().saturating_sub(4) {
+        if bytes[i] == b' ' && bytes[i+1] == b'o' && bytes[i+2] == b'f' && bytes[i+3] == b' ' {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, after_header: &str) -> Option<JSValue> {
+    // Parse: var_name of iterable_expr
+    let var_part = header[..of_pos].trim();
+    let iter_expr = header[of_pos + 3..].trim();
+
+    // Handle "var x" or "const x" or just "x"
+    let var_name = if var_part.starts_with("var ") {
+        var_part[4..].trim()
+    } else if var_part.starts_with("const ") {
+        var_part[6..].trim()
+    } else if var_part.starts_with("let ") {
+        var_part[4..].trim()
+    } else {
+        var_part
+    };
+
+    // Parse body block
+    if !after_header.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_header)?;
+
+    // Evaluate the iterable expression
+    let iter_val = eval_expr(ctx, iter_expr)?;
+
+    // Check if it's an array
+    if let Some(class_id) = ctx.object_class_id(iter_val) {
+        if class_id == JSObjectClassEnum::Array as u32 {
+            // Get array length
+            if let Some(len_val) = ctx.get_property_str(iter_val, b"length") {
+                if let Some(len) = len_val.int32() {
+                    // Iterate over array elements
+                    let mut last = Value::UNDEFINED;
+                    let global = js_get_global_object(ctx);
+
+                    for i in 0..len {
+                        // Get element at index
+                        let elem = js_get_property_uint32(ctx, iter_val, i as u32);
+                        
+                        // Set the loop variable
+                        js_set_property_str(ctx, global, var_name, elem);
+
+                        // Execute body
+                        last = eval_function_body(ctx, body)?;
+
+                        // Check for loop control
+                        match ctx.get_loop_control() {
+                            crate::context::LoopControl::Break => {
+                                ctx.set_loop_control(crate::context::LoopControl::None);
+                                break;
+                            }
+                            crate::context::LoopControl::Continue => {
+                                ctx.set_loop_control(crate::context::LoopControl::None);
+                                continue;
+                            }
+                            crate::context::LoopControl::Return => {
+                                // Propagate return up
+                                return Some(last);
+                            }
+                            crate::context::LoopControl::None => {}
+                        }
+                    }
+
+                    return Some(last);
+                }
+            }
+        }
+    }
+
+    // Not an array or not iterable, return undefined
+    Some(Value::UNDEFINED)
+}
+
 fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, after_header: &str) -> Option<JSValue> {
     // Parse: var_name in object_expr
     let var_part = header[..in_pos].trim();
@@ -4205,6 +4561,11 @@ fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     // Check for for...in loop
     if let Some(in_pos) = find_for_in_keyword(header) {
         return parse_for_in_loop(ctx, header, in_pos, after_header);
+    }
+
+    // Check for for...of loop
+    if let Some(of_pos) = find_for_of_keyword(header) {
+        return parse_for_of_loop(ctx, header, of_pos, after_header);
     }
 
     // Split header into init; condition; update
@@ -4789,7 +5150,17 @@ fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
             return None;
         }
-        if trimmed == "throw" {
+        // Check for throw statement
+        if trimmed.starts_with("throw ") || trimmed == "throw" {
+            if trimmed == "throw" {
+                ctx.set_exception(Value::UNDEFINED);
+                return Some(Value::EXCEPTION);
+            }
+            let expr = trimmed[6..].trim();
+            if let Some(val) = eval_expr(ctx, expr) {
+                ctx.set_exception(val);
+                return Some(Value::EXCEPTION);
+            }
             ctx.set_exception(Value::UNDEFINED);
             return Some(Value::EXCEPTION);
         }
@@ -5822,6 +6193,409 @@ impl<'a> ExprParser<'a> {
     }
 }
 
+// JSON stringification helper - converts JS values to JSON strings
+fn json_stringify_value(ctx: &mut JSContextImpl, value: JSValue) -> String {
+    // Check string first
+    if js_is_string(ctx, value) != 0 {
+        // Escape and quote strings
+        if let Some(bytes) = ctx.string_bytes(value) {
+            let s = core::str::from_utf8(bytes).unwrap_or("");
+            let mut result = String::from("\"");
+            for ch in s.chars() {
+                match ch {
+                    '\"' => result.push_str("\\\""),
+                    '\\' => result.push_str("\\\\"),
+                    '\n' => result.push_str("\\n"),
+                    '\r' => result.push_str("\\r"),
+                    '\t' => result.push_str("\\t"),
+                    _ => result.push(ch),
+                }
+            }
+            result.push('\"');
+            return result;
+        } else {
+            return String::from("\"\"");
+        }
+    }
+    
+    // Check number
+    if value.is_int() {
+        return value.int32().unwrap_or(0).to_string();
+    }
+    
+    // Check bool
+    if value.is_bool() {
+        return if value == Value::TRUE {
+            String::from("true")
+        } else {
+            String::from("false")
+        };
+    }
+    
+    // Check null
+    if value.is_null() {
+        return String::from("null");
+    }
+    
+    // Check undefined
+    if value.is_undefined() {
+        return String::from("undefined");
+    }
+    
+    // Check if it's an array
+    if let Some(class_id) = ctx.object_class_id(value) {
+        if class_id == JSObjectClassEnum::Array as u32 {
+            // Stringify as array
+            let mut result = String::from("[");
+            if let Some(arr_len_val) = ctx.get_property_str(value, b"length") {
+                if let Some(len) = arr_len_val.int32() {
+                    for i in 0..len {
+                        if i > 0 {
+                            result.push(',');
+                        }
+                        let elem = js_get_property_uint32(ctx, value, i as u32);
+                        result.push_str(&json_stringify_value(ctx, elem));
+                    }
+                }
+            }
+            result.push(']');
+            return result;
+        }
+    }
+    
+    // Stringify as object
+    let mut result = String::from("{");
+    if let Some(keys) = ctx.object_keys(value) {
+        for (i, key) in keys.iter().enumerate() {
+            if i > 0 {
+                result.push(',');
+            }
+            result.push('\"');
+            result.push_str(key);
+            result.push_str("\":");
+            let prop_val = js_get_property_str(ctx, value, key);
+            result.push_str(&json_stringify_value(ctx, prop_val));
+        }
+    }
+    result.push('}');
+    result
+}
+
+// JSON parsing helper - converts JSON string to JS value
+fn json_parse_string(ctx: &mut JSContextImpl, json_str: &str) -> Option<JSValue> {
+    let mut parser = JSONParser::new(json_str);
+    parser.parse_value(ctx)
+}
+
+// Helper function for Array.flat() - recursively flatten arrays
+fn flatten_array(ctx: &mut JSContextImpl, source: JSValue, target: JSValue, depth: i32) {
+    if depth <= 0 {
+        // If depth is 0, just push the source as-is
+        let len = js_get_property_str(ctx, target, "length");
+        if let Some(idx) = len.int32() {
+            js_set_property_uint32(ctx, target, idx as u32, source);
+        }
+        return;
+    }
+    
+    // Check if source is an array
+    if let Some(class_id) = ctx.object_class_id(source) {
+        if class_id == JSObjectClassEnum::Array as u32 {
+            // Get the length of source array
+            if let Some(src_len_val) = ctx.get_property_str(source, b"length") {
+                if let Some(src_len) = src_len_val.int32() {
+                    // Iterate through source array
+                    for i in 0..src_len {
+                        let elem = js_get_property_uint32(ctx, source, i as u32);
+                        
+                        // Check if element is array and depth > 0
+                        if depth > 0 {
+                            if let Some(elem_class_id) = ctx.object_class_id(elem) {
+                                if elem_class_id == JSObjectClassEnum::Array as u32 {
+                                    // Recursively flatten
+                                    flatten_array(ctx, elem, target, depth - 1);
+                                    continue;
+                                }
+                            }
+                        }
+                        
+                        // Not an array or depth is 0, just push it
+                        let tgt_len = js_get_property_str(ctx, target, "length");
+                        if let Some(idx) = tgt_len.int32() {
+                            js_set_property_uint32(ctx, target, idx as u32, elem);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
+    
+    // Not an array, push as-is
+    let len = js_get_property_str(ctx, target, "length");
+    if let Some(idx) = len.int32() {
+        js_set_property_uint32(ctx, target, idx as u32, source);
+    }
+}
+
+struct JSONParser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> JSONParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+    
+    fn skip_whitespace(&mut self) {
+        while self.pos < self.input.len() {
+            match self.input.as_bytes()[self.pos] {
+                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+    
+    fn parse_value(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        self.skip_whitespace();
+        
+        if self.pos >= self.input.len() {
+            return None;
+        }
+        
+        match self.input.as_bytes()[self.pos] {
+            b'n' => self.parse_null(),
+            b't' | b'f' => self.parse_bool(),
+            b'"' => self.parse_string(ctx),
+            b'[' => self.parse_array(ctx),
+            b'{' => self.parse_object(ctx),
+            b'-' | b'0'..=b'9' => self.parse_number(ctx),
+            _ => None,
+        }
+    }
+    
+    fn parse_null(&mut self) -> Option<JSValue> {
+        if self.input[self.pos..].starts_with("null") {
+            self.pos += 4;
+            Some(Value::NULL)
+        } else {
+            None
+        }
+    }
+    
+    fn parse_bool(&mut self) -> Option<JSValue> {
+        if self.input[self.pos..].starts_with("true") {
+            self.pos += 4;
+            Some(Value::TRUE)
+        } else if self.input[self.pos..].starts_with("false") {
+            self.pos += 5;
+            Some(Value::FALSE)
+        } else {
+            None
+        }
+    }
+    
+    fn parse_string(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        if self.input.as_bytes()[self.pos] != b'"' {
+            return None;
+        }
+        self.pos += 1;
+        
+        let start = self.pos;
+        let mut result = String::new();
+        
+        while self.pos < self.input.len() {
+            let ch = self.input.as_bytes()[self.pos];
+            if ch == b'"' {
+                self.pos += 1;
+                return Some(js_new_string(ctx, &result));
+            } else if ch == b'\\' {
+                self.pos += 1;
+                if self.pos >= self.input.len() {
+                    return None;
+                }
+                match self.input.as_bytes()[self.pos] {
+                    b'"' => result.push('"'),
+                    b'\\' => result.push('\\'),
+                    b'/' => result.push('/'),
+                    b'n' => result.push('\n'),
+                    b'r' => result.push('\r'),
+                    b't' => result.push('\t'),
+                    b'b' => result.push('\x08'),
+                    b'f' => result.push('\x0C'),
+                    _ => return None,
+                }
+                self.pos += 1;
+            } else {
+                result.push(ch as char);
+                self.pos += 1;
+            }
+        }
+        
+        None
+    }
+    
+    fn parse_number(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        let start = self.pos;
+        
+        // Optional minus sign
+        if self.pos < self.input.len() && self.input.as_bytes()[self.pos] == b'-' {
+            self.pos += 1;
+        }
+        
+        // Integer part
+        if self.pos >= self.input.len() {
+            return None;
+        }
+        
+        if self.input.as_bytes()[self.pos] == b'0' {
+            self.pos += 1;
+        } else if self.input.as_bytes()[self.pos].is_ascii_digit() {
+            while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        } else {
+            return None;
+        }
+        
+        // Fractional part
+        let mut has_fraction = false;
+        if self.pos < self.input.len() && self.input.as_bytes()[self.pos] == b'.' {
+            has_fraction = true;
+            self.pos += 1;
+            if self.pos >= self.input.len() || !self.input.as_bytes()[self.pos].is_ascii_digit() {
+                return None;
+            }
+            while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+        
+        // Exponent part
+        if self.pos < self.input.len() {
+            let ch = self.input.as_bytes()[self.pos];
+            if ch == b'e' || ch == b'E' {
+                has_fraction = true;
+                self.pos += 1;
+                if self.pos < self.input.len() {
+                    let sign_ch = self.input.as_bytes()[self.pos];
+                    if sign_ch == b'+' || sign_ch == b'-' {
+                        self.pos += 1;
+                    }
+                }
+                if self.pos >= self.input.len() || !self.input.as_bytes()[self.pos].is_ascii_digit() {
+                    return None;
+                }
+                while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
+            }
+        }
+        
+        let num_str = &self.input[start..self.pos];
+        
+        // For now we only support integers until float support is added
+        num_str.parse::<i32>().ok().map(|i| Value::from_int32(i))
+    }
+    
+    fn parse_array(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        if self.input.as_bytes()[self.pos] != b'[' {
+            return None;
+        }
+        self.pos += 1;
+        
+        let arr = js_new_array(ctx, 0);
+        let mut index = 0u32;
+        
+        self.skip_whitespace();
+        
+        // Empty array
+        if self.pos < self.input.len() && self.input.as_bytes()[self.pos] == b']' {
+            self.pos += 1;
+            return Some(arr);
+        }
+        
+        loop {
+            let elem = self.parse_value(ctx)?;
+            js_set_property_uint32(ctx, arr, index, elem);
+            index += 1;
+            
+            self.skip_whitespace();
+            if self.pos >= self.input.len() {
+                return None;
+            }
+            
+            match self.input.as_bytes()[self.pos] {
+                b',' => {
+                    self.pos += 1;
+                    self.skip_whitespace();
+                }
+                b']' => {
+                    self.pos += 1;
+                    return Some(arr);
+                }
+                _ => return None,
+            }
+        }
+    }
+    
+    fn parse_object(&mut self, ctx: &mut JSContextImpl) -> Option<JSValue> {
+        if self.input.as_bytes()[self.pos] != b'{' {
+            return None;
+        }
+        self.pos += 1;
+        
+        let obj = js_new_object(ctx);
+        
+        self.skip_whitespace();
+        
+        // Empty object
+        if self.pos < self.input.len() && self.input.as_bytes()[self.pos] == b'}' {
+            self.pos += 1;
+            return Some(obj);
+        }
+        
+        loop {
+            self.skip_whitespace();
+            
+            // Parse key (must be string in JSON)
+            if self.pos >= self.input.len() || self.input.as_bytes()[self.pos] != b'"' {
+                return None;
+            }
+            
+            let key_val = self.parse_string(ctx)?;
+            let key_bytes = ctx.string_bytes(key_val)?;
+            let key_str = core::str::from_utf8(key_bytes).ok()?.to_string();
+            
+            self.skip_whitespace();
+            if self.pos >= self.input.len() || self.input.as_bytes()[self.pos] != b':' {
+                return None;
+            }
+            self.pos += 1;
+            
+            let value = self.parse_value(ctx)?;
+            js_set_property_str(ctx, obj, &key_str, value);
+            
+            self.skip_whitespace();
+            if self.pos >= self.input.len() {
+                return None;
+            }
+            
+            match self.input.as_bytes()[self.pos] {
+                b',' => {
+                    self.pos += 1;
+                }
+                b'}' => {
+                    self.pos += 1;
+                    return Some(obj);
+                }
+                _ => return None,
+            }
+        }
+    }
+}
+
 struct ArithParser<'a> {
     ctx: *mut JSContextImpl,
     input: &'a [u8],
@@ -6111,6 +6885,7 @@ impl<'a> ArithParser<'a> {
                             "substring" => js_new_string(ctx, "__builtin_string_substring__"),
                             "slice" => js_new_string(ctx, "__builtin_string_slice__"),
                             "indexOf" => js_new_string(ctx, "__builtin_string_indexOf__"),
+                            "lastIndexOf" => js_new_string(ctx, "__builtin_string_lastIndexOf__"),
                             "split" => js_new_string(ctx, "__builtin_string_split__"),
                             "concat" => js_new_string(ctx, "__builtin_string_concat__"),
                             "trim" => js_new_string(ctx, "__builtin_string_trim__"),
@@ -6143,6 +6918,9 @@ impl<'a> ArithParser<'a> {
                                 "some" => js_new_string(ctx, "__builtin_array_some__"),
                                 "find" => js_new_string(ctx, "__builtin_array_find__"),
                                 "findIndex" => js_new_string(ctx, "__builtin_array_findIndex__"),
+                                "flat" => js_new_string(ctx, "__builtin_array_flat__"),
+                                "flatMap" => js_new_string(ctx, "__builtin_array_flatMap__"),
+                                "sort" => js_new_string(ctx, "__builtin_array_sort__"),
                                 "length" => js_get_property_str(ctx, value, "length"),
                                 _ => js_get_property_str(ctx, value, prop),
                             };
