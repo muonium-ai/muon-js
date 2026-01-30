@@ -796,6 +796,24 @@ mod tests {
     }
 
     #[test]
+    fn string_additional_methods() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let substr_v = eval_ret(&mut ctx, "\"hello\".substr(1, 3)");
+        let substr_str = JS_ToString(&mut ctx, substr_v);
+        let substr_s = JS_ToCString(&mut ctx, substr_str, &mut buf);
+        assert_eq!(substr_s, "ell");
+        let cp_v = eval_ret(&mut ctx, "\"A\".codePointAt(0)");
+        let cp_n = JS_ToNumber(&mut ctx, cp_v).unwrap();
+        assert!((cp_n - 65.0).abs() < 1e-9);
+        let chain_v = eval_ret(&mut ctx, "\"john\".charAt(0).toUpperCase()");
+        let chain_str = JS_ToString(&mut ctx, chain_v);
+        let chain_s = JS_ToCString(&mut ctx, chain_str, &mut buf);
+        assert_eq!(chain_s, "J");
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

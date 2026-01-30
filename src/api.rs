@@ -1732,6 +1732,40 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 }
                             }
                         }
+                        val = js_new_string(ctx, "");
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_substr__" {
+                        if args.len() >= 1 {
+                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                let len = str_bytes.len() as i32;
+                                let mut start = args[0].int32().unwrap_or(0);
+                                if start < 0 {
+                                    start = (len + start).max(0);
+                                } else if start > len {
+                                    start = len;
+                                }
+                                let mut end = len;
+                                if args.len() >= 2 {
+                                    let count = args[1].int32().unwrap_or(0).max(0);
+                                    end = (start + count).min(len);
+                                }
+                                let start_u = start as usize;
+                                let end_u = end.max(start) as usize;
+                                let substr_bytes = str_bytes[start_u..end_u].to_vec();
+                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                    val = js_new_string(ctx, substr);
+                                    this_val = Value::UNDEFINED;
+                                    rest = next;
+                                    continue;
+                                }
+                            }
+                        }
+                        val = js_new_string(ctx, "");
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_string_indexOf__" {
                         if args.len() == 1 {
                             if let Some(needle_bytes) = ctx.string_bytes(args[0]) {
@@ -3094,6 +3128,32 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_string_codePointAt__" {
+                        let idx = if args.len() >= 1 {
+                            args[0].int32().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                if idx >= 0 && (idx as usize) < s.len() {
+                                    if let Some(ch) = s.chars().nth(idx as usize) {
+                                        val = number_to_value(ctx, ch as u32 as f64);
+                                    } else {
+                                        val = number_to_value(ctx, f64::NAN);
+                                    }
+                                } else {
+                                    val = number_to_value(ctx, f64::NAN);
+                                }
+                            } else {
+                                val = number_to_value(ctx, f64::NAN);
+                            }
+                        } else {
+                            val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_string_trimStart__" {
                         if let Some(str_bytes) = ctx.string_bytes(this_val) {
                             if let Ok(s) = core::str::from_utf8(str_bytes) {
@@ -4005,6 +4065,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     continue;
                 }
             }
+
+            // String.substr
+            if name == "substr" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_substr__");
+                    rest = next;
+                    continue;
+                }
+            }
             
             // String.indexOf
             if name == "indexOf" {
@@ -4300,6 +4369,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if name == "charCodeAt" {
                 if js_is_string(ctx, val) != 0 {
                     val = js_new_string(ctx, "__builtin_string_charCodeAt__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.codePointAt
+            if name == "codePointAt" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_codePointAt__");
                     rest = next;
                     continue;
                 }
@@ -5599,6 +5677,7 @@ impl<'a> ArithParser<'a> {
                             "toUpperCase" => js_new_string(ctx, "__builtin_string_toUpperCase__"),
                             "toLowerCase" => js_new_string(ctx, "__builtin_string_toLowerCase__"),
                             "substring" => js_new_string(ctx, "__builtin_string_substring__"),
+                            "substr" => js_new_string(ctx, "__builtin_string_substr__"),
                             "slice" => js_new_string(ctx, "__builtin_string_slice__"),
                             "indexOf" => js_new_string(ctx, "__builtin_string_indexOf__"),
                             "lastIndexOf" => js_new_string(ctx, "__builtin_string_lastIndexOf__"),
@@ -5617,6 +5696,7 @@ impl<'a> ArithParser<'a> {
                             "matchAll" => js_new_string(ctx, "__builtin_string_matchAll__"),
                             "search" => js_new_string(ctx, "__builtin_string_search__"),
                             "charCodeAt" => js_new_string(ctx, "__builtin_string_charCodeAt__"),
+                            "codePointAt" => js_new_string(ctx, "__builtin_string_codePointAt__"),
                             "padStart" => js_new_string(ctx, "__builtin_string_padStart__"),
                             "padEnd" => js_new_string(ctx, "__builtin_string_padEnd__"),
                             "length" => {
@@ -5786,6 +5866,31 @@ impl<'a> ArithParser<'a> {
                             }
                         }
                     }
+                    return Ok(js_new_string(ctx, ""));
+                } else if marker == "__builtin_string_substr__" {
+                    if args.len() >= 1 {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            let len = str_bytes.len() as i32;
+                            let mut start = args[0].int32().unwrap_or(0);
+                            if start < 0 {
+                                start = (len + start).max(0);
+                            } else if start > len {
+                                start = len;
+                            }
+                            let mut end = len;
+                            if args.len() >= 2 {
+                                let count = args[1].int32().unwrap_or(0).max(0);
+                                end = (start + count).min(len);
+                            }
+                            let start_u = start as usize;
+                            let end_u = end.max(start) as usize;
+                            let substr_bytes = str_bytes[start_u..end_u].to_vec();
+                            if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                return Ok(js_new_string(ctx, substr));
+                            }
+                        }
+                    }
+                    return Ok(js_new_string(ctx, ""));
                 } else if marker == "__builtin_string_slice__" {
                     if args.len() >= 1 && args.len() <= 2 {
                         if let Some(str_bytes) = ctx.string_bytes(this_val) {
@@ -6041,6 +6146,38 @@ impl<'a> ArithParser<'a> {
                         return Ok(js_new_string(ctx, &s.replace(&search, &replacement)));
                     }
                     return Ok(this_val);
+                } else if marker == "__builtin_string_charCodeAt__" {
+                    let idx = if args.len() >= 1 {
+                        args[0].int32().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            if idx >= 0 && (idx as usize) < s.len() {
+                                if let Some(ch) = s.chars().nth(idx as usize) {
+                                    return Ok(number_to_value(ctx, ch as u32 as f64));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_string_codePointAt__" {
+                    let idx = if args.len() >= 1 {
+                        args[0].int32().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            if idx >= 0 && (idx as usize) < s.len() {
+                                if let Some(ch) = s.chars().nth(idx as usize) {
+                                    return Ok(number_to_value(ctx, ch as u32 as f64));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
                 } else if marker == "__builtin_regexp_test__" {
                     let input = if args.is_empty() {
                         String::new()

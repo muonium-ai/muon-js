@@ -74,8 +74,10 @@
 ### Phase 2: Built-in Methods - String (90%)
 **Completed:**
 - ✅ charAt(), charCodeAt()
+- ✅ codePointAt()
 - ✅ toUpperCase(), toLowerCase()
 - ✅ substring(), slice()
+- ✅ substr()
 - ✅ indexOf(), lastIndexOf()
 - ✅ split(), concat()
 - ✅ trim(), trimStart(), trimEnd()

@@ -136,8 +136,6 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 ### Built-in Objects & Methods
 
 #### String Methods (Missing)
-- ❌ `codePointAt(index)` (ES6)
-- ❌ `substr(start, length)` (deprecated)
 - ❌ **Method chaining** (e.g., `str.charAt(0).toUpperCase()`)
 
 #### Array Methods (Missing)
