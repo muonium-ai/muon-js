@@ -1579,6 +1579,38 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 }
                             }
                         }
+                    } else if marker == "__builtin_string_concat__" {
+                        // Ported from mquickjs.c:13489-13510 js_string_concat
+                        // Get base string
+                        let mut result = if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                s.to_string()
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+                        
+                        // Concatenate all arguments
+                        for arg in &args {
+                            if let Some(arg_bytes) = ctx.string_bytes(*arg) {
+                                if let Ok(s) = core::str::from_utf8(arg_bytes) {
+                                    result.push_str(s);
+                                }
+                            } else if let Some(n) = arg.int32() {
+                                result.push_str(&n.to_string());
+                            } else if *arg == Value::TRUE {
+                                result.push_str("true");
+                            } else if *arg == Value::FALSE {
+                                result.push_str("false");
+                            }
+                        }
+                        
+                        val = js_new_string(ctx, &result);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_string_substring__" {
                         if args.len() >= 1 && args.len() <= 2 {
                             if let Some(start) = args[0].int32() {
@@ -2662,6 +2694,15 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if name == "charAt" {
                 if js_is_string(ctx, val) != 0 {
                     val = js_new_string(ctx, "__builtin_string_charAt__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.concat
+            if name == "concat" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_concat__");
                     rest = next;
                     continue;
                 }
