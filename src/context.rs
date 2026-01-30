@@ -3,6 +3,13 @@ use crate::value::Value;
 
 const PROTO_SEARCH_LIMIT: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopControl {
+    None,
+    Break,
+    Continue,
+}
+
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
 pub struct Context {
     mem: MemoryRegion,
@@ -22,6 +29,7 @@ pub struct Context {
     array_proto: Value,
     array_push_fn: Value,
     array_pop_fn: Value,
+    loop_control: LoopControl,
 }
 
 impl Context {
@@ -44,6 +52,7 @@ impl Context {
             array_proto: Value::UNDEFINED,
             array_push_fn: Value::UNDEFINED,
             array_pop_fn: Value::UNDEFINED,
+            loop_control: LoopControl::None,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -93,6 +102,14 @@ impl Context {
 
     pub fn get_exception(&self) -> Value {
         self.last_exception
+    }
+
+    pub fn set_loop_control(&mut self, ctrl: LoopControl) {
+        self.loop_control = ctrl;
+    }
+
+    pub fn get_loop_control(&self) -> LoopControl {
+        self.loop_control
     }
 
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {

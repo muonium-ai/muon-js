@@ -1209,17 +1209,21 @@ fn contains_arith_op(src: &str) -> bool {
     let mut in_string = false;
     let mut string_delim = 0u8;
     let mut last_was_operand = false;
-    for &b in bytes {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
         if in_string {
             if b == string_delim {
                 in_string = false;
                 last_was_operand = true;
             }
+            i += 1;
             continue;
         }
         if b == b'\'' || b == b'\"' {
             in_string = true;
             string_delim = b;
+            i += 1;
             continue;
         }
         match b {
@@ -1234,7 +1238,21 @@ fn contains_arith_op(src: &str) -> bool {
             b'+' | b'-' | b'*' | b'/' if depth == 0 && last_was_operand => {
                 return true;
             }
-            b'<' | b'>' | b'=' | b'!' if depth == 0 && last_was_operand => {
+            b'<' | b'>' | b'=' if depth == 0 && last_was_operand => {
+                return true;
+            }
+            b'!' if depth == 0 => {
+                // Check for != vs !
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    if last_was_operand {
+                        return true;
+                    }
+                } else if !last_was_operand {
+                    // Unary ! at start
+                    return true;
+                }
+            }
+            b'&' | b'|' if depth == 0 && last_was_operand => {
                 return true;
             }
             b' ' | b'\t' | b'\n' | b'\r' => {
@@ -1244,6 +1262,7 @@ fn contains_arith_op(src: &str) -> bool {
                 last_was_operand = true;
             }
         }
+        i += 1;
     }
     false
 }
@@ -1324,6 +1343,45 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.is_empty() {
         return None;
     }
+    // Check for compound assignment operators: +=, -=, *=, /=
+    if s.contains("+=") || s.contains("-=") || s.contains("*=") || s.contains("/=") {
+        let bytes = s.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut string_delim = 0u8;
+        for i in 1..bytes.len() {
+            let b = bytes[i];
+            if in_string {
+                if b == string_delim {
+                    in_string = false;
+                }
+                continue;
+            }
+            if b == b'\'' || b == b'\"' {
+                in_string = true;
+                string_delim = b;
+                continue;
+            }
+            match b {
+                b'[' | b'{' | b'(' => depth += 1,
+                b']' | b'}' | b')' => depth -= 1,
+                b'=' if depth == 0 => {
+                    let prev = bytes[i - 1];
+                    if prev == b'+' || prev == b'-' || prev == b'*' || prev == b'/' {
+                        let lhs = s[..i - 1].trim();
+                        let rhs = s[i + 1..].trim();
+                        if !lhs.is_empty() && !rhs.is_empty() {
+                            // Expand: x += 5 => x = x + 5
+                            let op = prev as char;
+                            let expanded = format!("{} = {} {} {}", lhs, lhs, op, rhs);
+                            return eval_expr(ctx, &expanded);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     if let Some((lhs, rhs)) = split_assignment(s) {
         let rhs_val = eval_expr(ctx, rhs)?;
         let (base, key) = parse_lvalue(ctx, lhs)?;
@@ -1340,6 +1398,38 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if contains_arith_op(s) {
         if let Ok(val) = parse_arith_expr(ctx, s) {
             return Some(val);
+        }
+    }
+    // Check for postfix ++ or --
+    if s.ends_with("++") || s.ends_with("--") {
+        let var_name = &s[..s.len() - 2].trim();
+        if is_identifier(var_name) {
+            let global = js_get_global_object(ctx);
+            let old_val = js_get_property_str(ctx, global, var_name);
+            let n = js_to_number(ctx, old_val).ok()?;
+            let new_val = if s.ends_with("++") {
+                number_to_value(ctx, n + 1.0)
+            } else {
+                number_to_value(ctx, n - 1.0)
+            };
+            js_set_property_str(ctx, global, var_name, new_val);
+            return Some(old_val); // postfix returns old value
+        }
+    }
+    // Check for prefix ++ or --
+    if s.starts_with("++") || s.starts_with("--") {
+        let var_name = &s[2..].trim();
+        if is_identifier(var_name) {
+            let global = js_get_global_object(ctx);
+            let old_val = js_get_property_str(ctx, global, var_name);
+            let n = js_to_number(ctx, old_val).ok()?;
+            let new_val = if s.starts_with("++") {
+                number_to_value(ctx, n + 1.0)
+            } else {
+                number_to_value(ctx, n - 1.0)
+            };
+            js_set_property_str(ctx, global, var_name, new_val);
+            return Some(new_val); // prefix returns new value
         }
     }
     let (base, tail) = split_base_and_tail(s)?;
@@ -1460,6 +1550,16 @@ fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
             continue;
         }
         
+        // Check for break/continue
+        if trimmed == "break" {
+            ctx.set_loop_control(crate::context::LoopControl::Break);
+            return Some(Value::UNDEFINED);
+        }
+        if trimmed == "continue" {
+            ctx.set_loop_control(crate::context::LoopControl::Continue);
+            return Some(Value::UNDEFINED);
+        }
+        
         // Check for return statement
         if trimmed.starts_with("return ") {
             let expr = &trimmed[7..]; // skip "return "
@@ -1469,8 +1569,43 @@ fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
             return Some(Value::UNDEFINED);
         }
         
+        // Check for if statement
+        if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
+            last = parse_if_statement(ctx, trimmed)?;
+            // Check if break/continue was set during statement execution
+            if ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
+        // Check for while loop
+        if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
+            last = parse_while_loop(ctx, trimmed)?;
+            // Check if break/continue was set during statement execution
+            if ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
+        // Check for for loop
+        if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
+            last = parse_for_loop(ctx, trimmed)?;
+            // Check if break/continue was set during statement execution
+            if ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
         // Execute statement
         last = eval_expr(ctx, trimmed)?;
+        
+        // Check if break/continue was set during statement execution
+        if ctx.get_loop_control() != crate::context::LoopControl::None {
+            return Some(last);
+        }
     }
     
     Some(last)
@@ -1663,6 +1798,19 @@ fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         
         // Execute body
         last = eval_function_body(ctx, body)?;
+        
+        // Check for loop control
+        match ctx.get_loop_control() {
+            crate::context::LoopControl::Break => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+            crate::context::LoopControl::Continue => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                continue;
+            }
+            crate::context::LoopControl::None => {}
+        }
     }
     
     Some(last)
@@ -1730,6 +1878,19 @@ fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         // Execute body
         last = eval_function_body(ctx, body)?;
         
+        // Check for loop control
+        match ctx.get_loop_control() {
+            crate::context::LoopControl::Break => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+            crate::context::LoopControl::Continue => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                // Continue to update
+            }
+            crate::context::LoopControl::None => {}
+        }
+        
         // Execute update
         if !update.is_empty() {
             eval_expr(ctx, update)?;
@@ -1767,6 +1928,15 @@ fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         let trimmed = stmt.trim();
         if trimmed.is_empty() {
             continue;
+        }
+        // Check for break/continue
+        if trimmed == "break" {
+            ctx.set_loop_control(crate::context::LoopControl::Break);
+            return Some(Value::UNDEFINED);
+        }
+        if trimmed == "continue" {
+            ctx.set_loop_control(crate::context::LoopControl::Continue);
+            return Some(Value::UNDEFINED);
         }
         // Check for function declaration
         if trimmed.starts_with("function ") {
@@ -2578,6 +2748,26 @@ fn split_statements(src: &str) -> Option<Vec<&str>> {
             if depth < 0 {
                 return None;
             }
+            // After closing brace at depth 0, this could be end of a statement
+            if depth == 0 && b == b'}' {
+                // Check if there's an else clause following
+                let rest = s[i + 1..].trim_start();
+                if rest.starts_with("else ") || rest.starts_with("else{") {
+                    // Don't split yet, continue to include else clause
+                    continue;
+                }
+                // Check if the statement starts with control flow keyword
+                let part = s[start..=i].trim();
+                if part.starts_with("if ") || part.starts_with("if(")
+                    || part.starts_with("while ") || part.starts_with("while(")
+                    || part.starts_with("for ") || part.starts_with("for(")
+                    || part.starts_with("function ") {
+                    if !part.is_empty() {
+                        out.push(part);
+                    }
+                    start = i + 1;
+                }
+            }
             continue;
         }
         // Split on semicolon or newline at depth 0
@@ -2730,6 +2920,40 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<JSValue, ()> {
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_logical_and()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'|') && self.peek_at(1) == Some(b'|') {
+                self.pos += 2;
+                let rhs = self.parse_logical_and()?;
+                value = self.logical_or(value, rhs)?;
+            } else {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_comparison()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'&') && self.peek_at(1) == Some(b'&') {
+                self.pos += 2;
+                let rhs = self.parse_comparison()?;
+                value = self.logical_and(value, rhs)?;
+            } else {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_comparison(&mut self) -> Result<JSValue, ()> {
         let mut value = self.parse_additive()?;
         self.skip_ws();
         
@@ -2845,6 +3069,11 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
             let val = self.parse_postfix()?;
             return self.unary_minus(val);
+        }
+        if let Some(b'!') = self.peek() {
+            self.pos += 1;
+            let val = self.parse_postfix()?;
+            return self.logical_not(val);
         }
         self.parse_postfix()
     }
@@ -3149,6 +3378,50 @@ impl<'a> ArithParser<'a> {
             _ => return Err(()),
         };
         Ok(if result { Value::TRUE } else { Value::FALSE })
+    }
+
+    fn logical_and(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let left_truthy = self.is_truthy(left);
+        if !left_truthy {
+            Ok(left)
+        } else {
+            Ok(right)
+        }
+    }
+
+    fn logical_or(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let left_truthy = self.is_truthy(left);
+        if left_truthy {
+            Ok(left)
+        } else {
+            Ok(right)
+        }
+    }
+
+    fn logical_not(&mut self, val: JSValue) -> Result<JSValue, ()> {
+        let truthy = self.is_truthy(val);
+        Ok(if truthy { Value::FALSE } else { Value::TRUE })
+    }
+
+    fn is_truthy(&self, val: JSValue) -> bool {
+        if val.is_bool() {
+            val == Value::TRUE
+        } else if let Some(n) = val.int32() {
+            n != 0
+        } else if val.is_null() || val.is_undefined() {
+            false
+        } else {
+            let ctx = unsafe { &*self.ctx };
+            if let Some(f) = ctx.float_value(val) {
+                f != 0.0 && !f.is_nan()
+            } else {
+                true // strings, objects, etc. are truthy
+            }
+        }
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<u8> {
+        self.input.get(self.pos + offset).copied()
     }
 
     fn skip_ws(&mut self) {
