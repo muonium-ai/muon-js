@@ -26,3 +26,8 @@ Build a **tiny, embeddable JavaScript runtime in Rust** that is a **true port of
 ## Communication
 - Be explicit about compatibility tradeoffs.
 - Use concise, actionable notes and avoid speculative changes.
+
+## Sandbox restrictions
+- File operations are restricted to the project directory.
+- Use the `tmp/` folder (inside the project root) for temporary test files.
+- Paths outside the project folder are denied by the sandbox.

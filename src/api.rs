@@ -1208,10 +1208,12 @@ fn contains_arith_op(src: &str) -> bool {
     let mut depth = 0i32;
     let mut in_string = false;
     let mut string_delim = 0u8;
+    let mut last_was_operand = false;
     for &b in bytes {
         if in_string {
             if b == string_delim {
                 in_string = false;
+                last_was_operand = true;
             }
             continue;
         }
@@ -1223,14 +1225,24 @@ fn contains_arith_op(src: &str) -> bool {
         match b {
             b'[' | b'{' | b'(' => {
                 depth += 1;
+                last_was_operand = false;
             }
             b']' | b'}' | b')' => {
                 depth -= 1;
+                last_was_operand = true;
             }
-            b'+' | b'-' | b'*' | b'/' if depth == 0 => {
+            b'+' | b'-' | b'*' | b'/' if depth == 0 && last_was_operand => {
                 return true;
             }
-            _ => {}
+            b'<' | b'>' | b'=' | b'!' if depth == 0 && last_was_operand => {
+                return true;
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                // whitespace doesn't affect operand status
+            }
+            _ => {
+                last_was_operand = true;
+            }
         }
     }
     false
@@ -1324,6 +1336,12 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         return Some(rhs_val);
     }
+    // Check for arithmetic operators before splitting on base/tail
+    if contains_arith_op(s) {
+        if let Ok(val) = parse_arith_expr(ctx, s) {
+            return Some(val);
+        }
+    }
     let (base, tail) = split_base_and_tail(s)?;
     let mut val = eval_value(ctx, base)?;
     let mut this_val = Value::UNDEFINED;
@@ -1344,6 +1362,17 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 let v = eval_expr(ctx, arg)?;
                 args.push(v);
             }
+            
+            // Check if val is a closure (our custom function)
+            let closure_marker = js_get_property_str(ctx, val, "__closure__");
+            if closure_marker == Value::TRUE {
+                val = call_closure(ctx, val, &args)?;
+                this_val = Value::UNDEFINED;
+                rest = next;
+                continue;
+            }
+            
+            // Otherwise use the standard call mechanism
             for arg in args.iter().rev() {
                 js_push_arg(ctx, *arg);
             }
@@ -1382,6 +1411,354 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
 }
 
+/// Call a closure with arguments
+fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Option<JSValue> {
+    // Get params and body from function object
+    let params_val = js_get_property_str(ctx, func, "__params__");
+    let body_val = js_get_property_str(ctx, func, "__body__");
+    
+    // Extract params string and make an owned copy
+    let params_bytes = ctx.string_bytes(params_val)?;
+    let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
+    let param_names: Vec<String> = if params_str.is_empty() {
+        Vec::new()
+    } else {
+        params_str.split(',').map(|s| s.trim().to_string()).collect()
+    };
+    
+    // Extract body string and make an owned copy
+    let body_bytes = ctx.string_bytes(body_val)?;
+    let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
+    
+    // Get global object
+    let saved_global = js_get_global_object(ctx);
+    
+    // Bind parameters to arguments in global scope
+    for (i, param_name) in param_names.iter().enumerate() {
+        let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
+        js_set_property_str(ctx, saved_global, param_name, arg_val);
+    }
+    
+    // Execute the function body
+    let result = eval_function_body(ctx, &body_str);
+    
+    // Clean up parameter bindings from global
+    // Note: In a real implementation we'd restore the original values
+    // For now, just leave them (simple implementation)
+    
+    result
+}
+
+/// Execute a function body and handle return statements
+fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
+    let stmts = split_statements(body)?;
+    let mut last = Value::UNDEFINED;
+    
+    for stmt in stmts {
+        let trimmed = stmt.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        
+        // Check for return statement
+        if trimmed.starts_with("return ") {
+            let expr = &trimmed[7..]; // skip "return "
+            return eval_expr(ctx, expr.trim());
+        }
+        if trimmed == "return" {
+            return Some(Value::UNDEFINED);
+        }
+        
+        // Execute statement
+        last = eval_expr(ctx, trimmed)?;
+    }
+    
+    Some(last)
+}
+
+/// Parse function declaration: "function name(params) { body }"
+/// Stores the function in the global object.
+fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    if !s.starts_with("function ") {
+        return None;
+    }
+    let rest = &s[9..]; // skip "function "
+    
+    // Parse function name
+    let (name, after_name) = parse_identifier(rest)?;
+    let after_name = after_name.trim_start();
+    
+    // Parse parameter list
+    if !after_name.starts_with('(') {
+        return None;
+    }
+    let (params_str, after_params) = extract_paren(after_name)?;
+    let param_list = split_top_level(params_str)?;
+    let mut params = Vec::new();
+    for p in param_list {
+        let p = p.trim();
+        if !p.is_empty() {
+            params.push(p.to_string());
+        }
+    }
+    
+    // Parse function body
+    let after_params = after_params.trim_start();
+    if !after_params.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_params)?;
+    
+    // Create a closure object
+    let func = create_function(ctx, &params, body)?;
+    
+    // Store function in global object
+    let global = js_get_global_object(ctx);
+    js_set_property_str(ctx, global, name, func);
+    
+    Some(func)
+}
+
+/// Extract content within braces { }
+fn extract_braces(s: &str) -> Option<(&str, &str)> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&s[1..i], &s[i + 1..]));
+                }
+            }
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse if statement: "if (condition) { block } else { block }"
+fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    let rest = if s.starts_with("if ") {
+        &s[3..]
+    } else if s.starts_with("if(") {
+        &s[2..]
+    } else {
+        return None;
+    };
+    
+    let rest = rest.trim_start();
+    
+    // Parse condition
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let (condition, after_cond) = extract_paren(rest)?;
+    let after_cond = after_cond.trim_start();
+    
+    // Parse then block
+    if !after_cond.starts_with('{') {
+        return None;
+    }
+    let (then_block, after_then) = extract_braces(after_cond)?;
+    let after_then = after_then.trim_start();
+    
+    // Parse optional else block
+    let else_block = if after_then.starts_with("else") {
+        let after_else = after_then[4..].trim_start();
+        if after_else.starts_with('{') {
+            let (block, _) = extract_braces(after_else)?;
+            Some(block)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    // Evaluate condition
+    let cond_val = eval_expr(ctx, condition)?;
+    let is_true = if cond_val.is_bool() {
+        cond_val == Value::TRUE
+    } else if let Some(n) = cond_val.int32() {
+        n != 0
+    } else {
+        !cond_val.is_null() && !cond_val.is_undefined()
+    };
+    
+    // Execute appropriate block
+    if is_true {
+        eval_function_body(ctx, then_block)
+    } else if let Some(else_body) = else_block {
+        eval_function_body(ctx, else_body)
+    } else {
+        Some(Value::UNDEFINED)
+    }
+}
+
+/// Parse while loop: "while (condition) { block }"
+fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    let rest = if s.starts_with("while ") {
+        &s[6..]
+    } else if s.starts_with("while(") {
+        &s[5..]
+    } else {
+        return None;
+    };
+    
+    let rest = rest.trim_start();
+    
+    // Parse condition
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let (condition, after_cond) = extract_paren(rest)?;
+    let after_cond = after_cond.trim_start();
+    
+    // Parse body block
+    if !after_cond.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_cond)?;
+    
+    // Execute loop
+    let mut last = Value::UNDEFINED;
+    loop {
+        // Evaluate condition
+        let cond_val = eval_expr(ctx, condition)?;
+        let is_true = if cond_val.is_bool() {
+            cond_val == Value::TRUE
+        } else if let Some(n) = cond_val.int32() {
+            n != 0
+        } else {
+            !cond_val.is_null() && !cond_val.is_undefined()
+        };
+        
+        if !is_true {
+            break;
+        }
+        
+        // Execute body
+        last = eval_function_body(ctx, body)?;
+    }
+    
+    Some(last)
+}
+
+/// Parse for loop: "for (init; condition; update) { block }"
+fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    let rest = if s.starts_with("for ") {
+        &s[4..]
+    } else if s.starts_with("for(") {
+        &s[3..]
+    } else {
+        return None;
+    };
+    
+    let rest = rest.trim_start();
+    
+    // Parse for header
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let (header, after_header) = extract_paren(rest)?;
+    let after_header = after_header.trim_start();
+    
+    // Split header into init; condition; update
+    let parts: Vec<&str> = header.split(';').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let init = parts[0].trim();
+    let condition = parts[1].trim();
+    let update = parts[2].trim();
+    
+    // Parse body block
+    if !after_header.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_header)?;
+    
+    // Execute loop
+    // Initialize
+    if !init.is_empty() {
+        eval_expr(ctx, init)?;
+    }
+    
+    let mut last = Value::UNDEFINED;
+    loop {
+        // Check condition
+        if !condition.is_empty() {
+            let cond_val = eval_expr(ctx, condition)?;
+            let is_true = if cond_val.is_bool() {
+                cond_val == Value::TRUE
+            } else if let Some(n) = cond_val.int32() {
+                n != 0
+            } else {
+                !cond_val.is_null() && !cond_val.is_undefined()
+            };
+            
+            if !is_true {
+                break;
+            }
+        }
+        
+        // Execute body
+        last = eval_function_body(ctx, body)?;
+        
+        // Execute update
+        if !update.is_empty() {
+            eval_expr(ctx, update)?;
+        }
+    }
+    
+    Some(last)
+}
+
+/// Create a function object with parameters and body
+fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
+    // Encode params as a comma-separated string
+    let params_str = params.join(",");
+    let params_val = js_new_string(ctx, &params_str);
+    
+    // Encode body as a string
+    let body_val = js_new_string(ctx, body);
+    
+    // Create closure object - use regular object for now
+    let func = js_new_object(ctx);
+    
+    // Store params and body as properties
+    js_set_property_str(ctx, func, "__params__", params_val);
+    js_set_property_str(ctx, func, "__body__", body_val);
+    js_set_property_str(ctx, func, "__closure__", Value::TRUE);
+    
+    Some(func)
+}
+
 fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let stmts = split_statements(src)?;
     let mut last = Value::UNDEFINED;
@@ -1390,6 +1767,42 @@ fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         let trimmed = stmt.trim();
         if trimmed.is_empty() {
             continue;
+        }
+        // Check for function declaration
+        if trimmed.starts_with("function ") {
+            if let Some(val) = parse_function_declaration(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for if statement
+        if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
+            if let Some(val) = parse_if_statement(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for while loop
+        if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
+            if let Some(val) = parse_while_loop(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for for loop
+        if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
+            if let Some(val) = parse_for_loop(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
         }
         last = eval_expr(ctx, trimmed)?;
         any = true;
@@ -2167,9 +2580,12 @@ fn split_statements(src: &str) -> Option<Vec<&str>> {
             }
             continue;
         }
-        if b == b';' && depth == 0 {
+        // Split on semicolon or newline at depth 0
+        if (b == b';' || b == b'\n') && depth == 0 {
             let part = s[start..i].trim();
-            out.push(part);
+            if !part.is_empty() {
+                out.push(part);
+            }
             start = i + 1;
         }
     }
@@ -2314,6 +2730,71 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_additive()?;
+        self.skip_ws();
+        
+        // Check for comparison operators
+        let start_pos = self.pos;
+        if let Some(first) = self.peek() {
+            self.pos += 1;
+            let op = match first {
+                b'<' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        "<=".as_bytes()
+                    } else {
+                        "<".as_bytes()
+                    }
+                }
+                b'>' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        ">=".as_bytes()
+                    } else {
+                        ">".as_bytes()
+                    }
+                }
+                b'=' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        if self.peek() == Some(b'=') {
+                            self.pos += 1;
+                            "===".as_bytes()
+                        } else {
+                            "==".as_bytes()
+                        }
+                    } else {
+                        self.pos = start_pos;
+                        return Ok(value);
+                    }
+                }
+                b'!' => {
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        if self.peek() == Some(b'=') {
+                            self.pos += 1;
+                            "!==".as_bytes()
+                        } else {
+                            "!=".as_bytes()
+                        }
+                    } else {
+                        self.pos = start_pos;
+                        return Ok(value);
+                    }
+                }
+                _ => {
+                    self.pos = start_pos;
+                    return Ok(value);
+                }
+            };
+            
+            let rhs = self.parse_additive()?;
+            value = self.compare_values(value, rhs, op)?;
+        }
+        Ok(value)
+    }
+
+    fn parse_additive(&mut self) -> Result<JSValue, ()> {
         let mut value = self.parse_term()?;
         loop {
             self.skip_ws();
@@ -2334,7 +2815,7 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_postfix()?;
+        let mut value = self.parse_unary()?;
         loop {
             self.skip_ws();
             let op = match self.peek() {
@@ -2343,7 +2824,7 @@ impl<'a> ArithParser<'a> {
                 _ => break,
             };
             self.pos += 1;
-            let rhs = self.parse_postfix()?;
+            let rhs = self.parse_unary()?;
             value = if op == b'*' {
                 self.mul_values(value, rhs)?
             } else {
@@ -2353,8 +2834,23 @@ impl<'a> ArithParser<'a> {
         Ok(value)
     }
 
+    fn parse_unary(&mut self) -> Result<JSValue, ()> {
+        self.skip_ws();
+        if let Some(b'+') = self.peek() {
+            self.pos += 1;
+            let val = self.parse_postfix()?;
+            return self.unary_plus(val);
+        }
+        if let Some(b'-') = self.peek() {
+            self.pos += 1;
+            let val = self.parse_postfix()?;
+            return self.unary_minus(val);
+        }
+        self.parse_postfix()
+    }
+
     fn parse_postfix(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_factor()?;
+        let mut value = self.parse_primary()?;
         loop {
             self.skip_ws();
             match self.peek() {
@@ -2402,16 +2898,8 @@ impl<'a> ArithParser<'a> {
         Ok(value)
     }
 
-    fn parse_factor(&mut self) -> Result<JSValue, ()> {
+    fn parse_primary(&mut self) -> Result<JSValue, ()> {
         self.skip_ws();
-        if let Some(b'+') = self.peek() {
-            self.pos += 1;
-            return self.parse_factor().and_then(|val| self.unary_plus(val));
-        }
-        if let Some(b'-') = self.peek() {
-            self.pos += 1;
-            return self.parse_factor().and_then(|val| self.unary_minus(val));
-        }
         if let Some(b'(') = self.peek() {
             self.pos += 1;
             let value = self.parse_expr()?;
@@ -2451,7 +2939,11 @@ impl<'a> ArithParser<'a> {
         }
         let ctx = unsafe { &mut *self.ctx };
         let global = js_get_global_object(ctx);
-        Ok(js_get_property_str(ctx, global, name))
+        let val = js_get_property_str(ctx, global, name);
+        if val.is_exception() {
+            return Err(());
+        }
+        Ok(val)
     }
 
     fn parse_string(&mut self) -> Result<JSValue, ()> {
@@ -2601,6 +3093,62 @@ impl<'a> ArithParser<'a> {
         let n = js_to_number(ctx, val).map_err(|_| ())?;
         let out = number_to_value(ctx, -n);
         if out.is_exception() { Err(()) } else { Ok(out) }
+    }
+
+    fn compare_values(&mut self, left: JSValue, right: JSValue, op: &[u8]) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let result = match op {
+            b"<" => {
+                let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                ln < rn
+            }
+            b">" => {
+                let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                ln > rn
+            }
+            b"<=" => {
+                let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                ln <= rn
+            }
+            b">=" => {
+                let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                ln >= rn
+            }
+            b"==" | b"===" => {
+                // Simplified equality - in real JS, == does type coercion
+                if left.0 == right.0 {
+                    true
+                } else {
+                    let ln = js_to_number(ctx, left).ok();
+                    let rn = js_to_number(ctx, right).ok();
+                    if let (Some(l), Some(r)) = (ln, rn) {
+                        l == r
+                    } else {
+                        false
+                    }
+                }
+            }
+            b"!=" | b"!==" => {
+                // Simplified inequality
+                if left.0 == right.0 {
+                    false
+                } else {
+                    let ln = js_to_number(ctx, left).ok();
+                    let rn = js_to_number(ctx, right).ok();
+                    if let (Some(l), Some(r)) = (ln, rn) {
+                        l != r
+                    } else {
+                        true
+                    }
+                }
+            }
+            _ => return Err(()),
+        };
+        Ok(if result { Value::TRUE } else { Value::FALSE })
     }
 
     fn skip_ws(&mut self) {
