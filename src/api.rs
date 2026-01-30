@@ -2425,12 +2425,27 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_Object_keys__" {
+                        // Ported from mquickjs js_object_keys (mquickjs.c:13837)
+                        // Simplified version using our existing object_keys() method
                         if args.len() == 1 {
-                            let _obj = args[0];
-                            let arr = js_new_array(ctx, 0);
-                            // This is a simplified version - real JS would iterate all enumerable properties
-                            // For now, just return an empty array since we don't have a way to iterate object keys
-                            val = arr;
+                            let obj = args[0];
+                            
+                            // Get keys from the object
+                            if let Some(keys) = ctx.object_keys(obj) {
+                                // Create array for result
+                                let arr = js_new_array(ctx, keys.len() as i32);
+                                
+                                // Populate array with key strings
+                                for (i, key) in keys.iter().enumerate() {
+                                    let key_str = js_new_string(ctx, key);
+                                    js_set_property_uint32(ctx, arr, i as u32, key_str);
+                                }
+                                
+                                val = arr;
+                            } else {
+                                // Not an object, return empty array
+                                val = js_new_array(ctx, 0);
+                            }
                         } else {
                             val = js_new_array(ctx, 0);
                         }
