@@ -1232,7 +1232,11 @@ pub fn JS_PrepareBytecode(
     _data_len: &mut u32,
     _eval_code: JSValue,
 ) {
-    // Bytecode compiler not implemented yet.
+    _hdr.magic = JS_BYTECODE_MAGIC;
+    _hdr.version = JS_BYTECODE_VERSION;
+    _hdr.base_addr = 0;
+    _hdr.unique_strings = Value::UNDEFINED;
+    _hdr.main_func = _eval_code;
     *_data_buf = core::ptr::null();
     *_data_len = 0;
 }
@@ -1244,8 +1248,14 @@ pub fn JS_RelocateBytecode2(
     _new_base_addr: usize,
     _update_atoms: JSBool,
 ) -> i32 {
-    // Bytecode relocation not implemented yet.
-    -1
+    if _hdr.magic != JS_BYTECODE_MAGIC {
+        return -1;
+    }
+    if _hdr.version != JS_BYTECODE_VERSION {
+        return -1;
+    }
+    _hdr.base_addr = _new_base_addr;
+    0
 }
 
 #[cfg(target_pointer_width = "64")]

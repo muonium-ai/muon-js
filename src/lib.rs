@@ -113,13 +113,16 @@ mod tests {
 
     #[test]
     fn bytecode_magic_check() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let payload = JS_NewString(&mut ctx, "abc");
         let mut buf = vec![0u8; core::mem::size_of::<JSBytecodeHeader>()];
         let hdr = JSBytecodeHeader {
             magic: JS_BYTECODE_MAGIC,
             version: JS_BYTECODE_VERSION,
             base_addr: 0,
             unique_strings: JSValue::UNDEFINED,
-            main_func: JSValue::UNDEFINED,
+            main_func: payload,
         };
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -129,9 +132,11 @@ mod tests {
             );
         }
         assert_eq!(JS_IsBytecode(&buf), 1);
-        let mut mem = vec![0u8; 64];
-        let mut ctx = JS_NewContext(&mut mem);
         assert_eq!(JS_RelocateBytecode(&mut ctx, &mut buf), 0);
+        let loaded = JS_LoadBytecode(&mut ctx, &buf);
+        let mut out = JSCStringBuf { buf: [0u8; 5] };
+        let loaded_s = JS_ToCString(&mut ctx, loaded, &mut out);
+        assert_eq!(loaded_s, "abc");
         let bad = [0u8; 4];
         assert_eq!(JS_IsBytecode(&bad), 0);
     }
