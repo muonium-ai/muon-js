@@ -1572,13 +1572,21 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                         }
                     } else if marker == "__builtin_string_substring__" {
-                        if args.len() == 2 {
-                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
+                        if args.len() >= 1 && args.len() <= 2 {
+                            if let Some(start) = args[0].int32() {
                                 if let Some(str_bytes) = ctx.string_bytes(this_val) {
                                     let start = start.max(0) as usize;
-                                    let end = end.max(0) as usize;
                                     let start = start.min(str_bytes.len());
-                                    let end = end.min(str_bytes.len());
+                                    let end = if args.len() == 2 {
+                                        if let Some(e) = args[1].int32() {
+                                            let e = e.max(0) as usize;
+                                            e.min(str_bytes.len())
+                                        } else {
+                                            str_bytes.len()
+                                        }
+                                    } else {
+                                        str_bytes.len()
+                                    };
                                     let (start, end) = if start > end { (end, start) } else { (start, end) };
                                     // Copy the substring to avoid borrow issues
                                     let substr_bytes = str_bytes[start..end].to_vec();
