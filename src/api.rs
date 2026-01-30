@@ -13,6 +13,7 @@
 //! built-in method implementations due to architectural constraints.
 
 use crate::context::Context;
+use regex::RegexBuilder;
 use crate::types::*;
 use crate::value::Value;
 
@@ -1295,6 +1296,148 @@ fn format_precision(n: f64, precision: i32) -> String {
     format!("{:.*}", frac, n)
 }
 
+fn compile_regex(
+    ctx: &mut JSContextImpl,
+    pattern: &str,
+    flags: &str,
+) -> Result<(regex::Regex, bool), JSValue> {
+    let mut global = false;
+    let mut case_insensitive = false;
+    let mut multi_line = false;
+    let mut dot_matches_new_line = false;
+    let mut unicode = false;
+
+    for ch in flags.chars() {
+        match ch {
+            'g' => {
+                if global {
+                    return Err(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::SyntaxError,
+                        "invalid regular expression flags",
+                    ));
+                }
+                global = true;
+            }
+            'i' => {
+                if case_insensitive {
+                    return Err(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::SyntaxError,
+                        "invalid regular expression flags",
+                    ));
+                }
+                case_insensitive = true;
+            }
+            'm' => {
+                if multi_line {
+                    return Err(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::SyntaxError,
+                        "invalid regular expression flags",
+                    ));
+                }
+                multi_line = true;
+            }
+            's' => {
+                if dot_matches_new_line {
+                    return Err(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::SyntaxError,
+                        "invalid regular expression flags",
+                    ));
+                }
+                dot_matches_new_line = true;
+            }
+            'u' => {
+                if unicode {
+                    return Err(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::SyntaxError,
+                        "invalid regular expression flags",
+                    ));
+                }
+                unicode = true;
+            }
+            _ => {
+                return Err(js_throw_error(
+                    ctx,
+                    JSObjectClassEnum::SyntaxError,
+                    "invalid regular expression flags",
+                ));
+            }
+        }
+    }
+
+    let mut builder = RegexBuilder::new(pattern);
+    builder.case_insensitive(case_insensitive);
+    builder.multi_line(multi_line);
+    builder.dot_matches_new_line(dot_matches_new_line);
+    let re = builder.build().map_err(|_| {
+        js_throw_error(
+            ctx,
+            JSObjectClassEnum::SyntaxError,
+            "invalid regular expression",
+        )
+    })?;
+
+    let _ = unicode;
+    Ok((re, global))
+}
+
+fn js_new_regexp(ctx: &mut JSContextImpl, pattern: &str, flags: &str) -> JSValue {
+    if compile_regex(ctx, pattern, flags).is_err() {
+        return Value::EXCEPTION;
+    }
+    let obj = js_new_object_class_user(ctx, JSObjectClassEnum::Regexp as i32);
+    if obj.is_exception() {
+        return obj;
+    }
+    let source = js_new_string(ctx, pattern);
+    let flags_val = js_new_string(ctx, flags);
+    let _ = js_set_property_str(ctx, obj, "source", source);
+    let _ = js_set_property_str(ctx, obj, "flags", flags_val);
+    let global = if flags.contains('g') { Value::TRUE } else { Value::FALSE };
+    let ignore_case = if flags.contains('i') { Value::TRUE } else { Value::FALSE };
+    let multiline = if flags.contains('m') { Value::TRUE } else { Value::FALSE };
+    let _ = js_set_property_str(ctx, obj, "global", global);
+    let _ = js_set_property_str(ctx, obj, "ignoreCase", ignore_case);
+    let _ = js_set_property_str(ctx, obj, "multiline", multiline);
+    obj
+}
+
+fn regexp_parts(ctx: &mut JSContextImpl, val: JSValue) -> Option<(String, String)> {
+    if ctx.object_class_id(val)? != JSObjectClassEnum::Regexp as u32 {
+        return None;
+    }
+    let source_val = js_get_property_str(ctx, val, "source");
+    let flags_val = js_get_property_str(ctx, val, "flags");
+    let source = ctx
+        .string_bytes(source_val)
+        .map(|bytes| core::str::from_utf8(bytes).unwrap_or("").to_string())
+        .unwrap_or_default();
+    let flags = ctx
+        .string_bytes(flags_val)
+        .map(|bytes| core::str::from_utf8(bytes).unwrap_or("").to_string())
+        .unwrap_or_default();
+    Some((source, flags))
+}
+
+fn coerce_to_string_value(ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
+    if ctx.string_bytes(val).is_some() {
+        val
+    } else {
+        js_to_string(ctx, val)
+    }
+}
+
+fn value_to_string(ctx: &mut JSContextImpl, val: JSValue) -> String {
+    let str_val = coerce_to_string_value(ctx, val);
+    ctx.string_bytes(str_val)
+        .map(|bytes| core::str::from_utf8(bytes).unwrap_or("").to_string())
+        .unwrap_or_default()
+}
+
 // ============================================================================
 // EXPRESSION EVALUATION
 // ============================================================================
@@ -2039,6 +2182,115 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_string_match__" {
+                        if args.is_empty() {
+                            val = Value::NULL;
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let input_val = coerce_to_string_value(ctx, this_val);
+                        let s = value_to_string(ctx, input_val);
+                        let (pattern, flags) = if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                            (src, flg)
+                        } else {
+                            (value_to_string(ctx, args[0]), String::new())
+                        };
+                        let (re, global) = match compile_regex(ctx, &pattern, &flags) {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        if global {
+                            let mut matches = Vec::new();
+                            for m in re.find_iter(&s) {
+                                matches.push(m.as_str().to_string());
+                            }
+                            if matches.is_empty() {
+                                val = Value::NULL;
+                            } else {
+                                let arr = js_new_array(ctx, matches.len() as i32);
+                                for (i, m) in matches.iter().enumerate() {
+                                    let mv = js_new_string(ctx, m);
+                                    js_set_property_uint32(ctx, arr, i as u32, mv);
+                                }
+                                val = arr;
+                            }
+                        } else if let Some(caps) = re.captures(&s) {
+                            let arr = js_new_array(ctx, caps.len() as i32);
+                            for i in 0..caps.len() {
+                                if let Some(m) = caps.get(i) {
+                                    let mv = js_new_string(ctx, m.as_str());
+                                    js_set_property_uint32(ctx, arr, i as u32, mv);
+                                } else {
+                                    js_set_property_uint32(ctx, arr, i as u32, Value::UNDEFINED);
+                                }
+                            }
+                            let idx = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
+                            let _ = js_set_property_str(ctx, arr, "index", Value::from_int32(idx));
+                            let _ = js_set_property_str(ctx, arr, "input", input_val);
+                            val = arr;
+                        } else {
+                            val = Value::NULL;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_matchAll__" {
+                        let input_val = coerce_to_string_value(ctx, this_val);
+                        let s = value_to_string(ctx, input_val);
+                        let (pattern, flags, global_required) = if args.is_empty() {
+                            (String::new(), "g".to_string(), true)
+                        } else if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                            (src, flg, true)
+                        } else {
+                            (value_to_string(ctx, args[0]), "g".to_string(), true)
+                        };
+                        let (re, global) = match compile_regex(ctx, &pattern, &flags) {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        if global_required && !global {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "matchAll requires a global RegExp");
+                            return None;
+                        }
+                        let mut matches = Vec::new();
+                        for m in re.find_iter(&s) {
+                            matches.push(m.as_str().to_string());
+                        }
+                        let arr = js_new_array(ctx, matches.len() as i32);
+                        for (i, m) in matches.iter().enumerate() {
+                            let mv = js_new_string(ctx, m);
+                            js_set_property_uint32(ctx, arr, i as u32, mv);
+                        }
+                        val = arr;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_search__" {
+                        if args.is_empty() {
+                            val = Value::from_int32(-1);
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let s = value_to_string(ctx, this_val);
+                        let (pattern, flags) = if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                            (src, flg)
+                        } else {
+                            (value_to_string(ctx, args[0]), String::new())
+                        };
+                        let (re, _) = match compile_regex(ctx, &pattern, &flags) {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        if let Some(m) = re.find(&s) {
+                            val = Value::from_int32(m.start() as i32);
+                        } else {
+                            val = Value::from_int32(-1);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_concat__" {
                         // Ported from mquickjs.c:14347-14395 js_array_concat
                         // Calculate total length needed
@@ -2567,32 +2819,24 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_string_replace__" {
                         if args.len() >= 2 {
-                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                    if let Some(search_bytes) = ctx.string_bytes(args[0]) {
-                                        if let Ok(search) = core::str::from_utf8(search_bytes) {
-                                            if let Some(replace_bytes) = ctx.string_bytes(args[1]) {
-                                                if let Ok(replace) = core::str::from_utf8(replace_bytes) {
-                                                    // Simple replace - only first occurrence
-                                                    let result = s.replacen(search, replace, 1);
-                                                    val = js_new_string(ctx, &result);
-                                                } else {
-                                                    val = this_val;
-                                                }
-                                            } else {
-                                                val = this_val;
-                                            }
-                                        } else {
-                                            val = this_val;
-                                        }
-                                    } else {
-                                        val = this_val;
-                                    }
+                            let s = value_to_string(ctx, this_val);
+                            if let Some((pattern, flags)) = regexp_parts(ctx, args[0]) {
+                                let (re, global) = match compile_regex(ctx, &pattern, &flags) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                };
+                                let replacement = value_to_string(ctx, args[1]);
+                                let replaced = if global {
+                                    re.replace_all(&s, replacement.as_str())
                                 } else {
-                                    val = this_val;
-                                }
+                                    re.replace(&s, replacement.as_str())
+                                };
+                                val = js_new_string(ctx, &replaced.to_string());
                             } else {
-                                val = this_val;
+                                let search = value_to_string(ctx, args[0]);
+                                let replacement = value_to_string(ctx, args[1]);
+                                let result = s.replacen(&search, &replacement, 1);
+                                val = js_new_string(ctx, &result);
                             }
                         } else {
                             val = this_val;
@@ -2603,32 +2847,24 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     } else if marker == "__builtin_string_replaceAll__" {
                         // ES2021 feature - replaceAll() replaces all occurrences
                         if args.len() >= 2 {
-                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                    if let Some(search_bytes) = ctx.string_bytes(args[0]) {
-                                        if let Ok(search) = core::str::from_utf8(search_bytes) {
-                                            if let Some(replace_bytes) = ctx.string_bytes(args[1]) {
-                                                if let Ok(replace) = core::str::from_utf8(replace_bytes) {
-                                                    // Replace all occurrences
-                                                    let result = s.replace(search, replace);
-                                                    val = js_new_string(ctx, &result);
-                                                } else {
-                                                    val = this_val;
-                                                }
-                                            } else {
-                                                val = this_val;
-                                            }
-                                        } else {
-                                            val = this_val;
-                                        }
-                                    } else {
-                                        val = this_val;
-                                    }
-                                } else {
-                                    val = this_val;
+                            let s = value_to_string(ctx, this_val);
+                            if let Some((pattern, flags)) = regexp_parts(ctx, args[0]) {
+                                let (re, global) = match compile_regex(ctx, &pattern, &flags) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                };
+                                if !global {
+                                    js_throw_error(ctx, JSObjectClassEnum::TypeError, "replaceAll requires a global RegExp");
+                                    return None;
                                 }
+                                let replacement = value_to_string(ctx, args[1]);
+                                let replaced = re.replace_all(&s, replacement.as_str());
+                                val = js_new_string(ctx, &replaced.to_string());
                             } else {
-                                val = this_val;
+                                let search = value_to_string(ctx, args[0]);
+                                let replacement = value_to_string(ctx, args[1]);
+                                let result = s.replace(&search, &replacement);
+                                val = js_new_string(ctx, &result);
                             }
                         } else {
                             val = this_val;
@@ -2861,6 +3097,29 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         } else {
                             val = Value::FALSE;
                         }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_RegExp__" {
+                        let (pattern, flags) = if args.is_empty() {
+                            (String::new(), String::new())
+                        } else if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                            let flags = if args.len() >= 2 && !args[1].is_undefined() {
+                                value_to_string(ctx, args[1])
+                            } else {
+                                flg
+                            };
+                            (src, flags)
+                        } else {
+                            let pattern = value_to_string(ctx, args[0]);
+                            let flags = if args.len() >= 2 && !args[1].is_undefined() {
+                                value_to_string(ctx, args[1])
+                            } else {
+                                String::new()
+                            };
+                            (pattern, flags)
+                        };
+                        val = js_new_regexp(ctx, &pattern, &flags);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -3770,6 +4029,33 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if name == "includes" {
                 if js_is_string(ctx, val) != 0 {
                     val = js_new_string(ctx, "__builtin_string_includes__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.match
+            if name == "match" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_match__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.matchAll
+            if name == "matchAll" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_matchAll__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.search
+            if name == "search" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_search__");
                     rest = next;
                     continue;
                 }
@@ -5089,6 +5375,18 @@ impl<'a> ArithParser<'a> {
                             "trim" => js_new_string(ctx, "__builtin_string_trim__"),
                             "trimStart" => js_new_string(ctx, "__builtin_string_trimStart__"),
                             "trimEnd" => js_new_string(ctx, "__builtin_string_trimEnd__"),
+                            "includes" => js_new_string(ctx, "__builtin_string_includes__"),
+                            "startsWith" => js_new_string(ctx, "__builtin_string_startsWith__"),
+                            "endsWith" => js_new_string(ctx, "__builtin_string_endsWith__"),
+                            "repeat" => js_new_string(ctx, "__builtin_string_repeat__"),
+                            "replace" => js_new_string(ctx, "__builtin_string_replace__"),
+                            "replaceAll" => js_new_string(ctx, "__builtin_string_replaceAll__"),
+                            "match" => js_new_string(ctx, "__builtin_string_match__"),
+                            "matchAll" => js_new_string(ctx, "__builtin_string_matchAll__"),
+                            "search" => js_new_string(ctx, "__builtin_string_search__"),
+                            "charCodeAt" => js_new_string(ctx, "__builtin_string_charCodeAt__"),
+                            "padStart" => js_new_string(ctx, "__builtin_string_padStart__"),
+                            "padEnd" => js_new_string(ctx, "__builtin_string_padEnd__"),
                             "length" => {
                                 if let Some(bytes) = ctx.string_bytes(value) {
                                     Value::from_int32(bytes.len() as i32)
@@ -5361,6 +5659,154 @@ impl<'a> ArithParser<'a> {
                         if let Ok(s) = core::str::from_utf8(&owned) {
                             return Ok(js_new_string(ctx, s.trim_end()));
                         }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_startsWith__" {
+                    if args.len() == 1 {
+                        let s = value_to_string(ctx, this_val);
+                        let prefix = value_to_string(ctx, args[0]);
+                        return Ok(Value::new_bool(s.starts_with(&prefix)));
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_string_endsWith__" {
+                    if args.len() == 1 {
+                        let s = value_to_string(ctx, this_val);
+                        let suffix = value_to_string(ctx, args[0]);
+                        return Ok(Value::new_bool(s.ends_with(&suffix)));
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_string_includes__" {
+                    if args.len() == 1 {
+                        let s = value_to_string(ctx, this_val);
+                        let search = value_to_string(ctx, args[0]);
+                        return Ok(Value::new_bool(s.contains(&search)));
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_string_repeat__" {
+                    if args.len() == 1 {
+                        if let Some(count) = args[0].int32() {
+                            let s = value_to_string(ctx, this_val);
+                            return Ok(js_new_string(ctx, &s.repeat(count.max(0) as usize)));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_match__" {
+                    if args.is_empty() {
+                        return Ok(Value::NULL);
+                    }
+                    let input_val = coerce_to_string_value(ctx, this_val);
+                    let s = value_to_string(ctx, input_val);
+                    let (pattern, flags) = if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                        (src, flg)
+                    } else {
+                        (value_to_string(ctx, args[0]), String::new())
+                    };
+                    let (re, global) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                    if global {
+                        let mut matches = Vec::new();
+                        for m in re.find_iter(&s) {
+                            matches.push(m.as_str().to_string());
+                        }
+                        if matches.is_empty() {
+                            return Ok(Value::NULL);
+                        }
+                        let arr = js_new_array(ctx, matches.len() as i32);
+                        for (i, m) in matches.iter().enumerate() {
+                            let mv = js_new_string(ctx, m);
+                            js_set_property_uint32(ctx, arr, i as u32, mv);
+                        }
+                        return Ok(arr);
+                    }
+                    if let Some(caps) = re.captures(&s) {
+                        let arr = js_new_array(ctx, caps.len() as i32);
+                        for i in 0..caps.len() {
+                            if let Some(m) = caps.get(i) {
+                                let mv = js_new_string(ctx, m.as_str());
+                                js_set_property_uint32(ctx, arr, i as u32, mv);
+                            } else {
+                                js_set_property_uint32(ctx, arr, i as u32, Value::UNDEFINED);
+                            }
+                        }
+                        let idx = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
+                        let _ = js_set_property_str(ctx, arr, "index", Value::from_int32(idx));
+                        let _ = js_set_property_str(ctx, arr, "input", input_val);
+                        return Ok(arr);
+                    }
+                    return Ok(Value::NULL);
+                } else if marker == "__builtin_string_matchAll__" {
+                    let input_val = coerce_to_string_value(ctx, this_val);
+                    let s = value_to_string(ctx, input_val);
+                    let (pattern, flags) = if args.is_empty() {
+                        (String::new(), "g".to_string())
+                    } else if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                        (src, flg)
+                    } else {
+                        (value_to_string(ctx, args[0]), "g".to_string())
+                    };
+                    let (re, global) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                    if !global {
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "matchAll requires a global RegExp");
+                        return Err(());
+                    }
+                    let mut matches = Vec::new();
+                    for m in re.find_iter(&s) {
+                        matches.push(m.as_str().to_string());
+                    }
+                    let arr = js_new_array(ctx, matches.len() as i32);
+                    for (i, m) in matches.iter().enumerate() {
+                        let mv = js_new_string(ctx, m);
+                        js_set_property_uint32(ctx, arr, i as u32, mv);
+                    }
+                    return Ok(arr);
+                } else if marker == "__builtin_string_search__" {
+                    if args.is_empty() {
+                        return Ok(Value::from_int32(-1));
+                    }
+                    let s = value_to_string(ctx, this_val);
+                    let (pattern, flags) = if let Some((src, flg)) = regexp_parts(ctx, args[0]) {
+                        (src, flg)
+                    } else {
+                        (value_to_string(ctx, args[0]), String::new())
+                    };
+                    let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                    if let Some(m) = re.find(&s) {
+                        return Ok(Value::from_int32(m.start() as i32));
+                    }
+                    return Ok(Value::from_int32(-1));
+                } else if marker == "__builtin_string_replace__" {
+                    if args.len() >= 2 {
+                        let s = value_to_string(ctx, this_val);
+                        if let Some((pattern, flags)) = regexp_parts(ctx, args[0]) {
+                            let (re, global) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                            let replacement = value_to_string(ctx, args[1]);
+                            let replaced = if global {
+                                re.replace_all(&s, replacement.as_str())
+                            } else {
+                                re.replace(&s, replacement.as_str())
+                            };
+                            return Ok(js_new_string(ctx, &replaced.to_string()));
+                        }
+                        let search = value_to_string(ctx, args[0]);
+                        let replacement = value_to_string(ctx, args[1]);
+                        return Ok(js_new_string(ctx, &s.replacen(&search, &replacement, 1)));
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_replaceAll__" {
+                    if args.len() >= 2 {
+                        let s = value_to_string(ctx, this_val);
+                        if let Some((pattern, flags)) = regexp_parts(ctx, args[0]) {
+                            let (re, global) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                            if !global {
+                                js_throw_error(ctx, JSObjectClassEnum::TypeError, "replaceAll requires a global RegExp");
+                                return Err(());
+                            }
+                            let replacement = value_to_string(ctx, args[1]);
+                            let replaced = re.replace_all(&s, replacement.as_str());
+                            return Ok(js_new_string(ctx, &replaced.to_string()));
+                        }
+                        let search = value_to_string(ctx, args[0]);
+                        let replacement = value_to_string(ctx, args[1]);
+                        return Ok(js_new_string(ctx, &s.replace(&search, &replacement)));
                     }
                     return Ok(this_val);
                 // Array methods
@@ -5666,6 +6112,9 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
             return Ok(value);
         }
+        if self.peek() == Some(b'/') {
+            return self.parse_regex_literal();
+        }
         if self.peek() == Some(b'[') {
             return self.parse_array_literal();
         }
@@ -5679,6 +6128,51 @@ impl<'a> ArithParser<'a> {
             return self.parse_number_value();
         }
         self.parse_identifier_value()
+    }
+
+    fn parse_regex_literal(&mut self) -> Result<JSValue, ()> {
+        self.pos += 1; // skip '/'
+        let mut pattern = Vec::new();
+        let mut escaped = false;
+        let mut closed = false;
+        while let Some(b) = self.peek() {
+            self.pos += 1;
+            if escaped {
+                pattern.push(b);
+                escaped = false;
+                continue;
+            }
+            if b == b'\\' {
+                pattern.push(b);
+                escaped = true;
+                continue;
+            }
+            if b == b'/' {
+                closed = true;
+                break;
+            }
+            pattern.push(b);
+        }
+        if !closed {
+            return Err(());
+        }
+        let mut flags = Vec::new();
+        while let Some(b) = self.peek() {
+            if b.is_ascii_alphabetic() {
+                flags.push(b);
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let pattern_str = core::str::from_utf8(&pattern).map_err(|_| ())?;
+        let flags_str = core::str::from_utf8(&flags).map_err(|_| ())?;
+        let ctx = unsafe { &mut *self.ctx };
+        let val = js_new_regexp(ctx, pattern_str, flags_str);
+        if val.is_exception() {
+            return Err(());
+        }
+        Ok(val)
     }
 
     fn parse_identifier_value(&mut self) -> Result<JSValue, ()> {

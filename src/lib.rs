@@ -869,4 +869,29 @@ mod tests {
         let v4 = eval_ret(&mut ctx, "o = {a:1}; d = Object.getOwnPropertyDescriptor(o, \"a\"); d.value");
         assert_eq!(JS_ToInt32(&mut ctx, v4).unwrap(), 1);
     }
+
+    #[test]
+    fn regex_string_methods() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let m = eval_ret(&mut ctx, "s = \"aba\"; r = s.match(/a/); r[0]");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let ms = JS_ToString(&mut ctx, m);
+        let mstr = JS_ToCString(&mut ctx, ms, &mut buf);
+        assert_eq!(mstr, "a");
+        let mg = eval_ret(&mut ctx, "s = \"aba\"; r = s.match(/a/g); r.length");
+        assert_eq!(JS_ToInt32(&mut ctx, mg).unwrap(), 2);
+        let ma = eval_ret(&mut ctx, "s = \"aba\"; r = s.matchAll(/a/g); r.length");
+        assert_eq!(JS_ToInt32(&mut ctx, ma).unwrap(), 2);
+        let sr = eval_ret(&mut ctx, "s = \"abc\"; s.search(/b/)");
+        assert_eq!(JS_ToInt32(&mut ctx, sr).unwrap(), 1);
+        let rep = eval_ret(&mut ctx, "s = \"aba\"; s.replace(/a/, \"x\")");
+        let reps = JS_ToString(&mut ctx, rep);
+        let repstr = JS_ToCString(&mut ctx, reps, &mut buf);
+        assert_eq!(repstr, "xba");
+        let repg = eval_ret(&mut ctx, "s = \"aba\"; s.replace(/a/g, \"x\")");
+        let repgs = JS_ToString(&mut ctx, repg);
+        let repgstr = JS_ToCString(&mut ctx, repgs, &mut buf);
+        assert_eq!(repgstr, "xbx");
+    }
 }
