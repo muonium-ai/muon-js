@@ -1,19 +1,24 @@
 # muon-js Implementation Progress
 
-**Last Updated**: January 30, 2026 (Session 3)
+**Last Updated**: January 30, 2026 (Session 4)
 
 ## 📊 Current Status
 
 ### Test Results
 - ✅ **Core Features**: 51/51 tests passing (100%)
 - ✅ **Integration Tests**: ~9/10 passing (90%)
-- ⚠️ **Unit Tests**: 25/26 passing (1 pre-existing Array constructor issue)
+- ✅ **Unit Tests**: 28/28 passing (100%)
 - ✅ **mquickjs Compatibility**: 7/7 control flow tests passing (100%)
   - See [MQUICKJS_TESTS.md](MQUICKJS_TESTS.md) for detailed results
 
 ### Build Status
 - ✅ Compiles successfully
 - ⚠️ 6 non-critical warnings (unused variables)
+
+### Session 4 Accomplishments
+- ✅ Added Number formatting methods: `toFixed`, `toPrecision`, `toExponential`
+- ✅ Added `Array.from` and `Array.of`
+- ✅ Implemented `Object.defineProperty` and `Object.getOwnPropertyDescriptor` (simplified)
 
 ### Session 3 Accomplishments
 - ✅ Added `var` keyword support - Variable declarations now work properly
@@ -86,7 +91,7 @@
 **Missing:**
 - ❌ sort() with custom comparator (needs callback support)
 - ❌ flatMap() (needs callback improvements)
-- ❌ Array.from(), Array.of()
+- ❌ Array.from() with custom mapping function for non-closures
 
 ### Phase 2: Built-in Methods - Object (70%)
 **Completed:**
@@ -96,10 +101,10 @@
 - ✅ Object.assign()
 - ✅ Object.create() (simplified)
 - ✅ Object.freeze() (stub)
+- ✅ Object.defineProperty() (simplified)
+- ✅ Object.getOwnPropertyDescriptor() (simplified)
 
 **Missing:**
-- ❌ Object.defineProperty()
-- ❌ Object.getOwnPropertyDescriptor()
 - ❌ Object.seal(), Object.isSealed()
 - ❌ Object.isFrozen()
 - ❌ Object.getPrototypeOf() improvements
@@ -109,13 +114,13 @@
 - ✅ Number.isInteger()
 - ✅ Number.isNaN()
 - ✅ Number.isFinite()
+- ✅ toFixed(), toPrecision(), toExponential()
 
 **Missing:**
 - ❌ Number.parseInt()
 - ❌ Number.parseFloat()
 - ❌ Number.isSafeInteger()
 - ❌ Number.MAX_VALUE, MIN_VALUE constants
-- ❌ toFixed(), toPrecision(), toExponential()
 
 ### Phase 2: Built-in Methods - Math (100%)
 **Completed:**

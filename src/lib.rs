@@ -836,4 +836,37 @@ mod tests {
         let as_ = JS_ToCString(&mut ctx, as_val, &mut buf);
         assert_eq!(as_, "[object Array]");
     }
+
+    #[test]
+    fn number_formatting_methods() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "x = 1.2345; x.toFixed(2)");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let vs = JS_ToString(&mut ctx, v);
+        let s = JS_ToCString(&mut ctx, vs, &mut buf);
+        assert_eq!(s, "1.23");
+        let v2 = eval_ret(&mut ctx, "x = 12.34; x.toPrecision(3)");
+        let v2s = JS_ToString(&mut ctx, v2);
+        let s2 = JS_ToCString(&mut ctx, v2s, &mut buf);
+        assert_eq!(s2, "12.3");
+        let v3 = eval_ret(&mut ctx, "x = 12.34; x.toExponential(2)");
+        let v3s = JS_ToString(&mut ctx, v3);
+        let s3 = JS_ToCString(&mut ctx, v3s, &mut buf);
+        assert_eq!(s3, "1.23e+1");
+    }
+
+    #[test]
+    fn array_from_of_and_object_descriptors() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "src = [1,2,3]; dst = Array.from(src); dst[2]");
+        assert_eq!(JS_ToInt32(&mut ctx, v).unwrap(), 3);
+        let v2 = eval_ret(&mut ctx, "dst = Array.of(4,5); dst.length");
+        assert_eq!(JS_ToInt32(&mut ctx, v2).unwrap(), 2);
+        let v3 = eval_ret(&mut ctx, "o = {}; Object.defineProperty(o, \"x\", {value: 7}); o.x");
+        assert_eq!(JS_ToInt32(&mut ctx, v3).unwrap(), 7);
+        let v4 = eval_ret(&mut ctx, "o = {a:1}; d = Object.getOwnPropertyDescriptor(o, \"a\"); d.value");
+        assert_eq!(JS_ToInt32(&mut ctx, v4).unwrap(), 1);
+    }
 }

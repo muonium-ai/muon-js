@@ -1217,6 +1217,84 @@ pub fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, (
     Ok(value)
 }
 
+fn normalize_exponent(s: &str) -> String {
+    let (base, exp) = match s.find('e').or_else(|| s.find('E')) {
+        Some(idx) => (&s[..idx], &s[idx + 1..]),
+        None => return s.to_string(),
+    };
+    let mut sign = '+';
+    let mut digits = exp;
+    if let Some(rest) = exp.strip_prefix('-') {
+        sign = '-';
+        digits = rest;
+    } else if let Some(rest) = exp.strip_prefix('+') {
+        digits = rest;
+    }
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    format!("{}e{}{}", base, sign, digits)
+}
+
+fn format_fixed(n: f64, digits: i32) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        if n.is_sign_negative() {
+            return "-Infinity".to_string();
+        }
+        return "Infinity".to_string();
+    }
+    let prec = digits.max(0) as usize;
+    format!("{:.*}", prec, n)
+}
+
+fn format_exponential(n: f64, digits: Option<i32>) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        if n.is_sign_negative() {
+            return "-Infinity".to_string();
+        }
+        return "Infinity".to_string();
+    }
+    let s = match digits {
+        Some(d) => format!("{:.*e}", d as usize, n),
+        None => format!("{:e}", n),
+    };
+    normalize_exponent(&s)
+}
+
+fn format_precision(n: f64, precision: i32) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        if n.is_sign_negative() {
+            return "-Infinity".to_string();
+        }
+        return "Infinity".to_string();
+    }
+    if n == 0.0 {
+        let mut out = String::from("0");
+        if precision > 1 {
+            out.push('.');
+            for _ in 1..precision {
+                out.push('0');
+            }
+        }
+        return out;
+    }
+    let abs = n.abs();
+    let exp = abs.log10().floor() as i32;
+    if exp < -6 || exp >= precision {
+        return format_exponential(n, Some(precision - 1));
+    }
+    let frac = (precision - exp - 1).max(0) as usize;
+    format!("{:.*}", frac, n)
+}
+
 // ============================================================================
 // EXPRESSION EVALUATION
 // ============================================================================
@@ -3010,6 +3088,84 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Object_defineProperty__" {
+                        if args.len() < 3 {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.defineProperty requires an object and a property");
+                            return None;
+                        }
+                        let obj = args[0];
+                        if ctx.object_class_id(obj).is_none() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.defineProperty called on non-object");
+                            return None;
+                        }
+                        let key_val = if ctx.string_bytes(args[1]).is_some() {
+                            args[1]
+                        } else {
+                            js_to_string(ctx, args[1])
+                        };
+                        let key_bytes = ctx
+                            .string_bytes(key_val)
+                            .map(|bytes| bytes.to_vec())
+                            .unwrap_or_default();
+                        let key_str = core::str::from_utf8(&key_bytes).unwrap_or("");
+                        let desc = args[2];
+                        if ctx.object_class_id(desc).is_none() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Property descriptor must be an object");
+                            return None;
+                        }
+                        let prop_val = js_get_property_str(ctx, desc, "value");
+                        if key_bytes.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Invalid property key");
+                            return None;
+                        }
+                        let res = js_set_property_str(ctx, obj, key_str, prop_val);
+                        if res.is_exception() {
+                            return None;
+                        }
+                        val = obj;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_getOwnPropertyDescriptor__" {
+                        if args.len() < 2 {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.getOwnPropertyDescriptor requires an object and a property");
+                            return None;
+                        }
+                        let obj = args[0];
+                        if ctx.object_class_id(obj).is_none() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.getOwnPropertyDescriptor called on non-object");
+                            return None;
+                        }
+                        let key_val = if ctx.string_bytes(args[1]).is_some() {
+                            args[1]
+                        } else {
+                            js_to_string(ctx, args[1])
+                        };
+                        let key_bytes = ctx
+                            .string_bytes(key_val)
+                            .map(|bytes| bytes.to_vec())
+                            .unwrap_or_default();
+                        if key_bytes.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Invalid property key");
+                            return None;
+                        }
+                        if !ctx.has_property_str(obj, &key_bytes) {
+                            val = Value::UNDEFINED;
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let key_str = core::str::from_utf8(&key_bytes).unwrap_or("");
+                        let prop_val = js_get_property_str(ctx, obj, key_str);
+                        let desc = js_new_object(ctx);
+                        js_set_property_str(ctx, desc, "value", prop_val);
+                        js_set_property_str(ctx, desc, "writable", Value::TRUE);
+                        js_set_property_str(ctx, desc, "enumerable", Value::TRUE);
+                        js_set_property_str(ctx, desc, "configurable", Value::TRUE);
+                        val = desc;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_JSON_stringify__" {
                         // JSON.stringify(value) - convert value to JSON string
                         if args.is_empty() {
@@ -3055,6 +3211,68 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         } else {
                             val = Value::FALSE;
                         }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Array_from__" {
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Array.from requires an array-like object");
+                            return None;
+                        }
+                        let source = args[0];
+                        let map_fn = if args.len() >= 2 { Some(args[1]) } else { None };
+                        let this_arg = if args.len() >= 3 { args[2] } else { Value::UNDEFINED };
+                        let use_map = map_fn.is_some();
+                        let mut is_string = false;
+                        let len = if let Some(bytes) = ctx.string_bytes(source) {
+                            is_string = true;
+                            bytes.len() as i32
+                        } else if ctx.object_class_id(source).is_some() {
+                            js_get_property_str(ctx, source, "length").int32().unwrap_or(0)
+                        } else {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Array.from requires an array-like object");
+                            return None;
+                        };
+                        let result = js_new_array(ctx, len);
+                        let mut can_call = false;
+                        if let Some(cb) = map_fn {
+                            let closure_marker = js_get_property_str(ctx, cb, "__closure__");
+                            can_call = closure_marker == Value::TRUE;
+                        }
+                        for i in 0..(len.max(0) as u32) {
+                            let elem = if is_string {
+                                let bytes = ctx.string_bytes(source).unwrap_or(b"");
+                                let b = bytes.get(i as usize).copied().unwrap_or(0);
+                                let ch = [b];
+                                let s = core::str::from_utf8(&ch).unwrap_or("");
+                                js_new_string(ctx, s)
+                            } else {
+                                js_get_property_uint32(ctx, source, i)
+                            };
+                            let mut out = elem;
+                            if use_map {
+                                if let Some(cb) = map_fn {
+                                    if can_call {
+                                        let idx_val = Value::from_int32(i as i32);
+                                        let call_args = [elem, idx_val, this_arg];
+                                        if let Some(mapped) = call_closure(ctx, cb, &call_args) {
+                                            out = mapped;
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = js_set_property_uint32(ctx, result, i, out);
+                        }
+                        val = result;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Array_of__" {
+                        let result = js_new_array(ctx, args.len() as i32);
+                        for (i, arg) in args.iter().enumerate() {
+                            let _ = js_set_property_uint32(ctx, result, i as u32, *arg);
+                        }
+                        val = result;
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -3166,6 +3384,57 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         } else {
                             val = Value::FALSE;
                         }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_number_toFixed__" {
+                        let digits = if args.is_empty() {
+                            0
+                        } else {
+                            js_to_int32(ctx, args[0]).unwrap_or(0)
+                        };
+                        if digits < 0 || digits > 100 {
+                            js_throw_error(ctx, JSObjectClassEnum::RangeError, "toFixed() digits out of range");
+                            return None;
+                        }
+                        let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                        let s = format_fixed(n, digits);
+                        val = js_new_string(ctx, &s);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_number_toPrecision__" {
+                        if args.is_empty() {
+                            val = js_to_string(ctx, this_val);
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let precision = js_to_int32(ctx, args[0]).unwrap_or(0);
+                        if precision < 1 || precision > 100 {
+                            js_throw_error(ctx, JSObjectClassEnum::RangeError, "toPrecision() precision out of range");
+                            return None;
+                        }
+                        let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                        let s = format_precision(n, precision);
+                        val = js_new_string(ctx, &s);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_number_toExponential__" {
+                        let digits_opt = if args.is_empty() {
+                            None
+                        } else {
+                            let d = js_to_int32(ctx, args[0]).unwrap_or(0);
+                            if d < 0 || d > 100 {
+                                js_throw_error(ctx, JSObjectClassEnum::RangeError, "toExponential() digits out of range");
+                                return None;
+                            }
+                            Some(d)
+                        };
+                        let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                        let s = format_exponential(n, digits_opt);
+                        val = js_new_string(ctx, &s);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -3340,6 +3609,21 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     }
+                }
+            }
+
+            // Number formatting methods
+            if name == "toFixed" || name == "toPrecision" || name == "toExponential" {
+                if js_is_number(ctx, val) != 0 {
+                    if name == "toFixed" {
+                        val = js_new_string(ctx, "__builtin_number_toFixed__");
+                    } else if name == "toPrecision" {
+                        val = js_new_string(ctx, "__builtin_number_toPrecision__");
+                    } else {
+                        val = js_new_string(ctx, "__builtin_number_toExponential__");
+                    }
+                    rest = next;
+                    continue;
                 }
             }
 
@@ -3719,6 +4003,16 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "defineProperty" => {
+                                val = js_new_string(ctx, "__builtin_Object_defineProperty__");
+                                rest = next;
+                                continue;
+                            }
+                            "getOwnPropertyDescriptor" => {
+                                val = js_new_string(ctx, "__builtin_Object_getOwnPropertyDescriptor__");
+                                rest = next;
+                                continue;
+                            }
                             _ => {}
                         }
                     } else if marker == "__builtin_JSON__" {
@@ -3739,6 +4033,16 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         match name {
                             "isArray" => {
                                 val = js_new_string(ctx, "__builtin_Array_isArray__");
+                                rest = next;
+                                continue;
+                            }
+                            "from" => {
+                                val = js_new_string(ctx, "__builtin_Array_from__");
+                                rest = next;
+                                continue;
+                            }
+                            "of" => {
+                                val = js_new_string(ctx, "__builtin_Array_of__");
                                 rest = next;
                                 continue;
                             }
