@@ -812,6 +812,85 @@ pub fn js_print_value(_ctx: &mut JSContextImpl, _val: JSValue) {
     _ctx.write_log(b"\n");
 }
 
+pub fn js_console_log(_ctx: &mut JSContextImpl, args: &[JSValue]) {
+    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            _ctx.write_log(b" ");
+        }
+        let owned = {
+            let s = js_to_cstring(_ctx, *arg, &mut buf);
+            s.as_bytes().to_vec()
+        };
+        _ctx.write_log(&owned);
+    }
+    _ctx.write_log(b"\n");
+}
+
+fn call_builtin_global_marker(
+    ctx: &mut JSContextImpl,
+    marker: &str,
+    args: &[JSValue],
+) -> Option<JSValue> {
+    match marker {
+        "__builtin_parseInt__" => {
+            if args.len() >= 1 {
+                if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                        if let Ok(n) = s.trim().parse::<i32>() {
+                            return Some(Value::from_int32(n));
+                        }
+                    }
+                } else if let Some(n) = args[0].int32() {
+                    return Some(Value::from_int32(n));
+                }
+                Some(number_to_value(ctx, f64::NAN))
+            } else {
+                Some(number_to_value(ctx, f64::NAN))
+            }
+        }
+        "__builtin_parseFloat__" => {
+            if args.len() >= 1 {
+                if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                        if let Ok(n) = s.trim().parse::<f64>() {
+                            return Some(number_to_value(ctx, n));
+                        }
+                    }
+                } else if let Ok(n) = js_to_number(ctx, args[0]) {
+                    return Some(number_to_value(ctx, n));
+                }
+                Some(number_to_value(ctx, f64::NAN))
+            } else {
+                Some(number_to_value(ctx, f64::NAN))
+            }
+        }
+        "__builtin_isNaN__" => {
+            if args.len() >= 1 {
+                if let Ok(n) = js_to_number(ctx, args[0]) {
+                    Some(Value::new_bool(n.is_nan()))
+                } else {
+                    Some(Value::TRUE)
+                }
+            } else {
+                Some(Value::TRUE)
+            }
+        }
+        "__builtin_isFinite__" => {
+            if args.len() >= 1 {
+                if let Ok(n) = js_to_number(ctx, args[0]) {
+                    Some(Value::new_bool(n.is_finite()))
+                } else {
+                    Some(Value::FALSE)
+                }
+            } else {
+                Some(Value::FALSE)
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn js_print_value_f(_ctx: &mut JSContextImpl, _val: JSValue, _flags: i32) {
     js_print_value(_ctx, _val);
 }
@@ -3401,6 +3480,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Date_now__" {
+                        val = js_date_now(ctx);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_console_log__" {
+                        js_console_log(ctx, &args);
+                        val = Value::UNDEFINED;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_RegExp__" {
                         let (pattern, flags) = if args.is_empty() {
                             (String::new(), String::new())
@@ -3858,7 +3948,6 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         let source = args[0];
                         let map_fn = if args.len() >= 2 { Some(args[1]) } else { None };
                         let this_arg = if args.len() >= 3 { args[2] } else { Value::UNDEFINED };
-                        let use_map = map_fn.is_some();
                         let mut is_string = false;
                         let len = if let Some(bytes) = ctx.string_bytes(source) {
                             is_string = true;
@@ -3870,10 +3959,20 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             return None;
                         };
                         let result = js_new_array(ctx, len);
-                        let mut can_call = false;
+                        let mut map_closure: Option<JSValue> = None;
+                        let mut map_cfunc: Option<(i32, JSValue)> = None;
+                        let mut map_marker: Option<String> = None;
                         if let Some(cb) = map_fn {
                             let closure_marker = js_get_property_str(ctx, cb, "__closure__");
-                            can_call = closure_marker == Value::TRUE;
+                            if closure_marker == Value::TRUE {
+                                map_closure = Some(cb);
+                            } else if let Some((idx, params)) = ctx.c_function_info(cb) {
+                                map_cfunc = Some((idx, params));
+                            } else if let Some(bytes) = ctx.string_bytes(cb) {
+                                if let Ok(marker) = core::str::from_utf8(bytes) {
+                                    map_marker = Some(marker.to_string());
+                                }
+                            }
                         }
                         for i in 0..(len.max(0) as u32) {
                             let elem = if is_string {
@@ -3886,14 +3985,18 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 js_get_property_uint32(ctx, source, i)
                             };
                             let mut out = elem;
-                            if use_map {
-                                if let Some(cb) = map_fn {
-                                    if can_call {
-                                        let idx_val = Value::from_int32(i as i32);
-                                        let call_args = [elem, idx_val, this_arg];
-                                        if let Some(mapped) = call_closure(ctx, cb, &call_args) {
-                                            out = mapped;
-                                        }
+                            if map_closure.is_some() || map_cfunc.is_some() || map_marker.is_some() {
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_arg];
+                                if let Some(cb) = map_closure {
+                                    if let Some(mapped) = call_closure(ctx, cb, &call_args) {
+                                        out = mapped;
+                                    }
+                                } else if let Some((idx, params)) = map_cfunc {
+                                    out = call_c_function(ctx, idx, params, this_arg, &call_args);
+                                } else if let Some(marker) = map_marker.as_deref() {
+                                    if let Some(mapped) = call_builtin_global_marker(ctx, marker, &call_args) {
+                                        out = mapped;
                                     }
                                 }
                             }
@@ -4194,6 +4297,24 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         if rest_trim.starts_with('.') {
             let (name, next) = parse_identifier(&rest_trim[1..])?;
             this_val = val;
+
+            if let Some(bytes) = ctx.string_bytes(val) {
+                if let Ok(marker) = core::str::from_utf8(bytes) {
+                    if marker == "__builtin_Date__" {
+                        if name == "now" {
+                            val = js_new_string(ctx, "__builtin_Date_now__");
+                            rest = next;
+                            continue;
+                        }
+                    } else if marker == "__builtin_console__" {
+                        if name == "log" {
+                            val = js_new_string(ctx, "__builtin_console_log__");
+                            rest = next;
+                            continue;
+                        }
+                    }
+                }
+            }
             
             // Handle special properties and methods
             // Array.length
@@ -5925,6 +6046,18 @@ impl<'a> ArithParser<'a> {
                                     };
                                     continue;
                                 }
+                                if marker == "__builtin_Date__" {
+                                    if prop == "now" {
+                                        value = js_new_string(ctx, "__builtin_Date_now__");
+                                        continue;
+                                    }
+                                }
+                                if marker == "__builtin_console__" {
+                                    if prop == "log" {
+                                        value = js_new_string(ctx, "__builtin_console_log__");
+                                        continue;
+                                    }
+                                }
                             }
                         }
                         value = match prop {
@@ -6073,6 +6206,13 @@ impl<'a> ArithParser<'a> {
         // Check if method is a builtin marker string
         if let Some(bytes) = ctx.string_bytes(method) {
             if let Ok(marker) = core::str::from_utf8(bytes) {
+                if marker == "__builtin_Date_now__" {
+                    return Ok(js_date_now(ctx));
+                }
+                if marker == "__builtin_console_log__" {
+                    js_console_log(ctx, args);
+                    return Ok(Value::UNDEFINED);
+                }
                 // String methods
                 if marker == "__builtin_string_charAt__" {
                     if args.len() == 1 {

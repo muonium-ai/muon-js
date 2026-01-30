@@ -151,15 +151,16 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 #### Number Methods (Missing)
 - None
 
-#### Date Object (Missing)
-- ❌ **Entire Date API** (mquickjs only supports `Date.now()`)
+#### Date Object (Partial)
+- ✅ `Date.now()`
+- ❌ Remaining Date API (not in mquickjs scope)
 
 #### JSON Object (Missing)
 - ❌ Full compatibility audit for `JSON.parse` / `JSON.stringify`
 
 #### Global Functions (Missing)
 - ❌ `eval(code)` (only indirect eval in mquickjs)
-- ❌ `console.log()` ⚠️ *Useful for debugging*
+- ✅ `console.log()` (basic)
 - ❌ `setTimeout()` / `setInterval()` (not in mquickjs)
 
 ---

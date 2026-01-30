@@ -59,6 +59,12 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "RegExp" {
         return Some(builtin_or_global("RegExp", "__builtin_RegExp__"));
     }
+    if s == "Date" {
+        return Some(builtin_or_global("Date", "__builtin_Date__"));
+    }
+    if s == "console" {
+        return Some(builtin_or_global("console", "__builtin_console__"));
+    }
     if s == "parseInt" {
         return Some(builtin_or_global("parseInt", "__builtin_parseInt__"));
     }

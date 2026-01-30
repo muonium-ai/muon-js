@@ -105,6 +105,7 @@
 - ✅ at() (ES2022)
 - ✅ flat() (ES2019)
 - ✅ Array.isArray()
+- ✅ Array.from() map function (non-closure support)
 
 **Missing:**
 - ❌ Array.from() with custom mapping function for non-closures
@@ -173,7 +174,7 @@
 
 **Missing:**
 - ❌ setTimeout, setInterval (needs event loop)
-- ❌ console.log improvements
+- ✅ console.log (basic)
 
 ---
 

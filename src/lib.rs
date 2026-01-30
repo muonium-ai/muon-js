@@ -889,6 +889,22 @@ mod tests {
     }
 
     #[test]
+    fn array_from_map_and_date_console() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mapped = eval_ret(&mut ctx, "Array.from(['1','2'], parseInt).join(',')");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let mapped_str = JS_ToString(&mut ctx, mapped);
+        let mapped_s = JS_ToCString(&mut ctx, mapped_str, &mut buf);
+        assert_eq!(mapped_s, "1,2");
+        let now_val = eval_ret(&mut ctx, "Date.now()");
+        let now_num = JS_ToNumber(&mut ctx, now_val).unwrap_or(0.0);
+        assert!(now_num > 0.0);
+        let log_val = eval_ret(&mut ctx, "console.log('ok', 1)");
+        assert_eq!(log_val, JSValue::UNDEFINED);
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
