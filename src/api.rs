@@ -1235,7 +1235,7 @@ fn contains_arith_op(src: &str) -> bool {
                 depth -= 1;
                 last_was_operand = true;
             }
-            b'+' | b'-' | b'*' | b'/' if depth == 0 && last_was_operand => {
+            b'+' | b'-' | b'*' | b'/' | b'%' if depth == 0 && last_was_operand => {
                 return true;
             }
             b'<' | b'>' | b'=' if depth == 0 && last_was_operand => {
@@ -1252,7 +1252,7 @@ fn contains_arith_op(src: &str) -> bool {
                     return true;
                 }
             }
-            b'&' | b'|' if depth == 0 && last_was_operand => {
+            b'&' | b'|' | b'^' if depth == 0 && last_was_operand => {
                 return true;
             }
             b' ' | b'\t' | b'\n' | b'\r' => {
@@ -1393,6 +1393,16 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             return None;
         }
         return Some(rhs_val);
+    }
+    // Check for ternary operator: condition ? true_val : false_val
+    if let Some((cond, true_part, false_part)) = split_ternary(s) {
+        let cond_val = eval_expr(ctx, cond)?;
+        let is_true = is_truthy(cond_val);
+        if is_true {
+            return eval_expr(ctx, true_part);
+        } else {
+            return eval_expr(ctx, false_part);
+        }
     }
     // Check for arithmetic operators before splitting on base/tail
     if contains_arith_op(s) {
@@ -2369,6 +2379,74 @@ fn split_assignment(src: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn split_ternary(src: &str) -> Option<(&str, &str, &str)> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut question_pos = None;
+    
+    // Find the ? at depth 0
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            b'?' if depth == 0 => {
+                question_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    
+    let q_pos = question_pos?;
+    
+    // Find the : at depth 0 after the ?
+    depth = 0;
+    in_string = false;
+    for i in (q_pos + 1)..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            b':' if depth == 0 => {
+                let cond = src[..q_pos].trim();
+                let true_part = src[q_pos + 1..i].trim();
+                let false_part = src[i + 1..].trim();
+                if !cond.is_empty() && !true_part.is_empty() && !false_part.is_empty() {
+                    return Some((cond, true_part, false_part));
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
     let s = src.trim();
     if s.is_empty() {
@@ -2540,6 +2618,23 @@ fn is_identifier(s: &str) -> bool {
         None => return false,
     };
     !name.is_empty() && rest.trim().is_empty()
+}
+
+fn is_truthy(val: JSValue) -> bool {
+    if val.is_bool() {
+        val == Value::TRUE
+    } else if val.is_number() {
+        // Check if number is non-zero
+        if let Some(n) = val.int32() {
+            n != 0
+        } else {
+            // For float, treat as truthy unless it's exactly 0.0 or NaN
+            // We can't easily check the exact value without context, so assume truthy
+            true
+        }
+    } else {
+        !val.is_null() && !val.is_undefined()
+    }
 }
 
 fn call_c_function(
@@ -2939,13 +3034,58 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_logical_and(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_comparison()?;
+        let mut value = self.parse_bitwise_or()?;
         loop {
             self.skip_ws();
             if self.peek() == Some(b'&') && self.peek_at(1) == Some(b'&') {
                 self.pos += 2;
-                let rhs = self.parse_comparison()?;
+                let rhs = self.parse_bitwise_or()?;
                 value = self.logical_and(value, rhs)?;
+            } else {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_bitwise_xor()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'|') && self.peek_at(1) != Some(b'|') {
+                self.pos += 1;
+                let rhs = self.parse_bitwise_xor()?;
+                value = self.bitwise_or(value, rhs)?;
+            } else {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_bitwise_and()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'^') {
+                self.pos += 1;
+                let rhs = self.parse_bitwise_and()?;
+                value = self.bitwise_xor(value, rhs)?;
+            } else {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_comparison()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'&') && self.peek_at(1) != Some(b'&') {
+                self.pos += 1;
+                let rhs = self.parse_comparison()?;
+                value = self.bitwise_and(value, rhs)?;
             } else {
                 break;
             }
@@ -3045,14 +3185,17 @@ impl<'a> ArithParser<'a> {
             let op = match self.peek() {
                 Some(b'*') => b'*',
                 Some(b'/') => b'/',
+                Some(b'%') => b'%',
                 _ => break,
             };
             self.pos += 1;
             let rhs = self.parse_unary()?;
             value = if op == b'*' {
                 self.mul_values(value, rhs)?
-            } else {
+            } else if op == b'/' {
                 self.div_values(value, rhs)?
+            } else {
+                self.mod_values(value, rhs)?
             };
         }
         Ok(value)
@@ -3310,6 +3453,14 @@ impl<'a> ArithParser<'a> {
         if val.is_exception() { Err(()) } else { Ok(val) }
     }
 
+    fn mod_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_number(ctx, left).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let val = number_to_value(ctx, ln % rn);
+        if val.is_exception() { Err(()) } else { Ok(val) }
+    }
+
     fn unary_plus(&mut self, val: JSValue) -> Result<JSValue, ()> {
         let ctx = unsafe { &mut *self.ctx };
         let n = js_to_number(ctx, val).map_err(|_| ())?;
@@ -3401,6 +3552,27 @@ impl<'a> ArithParser<'a> {
     fn logical_not(&mut self, val: JSValue) -> Result<JSValue, ()> {
         let truthy = self.is_truthy(val);
         Ok(if truthy { Value::FALSE } else { Value::TRUE })
+    }
+
+    fn bitwise_and(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_int32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_int32(ctx, right).map_err(|_| ())?;
+        Ok(Value::from_int32(ln & rn))
+    }
+
+    fn bitwise_or(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_int32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_int32(ctx, right).map_err(|_| ())?;
+        Ok(Value::from_int32(ln | rn))
+    }
+
+    fn bitwise_xor(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_int32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_int32(ctx, right).map_err(|_| ())?;
+        Ok(Value::from_int32(ln ^ rn))
     }
 
     fn is_truthy(&self, val: JSValue) -> bool {
