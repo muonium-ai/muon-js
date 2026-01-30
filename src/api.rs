@@ -2017,29 +2017,57 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_slice__" {
-                        if args.len() == 2 {
-                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
-                                let len_val = js_get_property_str(ctx, this_val, "length");
-                                if let Some(len) = len_val.int32() {
-                                    let start = start.max(0).min(len) as usize;
-                                    let end = end.max(0).min(len) as usize;
-                                    let arr = js_new_array(ctx, 0);
-                                    let mut idx = 0u32;
-                                    for i in start..end {
-                                        let elem = js_get_property_uint32(ctx, this_val, i as u32);
-                                        js_set_property_uint32(ctx, arr, idx, elem);
-                                        idx += 1;
+                        // Ported from mquickjs.c:14440-14477 js_array_slice
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0);
+                        
+                        // Get start index with proper negative handling
+                        let start = if args.len() > 0 {
+                            if let Some(start_val) = args[0].int32() {
+                                let mut s = start_val;
+                                if s < 0 {
+                                    s += len;
+                                    if s < 0 {
+                                        s = 0;
                                     }
-                                    val = arr;
-                                } else {
-                                    val = js_new_array(ctx, 0);
                                 }
+                                s.min(len)
                             } else {
-                                val = js_new_array(ctx, 0);
+                                len
                             }
                         } else {
-                            val = js_new_array(ctx, 0);
+                            len
+                        };
+                        
+                        // Get end index with proper negative handling
+                        let final_idx = if args.len() > 1 {
+                            if let Some(end_val) = args[1].int32() {
+                                let mut e = end_val;
+                                if e < 0 {
+                                    e += len;
+                                    if e < 0 {
+                                        e = 0;
+                                    }
+                                }
+                                e.min(len)
+                            } else {
+                                len
+                            }
+                        } else {
+                            len
+                        };
+                        
+                        // Create new array and copy elements
+                        let slice_len = (final_idx - start).max(0);
+                        let arr = js_new_array(ctx, slice_len);
+                        let mut idx = 0u32;
+                        for i in start..final_idx {
+                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                            js_set_property_uint32(ctx, arr, idx, elem);
+                            idx += 1;
                         }
+                        
+                        val = arr;
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
