@@ -1364,6 +1364,22 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "isFinite" {
         return Some(js_new_string(ctx, "__builtin_isFinite__"));
     }
+    // Error constructors
+    if s == "Error" {
+        return Some(js_new_string(ctx, "__builtin_Error__"));
+    }
+    if s == "TypeError" {
+        return Some(js_new_string(ctx, "__builtin_TypeError__"));
+    }
+    if s == "ReferenceError" {
+        return Some(js_new_string(ctx, "__builtin_ReferenceError__"));
+    }
+    if s == "SyntaxError" {
+        return Some(js_new_string(ctx, "__builtin_SyntaxError__"));
+    }
+    if s == "RangeError" {
+        return Some(js_new_string(ctx, "__builtin_RangeError__"));
+    }
     if s == "NaN" {
         return Some(number_to_value(ctx, f64::NAN));
     }
@@ -2177,6 +2193,92 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_splice__" {
+                        // Ported from mquickjs.c:14478-14548 js_array_splice
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0);
+
+                        // Get start index
+                        let start = if args.len() > 0 {
+                            if let Some(s) = args[0].int32() {
+                                if s < 0 {
+                                    (len + s).max(0)
+                                } else {
+                                    s.min(len)
+                                }
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        // Get delete count
+                        let del_count = if args.len() > 1 {
+                            if let Some(d) = args[1].int32() {
+                                d.max(0).min(len - start)
+                            } else {
+                                len - start
+                            }
+                        } else if args.len() == 1 {
+                            len - start
+                        } else {
+                            0
+                        };
+
+                        // Items to insert
+                        let items: Vec<JSValue> = if args.len() > 2 {
+                            args[2..].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        let item_count = items.len() as i32;
+
+                        // Create result array with deleted elements
+                        let result = js_new_array(ctx, del_count);
+                        for i in 0..del_count {
+                            let elem = js_get_property_uint32(ctx, this_val, (start + i) as u32);
+                            js_set_property_uint32(ctx, result, i as u32, elem);
+                        }
+
+                        let new_len = len + item_count - del_count;
+
+                        // Shift elements if needed
+                        if item_count != del_count {
+                            if item_count < del_count {
+                                // Shrinking - shift left, then truncate
+                                for i in (start + item_count)..new_len {
+                                    let src_idx = i + (del_count - item_count);
+                                    let elem = js_get_property_uint32(ctx, this_val, src_idx as u32);
+                                    js_set_property_uint32(ctx, this_val, i as u32, elem);
+                                }
+                            } else {
+                                // Growing - first expand array by pushing, then shift right
+                                let extra = item_count - del_count;
+                                for _ in 0..extra {
+                                    js_array_push(ctx, this_val, Value::UNDEFINED);
+                                }
+                                // Now shift elements from right to left (in reverse order)
+                                for i in ((start + item_count)..new_len).rev() {
+                                    let src_idx = i - extra;
+                                    let elem = js_get_property_uint32(ctx, this_val, src_idx as u32);
+                                    js_set_property_uint32(ctx, this_val, i as u32, elem);
+                                }
+                            }
+                        }
+
+                        // Insert new items
+                        for (i, item) in items.into_iter().enumerate() {
+                            js_set_property_uint32(ctx, this_val, (start + i as i32) as u32, item);
+                        }
+
+                        // Update length (for shrinking case)
+                        js_set_property_str(ctx, this_val, "length", Value::from_int32(new_len));
+
+                        val = result;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_indexOf__" {
                         if args.len() == 1 {
                             let len_val = js_get_property_str(ctx, this_val, "length");
@@ -2258,6 +2360,194 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                         } else {
                             val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_forEach__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                call_closure(ctx, callback, &call_args);
+                            }
+                            val = Value::UNDEFINED;
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_map__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let result = js_new_array(ctx, len as i32);
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(mapped) = call_closure(ctx, callback, &call_args) {
+                                    js_set_property_uint32(ctx, result, i, mapped);
+                                }
+                            }
+                            val = result;
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_filter__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let result = js_new_array(ctx, 0);
+                            let mut result_idx = 0u32;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    if is_truthy(res) {
+                                        js_set_property_uint32(ctx, result, result_idx, elem);
+                                        result_idx += 1;
+                                    }
+                                }
+                            }
+                            val = result;
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_reduce__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let mut accumulator = if args.len() >= 2 {
+                                args[1]
+                            } else if len > 0 {
+                                js_get_property_uint32(ctx, this_val, 0)
+                            } else {
+                                Value::UNDEFINED
+                            };
+                            let start_idx = if args.len() >= 2 { 0 } else { 1 };
+                            for i in start_idx..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [accumulator, elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    accumulator = res;
+                                }
+                            }
+                            val = accumulator;
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_every__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let mut all_true = true;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    if !is_truthy(res) {
+                                        all_true = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            val = Value::new_bool(all_true);
+                        } else {
+                            val = Value::TRUE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_some__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let mut any_true = false;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    if is_truthy(res) {
+                                        any_true = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            val = Value::new_bool(any_true);
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_find__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let mut found_elem = Value::UNDEFINED;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    if is_truthy(res) {
+                                        found_elem = elem;
+                                        break;
+                                    }
+                                }
+                            }
+                            val = found_elem;
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_findIndex__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let mut found_idx = -1i32;
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    if is_truthy(res) {
+                                        found_idx = i as i32;
+                                        break;
+                                    }
+                                }
+                            }
+                            val = Value::from_int32(found_idx);
+                        } else {
+                            val = Value::from_int32(-1);
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -2547,6 +2837,31 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Error__" {
+                        val = create_error_object(ctx, JSObjectClassEnum::Error, &args);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_TypeError__" {
+                        val = create_error_object(ctx, JSObjectClassEnum::TypeError, &args);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_ReferenceError__" {
+                        val = create_error_object(ctx, JSObjectClassEnum::ReferenceError, &args);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_SyntaxError__" {
+                        val = create_error_object(ctx, JSObjectClassEnum::SyntaxError, &args);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_RangeError__" {
+                        val = create_error_object(ctx, JSObjectClassEnum::RangeError, &args);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Math_pow__" {
                         if args.len() == 2 {
                             let base = js_to_number(ctx, args[0]).ok()?;
@@ -2573,6 +2888,69 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 for (i, key) in keys.iter().enumerate() {
                                     let key_str = js_new_string(ctx, key);
                                     js_set_property_uint32(ctx, arr, i as u32, key_str);
+                                }
+                                
+                                val = arr;
+                            } else {
+                                // Not an object, return empty array
+                                val = js_new_array(ctx, 0);
+                            }
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_values__" {
+                        // ES2017 feature - not in mquickjs but useful
+                        // Returns array of object's own enumerable property values
+                        if args.len() == 1 {
+                            let obj = args[0];
+                            
+                            // Get keys from the object
+                            if let Some(keys) = ctx.object_keys(obj) {
+                                // Create array for result
+                                let arr = js_new_array(ctx, keys.len() as i32);
+                                
+                                // Populate array with values
+                                for (i, key) in keys.iter().enumerate() {
+                                    let value = js_get_property_str(ctx, obj, key);
+                                    js_set_property_uint32(ctx, arr, i as u32, value);
+                                }
+                                
+                                val = arr;
+                            } else {
+                                // Not an object, return empty array
+                                val = js_new_array(ctx, 0);
+                            }
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_entries__" {
+                        // ES2017 feature - not in mquickjs but useful
+                        // Returns array of object's own enumerable [key, value] pairs
+                        if args.len() == 1 {
+                            let obj = args[0];
+                            
+                            // Get keys from the object
+                            if let Some(keys) = ctx.object_keys(obj) {
+                                // Create array for result
+                                let arr = js_new_array(ctx, keys.len() as i32);
+                                
+                                // Populate array with [key, value] pairs
+                                for (i, key) in keys.iter().enumerate() {
+                                    let value = js_get_property_str(ctx, obj, key);
+                                    
+                                    // Create [key, value] pair as array
+                                    let pair = js_new_array(ctx, 2);
+                                    let key_str = js_new_string(ctx, key);
+                                    js_set_property_uint32(ctx, pair, 0, key_str);
+                                    js_set_property_uint32(ctx, pair, 1, value);
+                                    
+                                    js_set_property_uint32(ctx, arr, i as u32, pair);
                                 }
                                 
                                 val = arr;
@@ -2789,7 +3167,92 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     }
                 }
             }
-            
+
+            // Array.splice
+            if name == "splice" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_splice__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+
+            // Array iteration methods
+            if name == "forEach" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_forEach__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "map" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_map__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "filter" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_filter__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "reduce" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_reduce__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "every" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_every__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "some" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_some__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "find" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_find__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "findIndex" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_findIndex__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+
             // String.split
             if name == "split" {
                 if js_is_string(ctx, val) != 0 {
@@ -3036,6 +3499,16 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "values" => {
+                                val = js_new_string(ctx, "__builtin_Object_values__");
+                                rest = next;
+                                continue;
+                            }
+                            "entries" => {
+                                val = js_new_string(ctx, "__builtin_Object_entries__");
+                                rest = next;
+                                continue;
+                            }
                             _ => {}
                         }
                     } else if marker == "__builtin_Array__" {
@@ -3173,7 +3646,33 @@ fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
             ctx.set_loop_control(crate::context::LoopControl::Return);
             return Some(Value::UNDEFINED);
         }
-        
+
+        // Check for throw statement
+        if trimmed.starts_with("throw ") {
+            let expr = &trimmed[6..]; // skip "throw "
+            if let Some(val) = eval_expr(ctx, expr.trim()) {
+                ctx.set_exception(val);
+                return Some(Value::EXCEPTION);
+            }
+            return None;
+        }
+        if trimmed == "throw" {
+            ctx.set_exception(Value::UNDEFINED);
+            return Some(Value::EXCEPTION);
+        }
+
+        // Check for try/catch/finally
+        if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
+            if let Some(val) = parse_try_catch(ctx, trimmed) {
+                last = val;
+                if ctx.get_loop_control() != crate::context::LoopControl::None {
+                    return Some(last);
+                }
+                continue;
+            }
+            return None;
+        }
+
         // Check for if statement
         if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
             last = parse_if_statement(ctx, trimmed)?;
@@ -3436,6 +3935,123 @@ fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 }
 
 /// Parse for loop: "for (init; condition; update) { block }"
+fn find_for_in_keyword(header: &str) -> Option<usize> {
+    // Look for " in " in the header (not inside strings or nested expressions)
+    let bytes = header.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                i += 1; // Skip escaped character
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+
+        // Check for " in " at depth 0
+        if depth == 0 && i + 4 <= bytes.len() {
+            if &bytes[i..i + 4] == b" in " {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, after_header: &str) -> Option<JSValue> {
+    // Parse: var_name in object_expr
+    let var_part = header[..in_pos].trim();
+    let obj_expr = header[in_pos + 4..].trim();
+
+    // Handle "var x" or just "x"
+    let var_name = if var_part.starts_with("var ") {
+        var_part[4..].trim()
+    } else {
+        var_part
+    };
+
+    // Parse body block
+    if !after_header.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_header)?;
+
+    // Evaluate the object expression
+    let obj_val = eval_expr(ctx, obj_expr)?;
+
+    // Get the keys of the object
+    let keys = get_object_keys(ctx, obj_val)?;
+
+    // Iterate over keys
+    let mut last = Value::UNDEFINED;
+    let global = js_get_global_object(ctx);
+
+    for key in keys {
+        // Set the loop variable
+        let key_val = js_new_string(ctx, &key);
+        js_set_property_str(ctx, global, var_name, key_val);
+
+        // Execute body
+        last = eval_function_body(ctx, body)?;
+
+        // Check for loop control
+        match ctx.get_loop_control() {
+            crate::context::LoopControl::Break => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+            crate::context::LoopControl::Continue => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                // Continue to next iteration
+            }
+            crate::context::LoopControl::Return => {
+                // Propagate return up
+                break;
+            }
+            crate::context::LoopControl::None => {}
+        }
+    }
+
+    Some(last)
+}
+
+fn get_object_keys(ctx: &mut JSContextImpl, obj: JSValue) -> Option<Vec<String>> {
+    // Check if it's an array - return indices as strings
+    if let Some(class_id) = ctx.object_class_id(obj) {
+        if class_id == JSObjectClassEnum::Array as u32 {
+            let len_val = js_get_property_str(ctx, obj, "length");
+            let len = len_val.int32().unwrap_or(0);
+            let mut keys = Vec::new();
+            for i in 0..len {
+                keys.push(i.to_string());
+            }
+            return Some(keys);
+        }
+    }
+
+    // For objects, use the existing object_keys method
+    ctx.object_keys(obj)
+}
+
 fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     let rest = if s.starts_with("for ") {
@@ -3445,16 +4061,21 @@ fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     } else {
         return None;
     };
-    
+
     let rest = rest.trim_start();
-    
+
     // Parse for header
     if !rest.starts_with('(') {
         return None;
     }
     let (header, after_header) = extract_paren(rest)?;
     let after_header = after_header.trim_start();
-    
+
+    // Check for for...in loop
+    if let Some(in_pos) = find_for_in_keyword(header) {
+        return parse_for_in_loop(ctx, header, in_pos, after_header);
+    }
+
     // Split header into init; condition; update
     let parts: Vec<&str> = header.split(';').collect();
     if parts.len() != 3 {
@@ -3521,6 +4142,419 @@ fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     
     Some(last)
+}
+
+fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    let rest = if s.starts_with("do ") {
+        &s[3..]
+    } else if s.starts_with("do{") {
+        &s[2..]
+    } else {
+        return None;
+    };
+
+    let rest = rest.trim_start();
+
+    // Parse body block
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let (body, after_body) = extract_braces(rest)?;
+    let after_body = after_body.trim_start();
+
+    // Expect "while"
+    if !after_body.starts_with("while") {
+        return None;
+    }
+    let after_while = after_body[5..].trim_start();
+
+    // Parse condition
+    if !after_while.starts_with('(') {
+        return None;
+    }
+    let (condition, _) = extract_paren(after_while)?;
+
+    // Execute loop
+    let mut last = Value::UNDEFINED;
+    loop {
+        // Execute body first (do...while always runs at least once)
+        last = eval_function_body(ctx, body)?;
+
+        // Check for loop control
+        match ctx.get_loop_control() {
+            crate::context::LoopControl::Break => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+            crate::context::LoopControl::Continue => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                // Continue to condition check
+            }
+            crate::context::LoopControl::Return => {
+                // Propagate return up
+                break;
+            }
+            crate::context::LoopControl::None => {}
+        }
+
+        // Check condition
+        let cond_val = eval_expr(ctx, condition)?;
+        if !is_truthy(cond_val) {
+            break;
+        }
+    }
+
+    Some(last)
+}
+
+/// Parse try/catch/finally: "try { ... } catch (e) { ... } finally { ... }"
+fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+
+    // Strip "try" prefix
+    let rest = if s.starts_with("try ") {
+        &s[4..]
+    } else if s.starts_with("try{") {
+        &s[3..]
+    } else {
+        return None;
+    };
+
+    let rest = rest.trim();
+
+    // Extract try block using extract_braces
+    let (try_body, after_try) = extract_braces(rest)?;
+    let after_try = after_try.trim();
+
+    // Check for catch and/or finally
+    let mut catch_param: Option<&str> = None;
+    let mut catch_body: Option<&str> = None;
+    let mut finally_body: Option<&str> = None;
+    let mut remaining = after_try;
+
+    // Parse catch clause
+    if remaining.starts_with("catch") {
+        let after_catch = remaining[5..].trim();
+
+        // Parse optional parameter: catch (e) or catch
+        let body_start = if after_catch.starts_with('(') {
+            // Find closing paren
+            if let Some(paren_end) = after_catch.find(')') {
+                catch_param = Some(after_catch[1..paren_end].trim());
+                after_catch[paren_end + 1..].trim()
+            } else {
+                return None;
+            }
+        } else {
+            after_catch
+        };
+
+        let (cb, after_catch_body) = extract_braces(body_start)?;
+        catch_body = Some(cb);
+        remaining = after_catch_body.trim();
+    }
+
+    // Parse finally clause
+    if remaining.starts_with("finally") {
+        let after_finally = remaining[7..].trim();
+        let (fb, _) = extract_braces(after_finally)?;
+        finally_body = Some(fb);
+    }
+
+    // Must have at least catch or finally
+    if catch_body.is_none() && finally_body.is_none() {
+        return None;
+    }
+
+    // Execute try block
+    let try_result = eval_function_body(ctx, try_body);
+
+    let mut result = match try_result {
+        Some(val) if val.is_exception() => {
+            // Exception was thrown - handle in catch block if present
+            if let Some(body) = catch_body {
+                // Get the exception value
+                let exception_val = ctx.get_exception();
+                // Clear the exception
+                ctx.set_exception(Value::UNDEFINED);
+
+                // Bind exception to parameter if present
+                if let Some(param) = catch_param {
+                    let global = ctx.global_object();
+                    js_set_property_str(ctx, global, param, exception_val);
+                }
+
+                // Execute catch block
+                match eval_function_body(ctx, body) {
+                    Some(v) => v,
+                    None => return None,
+                }
+            } else {
+                // No catch block, propagate exception
+                val
+            }
+        }
+        Some(val) => val,
+        None => {
+            // Parse error - treat as exception
+            if let Some(body) = catch_body {
+                // Clear any exception
+                ctx.set_exception(Value::UNDEFINED);
+
+                // Bind undefined to parameter if present
+                if let Some(param) = catch_param {
+                    let global = ctx.global_object();
+                    js_set_property_str(ctx, global, param, Value::UNDEFINED);
+                }
+
+                match eval_function_body(ctx, body) {
+                    Some(v) => v,
+                    None => return None,
+                }
+            } else {
+                return None;
+            }
+        }
+    };
+
+    // Execute finally block if present
+    if let Some(body) = finally_body {
+        // Save exception state before finally
+        let saved_exception = if result.is_exception() {
+            ctx.get_exception()
+        } else {
+            Value::UNDEFINED
+        };
+
+        // Execute finally block
+        match eval_function_body(ctx, body) {
+            Some(finally_val) => {
+                // If finally throws, that becomes the result
+                if finally_val.is_exception() {
+                    result = finally_val;
+                } else if saved_exception != Value::UNDEFINED {
+                    // Restore the original exception if try/catch threw
+                    ctx.set_exception(saved_exception);
+                }
+            }
+            None => return None,
+        }
+    }
+
+    Some(result)
+}
+
+fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+    let s = src.trim();
+    let rest = if s.starts_with("switch ") {
+        &s[7..]
+    } else if s.starts_with("switch(") {
+        &s[6..]
+    } else {
+        return None;
+    };
+
+    let rest = rest.trim_start();
+
+    // Parse switch expression
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let (switch_expr, after_expr) = extract_paren(rest)?;
+    let after_expr = after_expr.trim_start();
+
+    // Evaluate switch expression
+    let switch_val = eval_expr(ctx, switch_expr)?;
+
+    // Parse switch body
+    if !after_expr.starts_with('{') {
+        return None;
+    }
+    let (body, _) = extract_braces(after_expr)?;
+
+    // Parse cases
+    let cases = parse_switch_cases(body)?;
+
+    // Find matching case
+    let mut matched = false;
+    let mut last = Value::UNDEFINED;
+    let mut found_default: Option<&str> = None;
+
+    for (case_expr, case_body) in &cases {
+        if case_expr.is_none() {
+            // default case - save for later
+            found_default = Some(case_body);
+            if matched {
+                // Fall-through to default
+                last = eval_function_body(ctx, case_body)?;
+                if ctx.get_loop_control() == crate::context::LoopControl::Break {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if matched {
+            // Fall-through
+            last = eval_function_body(ctx, case_body)?;
+            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+            continue;
+        }
+
+        // Evaluate case expression
+        let case_val = eval_expr(ctx, case_expr.unwrap())?;
+
+        // Check for match (strict equality)
+        if switch_val.0 == case_val.0 {
+            matched = true;
+            last = eval_function_body(ctx, case_body)?;
+            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+                break;
+            }
+        }
+    }
+
+    // If no case matched and there's a default, execute it
+    if !matched {
+        if let Some(default_body) = found_default {
+            last = eval_function_body(ctx, default_body)?;
+            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+            }
+        }
+    }
+
+    Some(last)
+}
+
+fn parse_switch_cases(body: &str) -> Option<Vec<(Option<&str>, &str)>> {
+    let mut cases = Vec::new();
+    let mut rest = body.trim();
+
+    while !rest.is_empty() {
+        // Skip whitespace
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+
+        if rest.starts_with("case ") {
+            // Parse case expression
+            let after_case = &rest[5..];
+            // Find the colon
+            let colon_pos = find_case_colon(after_case)?;
+            let case_expr = after_case[..colon_pos].trim();
+            rest = &after_case[colon_pos + 1..];
+
+            // Find case body (until next case/default or end)
+            let body_end = find_case_body_end(rest);
+            let case_body = &rest[..body_end];
+            rest = &rest[body_end..];
+
+            cases.push((Some(case_expr), case_body.trim()));
+        } else if rest.starts_with("default") {
+            let after_default = rest[7..].trim_start();
+            if !after_default.starts_with(':') {
+                return None;
+            }
+            rest = &after_default[1..];
+
+            // Find case body (until next case or end)
+            let body_end = find_case_body_end(rest);
+            let case_body = &rest[..body_end];
+            rest = &rest[body_end..];
+
+            cases.push((None, case_body.trim()));
+        } else {
+            // Unknown content
+            break;
+        }
+    }
+
+    Some(cases)
+}
+
+fn find_case_colon(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                // Skip escaped character - handled by continuing
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_case_body_end(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                i += 1; // Skip escaped character
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+
+        // Check for next case or default at depth 0
+        if depth == 0 {
+            if bytes[i..].starts_with(b"case ") || bytes[i..].starts_with(b"default") {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 /// Create a function object with parameters and body
@@ -3591,6 +4625,46 @@ fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         // Check for for loop
         if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
             if let Some(val) = parse_for_loop(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for do...while loop
+        if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
+            if let Some(val) = parse_do_while_loop(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for switch statement
+        if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
+            if let Some(val) = parse_switch_statement(ctx, trimmed) {
+                last = val;
+                any = true;
+                continue;
+            }
+            return None;
+        }
+        // Check for throw statement
+        if trimmed.starts_with("throw ") {
+            let expr = &trimmed[6..]; // skip "throw "
+            if let Some(val) = eval_expr(ctx, expr.trim()) {
+                ctx.set_exception(val);
+                return Some(Value::EXCEPTION);
+            }
+            return None;
+        }
+        if trimmed == "throw" {
+            ctx.set_exception(Value::UNDEFINED);
+            return Some(Value::EXCEPTION);
+        }
+        // Check for try/catch/finally
+        if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
+            if let Some(val) = parse_try_catch(ctx, trimmed) {
                 last = val;
                 any = true;
                 continue;
@@ -4884,6 +5958,7 @@ impl<'a> ArithParser<'a> {
 
     fn parse_postfix(&mut self) -> Result<JSValue, ()> {
         let mut value = self.parse_primary()?;
+        let mut this_val = Value::UNDEFINED;
         loop {
             self.skip_ws();
             match self.peek() {
@@ -4893,8 +5968,60 @@ impl<'a> ArithParser<'a> {
                     let (prop, remaining) = parse_identifier(rest).ok_or(())?;
                     let consumed = rest.len() - remaining.len();
                     self.pos += consumed;
+                    this_val = value;
                     let ctx = unsafe { &mut *self.ctx };
-                    value = js_get_property_str(ctx, value, prop);
+
+                    // Check for built-in string methods
+                    if js_is_string(ctx, value) != 0 {
+                        value = match prop {
+                            "charAt" => js_new_string(ctx, "__builtin_string_charAt__"),
+                            "toUpperCase" => js_new_string(ctx, "__builtin_string_toUpperCase__"),
+                            "toLowerCase" => js_new_string(ctx, "__builtin_string_toLowerCase__"),
+                            "substring" => js_new_string(ctx, "__builtin_string_substring__"),
+                            "slice" => js_new_string(ctx, "__builtin_string_slice__"),
+                            "indexOf" => js_new_string(ctx, "__builtin_string_indexOf__"),
+                            "split" => js_new_string(ctx, "__builtin_string_split__"),
+                            "concat" => js_new_string(ctx, "__builtin_string_concat__"),
+                            "trim" => js_new_string(ctx, "__builtin_string_trim__"),
+                            "trimStart" => js_new_string(ctx, "__builtin_string_trimStart__"),
+                            "trimEnd" => js_new_string(ctx, "__builtin_string_trimEnd__"),
+                            "length" => {
+                                if let Some(bytes) = ctx.string_bytes(value) {
+                                    Value::from_int32(bytes.len() as i32)
+                                } else {
+                                    Value::from_int32(0)
+                                }
+                            }
+                            _ => js_get_property_str(ctx, value, prop),
+                        };
+                    } else if let Some(class_id) = ctx.object_class_id(value) {
+                        // Check for built-in array methods
+                        if class_id == JSObjectClassEnum::Array as u32 {
+                            value = match prop {
+                                "push" => js_new_string(ctx, "__builtin_array_push__"),
+                                "pop" => js_new_string(ctx, "__builtin_array_pop__"),
+                                "join" => js_new_string(ctx, "__builtin_array_join__"),
+                                "slice" => js_new_string(ctx, "__builtin_array_slice__"),
+                                "indexOf" => js_new_string(ctx, "__builtin_array_indexOf__"),
+                                "splice" => js_new_string(ctx, "__builtin_array_splice__"),
+                                "forEach" => js_new_string(ctx, "__builtin_array_forEach__"),
+                                "map" => js_new_string(ctx, "__builtin_array_map__"),
+                                "filter" => js_new_string(ctx, "__builtin_array_filter__"),
+                                "reduce" => js_new_string(ctx, "__builtin_array_reduce__"),
+                                "every" => js_new_string(ctx, "__builtin_array_every__"),
+                                "some" => js_new_string(ctx, "__builtin_array_some__"),
+                                "find" => js_new_string(ctx, "__builtin_array_find__"),
+                                "findIndex" => js_new_string(ctx, "__builtin_array_findIndex__"),
+                                "length" => js_get_property_str(ctx, value, "length"),
+                                _ => js_get_property_str(ctx, value, prop),
+                            };
+                        } else {
+                            value = js_get_property_str(ctx, value, prop);
+                        }
+                    } else {
+                        value = js_get_property_str(ctx, value, prop);
+                    }
+
                     if value.is_exception() {
                         return Err(());
                     }
@@ -4907,6 +6034,7 @@ impl<'a> ArithParser<'a> {
                         return Err(());
                     }
                     self.pos += 1;
+                    this_val = value;
                     let ctx = unsafe { &mut *self.ctx };
                     // Try as uint32 index first
                     if let Ok(idx) = js_to_uint32(ctx, index) {
@@ -4925,10 +6053,498 @@ impl<'a> ArithParser<'a> {
                         return Err(());
                     }
                 }
+                Some(b'(') => {
+                    // Function call - parse arguments
+                    self.pos += 1;
+                    let mut args = Vec::new();
+                    self.skip_ws();
+                    if self.peek() != Some(b')') {
+                        loop {
+                            let arg = self.parse_expr()?;
+                            args.push(arg);
+                            self.skip_ws();
+                            match self.peek() {
+                                Some(b',') => {
+                                    self.pos += 1;
+                                    self.skip_ws();
+                                }
+                                Some(b')') => break,
+                                _ => return Err(()),
+                            }
+                        }
+                    }
+                    if self.peek() != Some(b')') {
+                        return Err(());
+                    }
+                    self.pos += 1;
+
+                    // Call the method using the builtin dispatch
+                    let ctx = unsafe { &mut *self.ctx };
+                    value = self.call_builtin_method(ctx, value, this_val, &args)?;
+                    this_val = Value::UNDEFINED;
+                }
                 _ => break,
             }
         }
         Ok(value)
+    }
+
+    fn call_builtin_method(&mut self, ctx: &mut JSContextImpl, method: JSValue, this_val: JSValue, args: &[JSValue]) -> Result<JSValue, ()> {
+        // Check if method is a builtin marker string
+        if let Some(bytes) = ctx.string_bytes(method) {
+            if let Ok(marker) = core::str::from_utf8(bytes) {
+                // String methods
+                if marker == "__builtin_string_charAt__" {
+                    if args.len() == 1 {
+                        if let Some(idx) = args[0].int32() {
+                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                if idx >= 0 && (idx as usize) < str_bytes.len() {
+                                    let ch = str_bytes[idx as usize];
+                                    let ch_buf = [ch];
+                                    let ch_str = core::str::from_utf8(&ch_buf).unwrap_or("");
+                                    return Ok(js_new_string(ctx, ch_str));
+                                } else {
+                                    return Ok(js_new_string(ctx, ""));
+                                }
+                            }
+                        }
+                    }
+                } else if marker == "__builtin_string_toUpperCase__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            let upper = s.to_uppercase();
+                            return Ok(js_new_string(ctx, &upper));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_toLowerCase__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            let lower = s.to_lowercase();
+                            return Ok(js_new_string(ctx, &lower));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_substring__" {
+                    if args.len() >= 1 && args.len() <= 2 {
+                        if let Some(start) = args[0].int32() {
+                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                let start = start.max(0) as usize;
+                                let start = start.min(str_bytes.len());
+                                let end = if args.len() == 2 {
+                                    if let Some(e) = args[1].int32() {
+                                        let e = e.max(0) as usize;
+                                        e.min(str_bytes.len())
+                                    } else {
+                                        str_bytes.len()
+                                    }
+                                } else {
+                                    str_bytes.len()
+                                };
+                                let (start, end) = if start > end { (end, start) } else { (start, end) };
+                                let substr_bytes = str_bytes[start..end].to_vec();
+                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                    return Ok(js_new_string(ctx, substr));
+                                }
+                            }
+                        }
+                    }
+                } else if marker == "__builtin_string_slice__" {
+                    if args.len() >= 1 && args.len() <= 2 {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            let len = str_bytes.len() as i32;
+                            let start = if let Some(s) = args[0].int32() {
+                                (if s < 0 { (len + s).max(0) } else { s.min(len) }) as usize
+                            } else { 0 };
+                            let end = if args.len() == 2 {
+                                if let Some(e) = args[1].int32() {
+                                    (if e < 0 { (len + e).max(0) } else { e.min(len) }) as usize
+                                } else {
+                                    str_bytes.len()
+                                }
+                            } else {
+                                str_bytes.len()
+                            };
+                            if start <= end {
+                                let substr_bytes = str_bytes[start..end].to_vec();
+                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                    return Ok(js_new_string(ctx, substr));
+                                }
+                            } else {
+                                return Ok(js_new_string(ctx, ""));
+                            }
+                        }
+                    }
+                } else if marker == "__builtin_string_indexOf__" {
+                    if args.len() >= 1 {
+                        if let Some(needle_bytes) = ctx.string_bytes(args[0]) {
+                            let needle = needle_bytes.to_vec();
+                            if let Some(haystack_bytes) = ctx.string_bytes(this_val) {
+                                if needle.is_empty() {
+                                    return Ok(Value::from_int32(0));
+                                }
+                                let mut found = -1;
+                                for i in 0..=(haystack_bytes.len().saturating_sub(needle.len())) {
+                                    if &haystack_bytes[i..i + needle.len()] == needle.as_slice() {
+                                        found = i as i32;
+                                        break;
+                                    }
+                                }
+                                return Ok(Value::from_int32(found));
+                            }
+                        }
+                    }
+                } else if marker == "__builtin_string_split__" {
+                    if args.len() >= 1 {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            let str_owned = str_bytes.to_vec();
+                            if let Some(sep_bytes) = ctx.string_bytes(args[0]) {
+                                let sep_owned = sep_bytes.to_vec();
+                                if let (Ok(s), Ok(sep)) = (core::str::from_utf8(&str_owned), core::str::from_utf8(&sep_owned)) {
+                                    let arr = js_new_array(ctx, 0);
+                                    let parts: Vec<&str> = s.split(sep).collect();
+                                    for (i, part) in parts.iter().enumerate() {
+                                        let part_val = js_new_string(ctx, part);
+                                        js_set_property_uint32(ctx, arr, i as u32, part_val);
+                                    }
+                                    return Ok(arr);
+                                }
+                            }
+                        }
+                    }
+                } else if marker == "__builtin_string_concat__" {
+                    let mut result = if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            s.to_string()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    for arg in args {
+                        if let Some(arg_bytes) = ctx.string_bytes(*arg) {
+                            if let Ok(s) = core::str::from_utf8(arg_bytes) {
+                                result.push_str(s);
+                            }
+                        } else if let Some(n) = arg.int32() {
+                            result.push_str(&n.to_string());
+                        }
+                    }
+                    return Ok(js_new_string(ctx, &result));
+                } else if marker == "__builtin_string_trim__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        let owned = str_bytes.to_vec();
+                        if let Ok(s) = core::str::from_utf8(&owned) {
+                            return Ok(js_new_string(ctx, s.trim()));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_trimStart__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        let owned = str_bytes.to_vec();
+                        if let Ok(s) = core::str::from_utf8(&owned) {
+                            return Ok(js_new_string(ctx, s.trim_start()));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_trimEnd__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        let owned = str_bytes.to_vec();
+                        if let Ok(s) = core::str::from_utf8(&owned) {
+                            return Ok(js_new_string(ctx, s.trim_end()));
+                        }
+                    }
+                    return Ok(this_val);
+                // Array methods
+                } else if marker == "__builtin_array_push__" {
+                    for arg in args {
+                        js_array_push(ctx, this_val, *arg);
+                    }
+                    let len = js_get_property_str(ctx, this_val, "length");
+                    return Ok(len);
+                } else if marker == "__builtin_array_pop__" {
+                    return Ok(js_array_pop(ctx, this_val));
+                } else if marker == "__builtin_array_join__" {
+                    let separator = if args.len() >= 1 && args[0] != Value::UNDEFINED {
+                        if let Some(bytes) = ctx.string_bytes(args[0]) {
+                            core::str::from_utf8(bytes).unwrap_or(",").to_string()
+                        } else if let Some(n) = args[0].int32() {
+                            n.to_string()
+                        } else {
+                            ",".to_string()
+                        }
+                    } else {
+                        ",".to_string()
+                    };
+                    let len_val = js_get_property_str(ctx, this_val, "length");
+                    let len = len_val.int32().unwrap_or(0).max(0) as u32;
+                    let mut result = String::new();
+                    for i in 0..len {
+                        if i > 0 {
+                            result.push_str(&separator);
+                        }
+                        let elem = js_get_property_uint32(ctx, this_val, i);
+                        if elem.is_undefined() || elem.is_null() {
+                            continue;
+                        }
+                        if let Some(n) = elem.int32() {
+                            result.push_str(&n.to_string());
+                        } else if let Some(bytes) = ctx.string_bytes(elem) {
+                            if let Ok(s) = core::str::from_utf8(bytes) {
+                                result.push_str(s);
+                            }
+                        } else if elem == Value::TRUE {
+                            result.push_str("true");
+                        } else if elem == Value::FALSE {
+                            result.push_str("false");
+                        }
+                    }
+                    return Ok(js_new_string(ctx, &result));
+                } else if marker == "__builtin_array_slice__" {
+                    let len_val = js_get_property_str(ctx, this_val, "length");
+                    let len = len_val.int32().unwrap_or(0);
+                    let start = if args.len() > 0 {
+                        if let Some(s) = args[0].int32() {
+                            let mut s = s;
+                            if s < 0 { s += len; if s < 0 { s = 0; } }
+                            s.min(len)
+                        } else { len }
+                    } else { len };
+                    let final_idx = if args.len() > 1 {
+                        if let Some(e) = args[1].int32() {
+                            let mut e = e;
+                            if e < 0 { e += len; if e < 0 { e = 0; } }
+                            e.min(len)
+                        } else { len }
+                    } else { len };
+                    let slice_len = (final_idx - start).max(0);
+                    let arr = js_new_array(ctx, slice_len);
+                    let mut idx = 0u32;
+                    for i in start..final_idx {
+                        let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                        js_set_property_uint32(ctx, arr, idx, elem);
+                        idx += 1;
+                    }
+                    return Ok(arr);
+                } else if marker == "__builtin_array_splice__" {
+                    // Ported from mquickjs.c:14478-14548 js_array_splice
+                    let len_val = js_get_property_str(ctx, this_val, "length");
+                    let len = len_val.int32().unwrap_or(0);
+
+                    let start = if args.len() > 0 {
+                        if let Some(s) = args[0].int32() {
+                            if s < 0 { (len + s).max(0) } else { s.min(len) }
+                        } else { 0 }
+                    } else { 0 };
+
+                    let del_count = if args.len() > 1 {
+                        if let Some(d) = args[1].int32() {
+                            d.max(0).min(len - start)
+                        } else { len - start }
+                    } else if args.len() == 1 { len - start } else { 0 };
+
+                    let items: Vec<JSValue> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
+                    let item_count = items.len() as i32;
+
+                    let result = js_new_array(ctx, del_count);
+                    for i in 0..del_count {
+                        let elem = js_get_property_uint32(ctx, this_val, (start + i) as u32);
+                        js_set_property_uint32(ctx, result, i as u32, elem);
+                    }
+
+                    let new_len = len + item_count - del_count;
+                    if item_count != del_count {
+                        if item_count < del_count {
+                            // Shrinking - shift left
+                            for i in (start + item_count)..new_len {
+                                let elem = js_get_property_uint32(ctx, this_val, (i + del_count - item_count) as u32);
+                                js_set_property_uint32(ctx, this_val, i as u32, elem);
+                            }
+                        } else {
+                            // Growing - first expand array by pushing
+                            let extra = item_count - del_count;
+                            for _ in 0..extra {
+                                js_array_push(ctx, this_val, Value::UNDEFINED);
+                            }
+                            // Now shift elements right
+                            for i in ((start + item_count)..new_len).rev() {
+                                let elem = js_get_property_uint32(ctx, this_val, (i - extra) as u32);
+                                js_set_property_uint32(ctx, this_val, i as u32, elem);
+                            }
+                        }
+                    }
+
+                    for (i, item) in items.into_iter().enumerate() {
+                        js_set_property_uint32(ctx, this_val, (start + i as i32) as u32, item);
+                    }
+                    js_set_property_str(ctx, this_val, "length", Value::from_int32(new_len));
+                    return Ok(result);
+                } else if marker == "__builtin_array_indexOf__" {
+                    if args.len() >= 1 {
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as usize;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                            if elem.0 == args[0].0 {
+                                return Ok(Value::from_int32(i as i32));
+                            }
+                        }
+                        return Ok(Value::from_int32(-1));
+                    }
+                } else if marker == "__builtin_array_forEach__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            call_closure(ctx, callback, &call_args);
+                        }
+                        return Ok(Value::UNDEFINED);
+                    }
+                } else if marker == "__builtin_array_map__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        let result = js_new_array(ctx, len as i32);
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(mapped) = call_closure(ctx, callback, &call_args) {
+                                js_set_property_uint32(ctx, result, i, mapped);
+                            }
+                        }
+                        return Ok(result);
+                    }
+                } else if marker == "__builtin_array_filter__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        let result = js_new_array(ctx, 0);
+                        let mut result_idx = 0u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                if is_truthy(res) {
+                                    js_set_property_uint32(ctx, result, result_idx, elem);
+                                    result_idx += 1;
+                                }
+                            }
+                        }
+                        return Ok(result);
+                    }
+                } else if marker == "__builtin_array_reduce__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        let mut accumulator = if args.len() >= 2 {
+                            args[1]
+                        } else if len > 0 {
+                            js_get_property_uint32(ctx, this_val, 0)
+                        } else {
+                            return Ok(Value::UNDEFINED);
+                        };
+                        let start_idx = if args.len() >= 2 { 0 } else { 1 };
+                        for i in start_idx..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [accumulator, elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                accumulator = res;
+                            }
+                        }
+                        return Ok(accumulator);
+                    }
+                } else if marker == "__builtin_array_every__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                if !is_truthy(res) {
+                                    return Ok(Value::FALSE);
+                                }
+                            }
+                        }
+                        return Ok(Value::TRUE);
+                    }
+                } else if marker == "__builtin_array_some__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                if is_truthy(res) {
+                                    return Ok(Value::TRUE);
+                                }
+                            }
+                        }
+                        return Ok(Value::FALSE);
+                    }
+                } else if marker == "__builtin_array_find__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                if is_truthy(res) {
+                                    return Ok(elem);
+                                }
+                            }
+                        }
+                        return Ok(Value::UNDEFINED);
+                    }
+                } else if marker == "__builtin_array_findIndex__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as u32;
+                        for i in 0..len {
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                if is_truthy(res) {
+                                    return Ok(Value::from_int32(i as i32));
+                                }
+                            }
+                        }
+                        return Ok(Value::from_int32(-1));
+                    }
+                }
+            }
+        }
+
+        // Check if it's a closure (custom function)
+        let closure_marker = js_get_property_str(ctx, method, "__closure__");
+        if closure_marker == Value::TRUE {
+            if let Some(val) = call_closure(ctx, method, args) {
+                return Ok(val);
+            }
+        }
+
+        Err(())
     }
 
     fn parse_primary(&mut self) -> Result<JSValue, ()> {
