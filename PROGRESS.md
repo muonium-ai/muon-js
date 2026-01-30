@@ -1,6 +1,6 @@
 # muon-js Implementation Progress
 
-**Last Updated**: January 30, 2026 (Session 4)
+**Last Updated**: January 30, 2026 (Session 5)
 
 ## 📊 Current Status
 
@@ -14,6 +14,11 @@
 ### Build Status
 - ✅ Compiles successfully
 - ⚠️ 6 non-critical warnings (unused variables)
+
+### Session 5 Accomplishments
+- ✅ Added regex literals and `RegExp` constructor (backed by Rust regex)
+- ✅ Implemented regex-based String methods: `match`, `matchAll`, `search`, `replace`, `replaceAll`
+- ⚠️ Notable regex limitations: no lookaround/backreferences, limited flag support
 
 ### Session 4 Accomplishments
 - ✅ Added Number formatting methods: `toFixed`, `toPrecision`, `toExponential`
@@ -67,12 +72,12 @@
 - ✅ padStart(), padEnd()
 - ✅ repeat()
 - ✅ replace(), replaceAll()
+- ✅ match(), matchAll()
+- ✅ search()
 - ✅ String.fromCharCode()
 
 **Missing:**
-- ❌ match(), matchAll() (needs regex)
-- ❌ search() (needs regex)
-- ❌ replace() with regex patterns
+- ❌ Regex feature parity (backreferences/lookaround, sticky, unicode semantics)
 
 ### Phase 2: Built-in Methods - Array (85%)
 **Completed:**
@@ -195,13 +200,14 @@
 
 ### Phase 5: Advanced Features
 
-#### Regular Expressions (0% complete)
-- ❌ Regex literals `/pattern/flags`
-- ❌ RegExp constructor
+#### Regular Expressions (50% complete)
+- ✅ Regex literals `/pattern/flags` (subset of flags)
+- ✅ RegExp constructor
+- ✅ String methods with regex (match, search, replace)
 - ❌ Regex methods (test, exec)
-- ❌ String methods with regex (match, search, replace)
+- ❌ Full JS regex compatibility (lookaround/backreferences, sticky, unicode semantics)
 
-**Estimated effort**: 30-40 hours  
+**Estimated effort**: 20-30 hours  
 **Impact**: High - enables pattern matching
 
 #### Closures (Partial support)
