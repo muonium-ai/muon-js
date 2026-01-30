@@ -90,6 +90,7 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ `Object.freeze(obj)` (stub)
 - ✅ `Object.seal(obj)` (stub)
 - ✅ `Object.isSealed(obj)` / `Object.isFrozen(obj)` (stub)
+- ✅ `Object.getPrototypeOf(obj)` (improved)
 
 #### Math Object
 - ✅ `Math.abs(x)` / `Math.floor(x)` / `Math.ceil(x)` / `Math.round(x)`

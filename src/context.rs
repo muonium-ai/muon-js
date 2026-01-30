@@ -137,6 +137,10 @@ impl Context {
         self.object_proto = proto;
     }
 
+    pub fn object_proto_default(&self) -> Value {
+        self.object_proto
+    }
+
     pub fn set_array_proto(&mut self, proto: Value) {
         self.array_proto = proto;
     }

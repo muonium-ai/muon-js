@@ -860,6 +860,18 @@ mod tests {
     }
 
     #[test]
+    fn object_get_prototype_of_improvements() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let proto = eval_ret(&mut ctx, "Object.getPrototypeOf({})");
+        assert_eq!(proto, JSValue::NULL);
+        let proto_num = eval_ret(&mut ctx, "Object.getPrototypeOf(1)");
+        assert_eq!(proto_num, JSValue::NULL);
+        let proto_chain = eval_ret(&mut ctx, "p = {z: 1}; o = Object.create(p); Object.getPrototypeOf(o).z");
+        assert_eq!(JS_ToInt32(&mut ctx, proto_chain).unwrap(), 1);
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

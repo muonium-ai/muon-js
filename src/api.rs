@@ -763,8 +763,12 @@ pub fn js_object_define_property(_ctx: &mut JSContextImpl, obj: JSValue, key: JS
 }
 
 pub fn js_object_get_prototype_of(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {
-    if _ctx.object_class_id(obj).is_none() {
+    if obj.is_null() || obj.is_undefined() {
         return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not an object");
+    }
+    if _ctx.object_class_id(obj).is_none() {
+        let proto = _ctx.object_proto_default();
+        return if proto.is_undefined() { Value::NULL } else { proto };
     }
     match _ctx.object_proto(obj) {
         Some(proto) if !proto.is_undefined() => proto,
@@ -3643,12 +3647,13 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_Object_create__" {
                         // ES5 Object.create(proto) - create new object with specified prototype
-                        // For now, we just create an empty object (no prototype chain support yet)
                         if args.is_empty() {
-                            val = js_new_object(ctx);
-                        } else {
-                            // Create object with proto (simplified - no actual proto chain)
-                            val = js_new_object(ctx);
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.create requires a prototype");
+                            return None;
+                        }
+                        val = js_object_create(ctx, args[0]);
+                        if val.is_exception() {
+                            return None;
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -3773,6 +3778,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         js_set_property_str(ctx, desc, "enumerable", Value::TRUE);
                         js_set_property_str(ctx, desc, "configurable", Value::TRUE);
                         val = desc;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_getPrototypeOf__" {
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.getPrototypeOf requires an object");
+                            return None;
+                        }
+                        val = js_object_get_prototype_of(ctx, args[0]);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -4836,6 +4850,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "getOwnPropertyDescriptor" => {
                                 val = js_new_string(ctx, "__builtin_Object_getOwnPropertyDescriptor__");
+                                rest = next;
+                                continue;
+                            }
+                            "getPrototypeOf" => {
+                                val = js_new_string(ctx, "__builtin_Object_getPrototypeOf__");
                                 rest = next;
                                 continue;
                             }

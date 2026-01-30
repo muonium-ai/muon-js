@@ -124,9 +124,10 @@
 - ✅ Object.defineProperty() (simplified)
 - ✅ Object.getOwnPropertyDescriptor() (simplified)
 - ✅ Object.isSealed() / Object.isFrozen() (stub)
+- ✅ Object.getPrototypeOf() (improved for primitives)
 
 **Missing:**
-- ❌ Object.getPrototypeOf() improvements
+- None
 
 ### Phase 2: Built-in Methods - Number (60%)
 **Completed:**
