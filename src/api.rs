@@ -1238,7 +1238,13 @@ fn contains_arith_op(src: &str) -> bool {
             b'+' | b'-' | b'*' | b'/' | b'%' if depth == 0 && last_was_operand => {
                 return true;
             }
-            b'<' | b'>' | b'=' if depth == 0 && last_was_operand => {
+            b'<' | b'>' if depth == 0 => {
+                // Check for << or >> shift operators, or comparison
+                if last_was_operand || (i + 1 < bytes.len() && (bytes[i + 1] == b'<' || bytes[i + 1] == b'>')) {
+                    return true;
+                }
+            }
+            b'=' if depth == 0 && last_was_operand => {
                 return true;
             }
             b'!' if depth == 0 => {
@@ -1251,6 +1257,10 @@ fn contains_arith_op(src: &str) -> bool {
                     // Unary ! at start
                     return true;
                 }
+            }
+            b'~' if depth == 0 && !last_was_operand => {
+                // Bitwise NOT is unary
+                return true;
             }
             b'&' | b'|' | b'^' if depth == 0 && last_was_operand => {
                 return true;
@@ -1441,6 +1451,29 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             js_set_property_str(ctx, global, var_name, new_val);
             return Some(new_val); // prefix returns new value
         }
+    }
+    // Check for typeof operator
+    if s.starts_with("typeof ") {
+        let operand = s[7..].trim();
+        let val = eval_expr(ctx, operand)?;
+        let type_str = if val.is_bool() {
+            "boolean"
+        } else if val.is_number() {
+            "number"
+        } else if js_is_string(ctx, val) != 0 {
+            "string"
+        } else if val.is_undefined() {
+            "undefined"
+        } else if val.is_null() {
+            "object"  // typeof null is "object" in JavaScript
+        } else if js_is_function(ctx, val) != 0 {
+            "function"
+        } else if val.is_ptr() {
+            "object"
+        } else {
+            "undefined"
+        };
+        return Some(js_new_string(ctx, type_str));
     }
     let (base, tail) = split_base_and_tail(s)?;
     let mut val = eval_value(ctx, base)?;
@@ -3094,7 +3127,7 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_comparison(&mut self) -> Result<JSValue, ()> {
-        let mut value = self.parse_additive()?;
+        let mut value = self.parse_shift()?;
         self.skip_ws();
         
         // Check for comparison operators
@@ -3152,8 +3185,33 @@ impl<'a> ArithParser<'a> {
                 }
             };
             
-            let rhs = self.parse_additive()?;
+            let rhs = self.parse_shift()?;
             value = self.compare_values(value, rhs, op)?;
+        }
+        Ok(value)
+    }
+
+    fn parse_shift(&mut self) -> Result<JSValue, ()> {
+        let mut value = self.parse_additive()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'<') && self.peek_at(1) == Some(b'<') {
+                self.pos += 2;
+                let rhs = self.parse_additive()?;
+                value = self.left_shift(value, rhs)?;
+            } else if self.peek() == Some(b'>') && self.peek_at(1) == Some(b'>') {
+                self.pos += 2;
+                if self.peek() == Some(b'>') {
+                    self.pos += 1;
+                    let rhs = self.parse_additive()?;
+                    value = self.unsigned_right_shift(value, rhs)?;
+                } else {
+                    let rhs = self.parse_additive()?;
+                    value = self.right_shift(value, rhs)?;
+                }
+            } else {
+                break;
+            }
         }
         Ok(value)
     }
@@ -3217,6 +3275,11 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
             let val = self.parse_postfix()?;
             return self.logical_not(val);
+        }
+        if let Some(b'~') = self.peek() {
+            self.pos += 1;
+            let val = self.parse_postfix()?;
+            return self.bitwise_not(val);
         }
         self.parse_postfix()
     }
@@ -3573,6 +3636,39 @@ impl<'a> ArithParser<'a> {
         let ln = js_to_int32(ctx, left).map_err(|_| ())?;
         let rn = js_to_int32(ctx, right).map_err(|_| ())?;
         Ok(Value::from_int32(ln ^ rn))
+    }
+
+    fn bitwise_not(&mut self, val: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let n = js_to_int32(ctx, val).map_err(|_| ())?;
+        Ok(Value::from_int32(!n))
+    }
+
+    fn left_shift(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_int32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_uint32(ctx, right).map_err(|_| ())?;
+        Ok(Value::from_int32(ln << (rn & 0x1f)))
+    }
+
+    fn right_shift(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_int32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_uint32(ctx, right).map_err(|_| ())?;
+        Ok(Value::from_int32(ln >> (rn & 0x1f)))
+    }
+
+    fn unsigned_right_shift(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
+        let ctx = unsafe { &mut *self.ctx };
+        let ln = js_to_uint32(ctx, left).map_err(|_| ())?;
+        let rn = js_to_uint32(ctx, right).map_err(|_| ())?;
+        let result = ln >> (rn & 0x1f);
+        // Result needs to be treated as unsigned, so if it fits in i32 range, use that
+        if result <= i32::MAX as u32 {
+            Ok(Value::from_int32(result as i32))
+        } else {
+            Ok(number_to_value(ctx, result as f64))
+        }
     }
 
     fn is_truthy(&self, val: JSValue) -> bool {

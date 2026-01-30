@@ -26,6 +26,12 @@ fn main() {
         println!("null");
     } else if val.is_undefined() {
         println!("undefined");
+    } else if let Some(bytes) = ctx.string_bytes(val) {
+        if let Ok(s) = std::str::from_utf8(bytes) {
+            println!("{}", s);
+        } else {
+            println!("Result: {:?}", val);
+        }
     } else {
         println!("Result: {:?}", val);
     }
