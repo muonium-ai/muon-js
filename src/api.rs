@@ -1243,8 +1243,16 @@ fn contains_arith_op(src: &str) -> bool {
                 return true;
             }
             b'<' | b'>' if depth == 0 => {
-                // Check for << or >> shift operators, or comparison
-                if last_was_operand || (i + 1 < bytes.len() && (bytes[i + 1] == b'<' || bytes[i + 1] == b'>')) {
+                // Check for <<, >>, <=, >= or simple comparison <, >
+                if i + 1 < bytes.len() {
+                    let next = bytes[i + 1];
+                    // Any of these combinations mean it's an operator
+                    if next == b'<' || next == b'>' || next == b'=' {
+                        return true;
+                    }
+                }
+                // Simple < or > comparison (with operand before it)
+                if last_was_operand {
                     return true;
                 }
             }
@@ -2921,6 +2929,11 @@ fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Opt
     // Execute the function body
     let result = eval_function_body(ctx, &body_str);
     
+    // Clear return control after function completes
+    if ctx.get_loop_control() == crate::context::LoopControl::Return {
+        ctx.set_loop_control(crate::context::LoopControl::None);
+    }
+    
     // Clean up parameter bindings from global
     // Note: In a real implementation we'd restore the original values
     // For now, just leave them (simple implementation)
@@ -2952,9 +2965,16 @@ fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
         // Check for return statement
         if trimmed.starts_with("return ") {
             let expr = &trimmed[7..]; // skip "return "
-            return eval_expr(ctx, expr.trim());
+            if let Some(val) = eval_expr(ctx, expr.trim()) {
+                ctx.set_return_value(val);
+                ctx.set_loop_control(crate::context::LoopControl::Return);
+                return Some(val);
+            }
+            return None;
         }
         if trimmed == "return" {
+            ctx.set_return_value(Value::UNDEFINED);
+            ctx.set_loop_control(crate::context::LoopControl::Return);
             return Some(Value::UNDEFINED);
         }
         
@@ -3134,9 +3154,19 @@ fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     
     // Execute appropriate block
     if is_true {
-        eval_function_body(ctx, then_block)
+        let result = eval_function_body(ctx, then_block)?;
+        // Propagate return control
+        if ctx.get_loop_control() == crate::context::LoopControl::Return {
+            return Some(ctx.get_return_value());
+        }
+        Some(result)
     } else if let Some(else_body) = else_block {
-        eval_function_body(ctx, else_body)
+        let result = eval_function_body(ctx, else_body)?;
+        // Propagate return control
+        if ctx.get_loop_control() == crate::context::LoopControl::Return {
+            return Some(ctx.get_return_value());
+        }
+        Some(result)
     } else {
         Some(Value::UNDEFINED)
     }
@@ -3197,6 +3227,10 @@ fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 continue;
+            }
+            crate::context::LoopControl::Return => {
+                // Propagate return up
+                break;
             }
             crate::context::LoopControl::None => {}
         }
@@ -3276,6 +3310,10 @@ fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 // Continue to update
+            }
+            crate::context::LoopControl::Return => {
+                // Propagate return up
+                break;
             }
             crate::context::LoopControl::None => {}
         }

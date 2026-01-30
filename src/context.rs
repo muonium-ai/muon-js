@@ -8,6 +8,7 @@ pub enum LoopControl {
     None,
     Break,
     Continue,
+    Return,
 }
 
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
@@ -30,6 +31,7 @@ pub struct Context {
     array_push_fn: Value,
     array_pop_fn: Value,
     loop_control: LoopControl,
+    return_value: Value,
 }
 
 impl Context {
@@ -48,6 +50,7 @@ impl Context {
             last_exception: Value::UNDEFINED,
             c_function_table: core::ptr::null(),
             c_function_table_len: 0,
+            return_value: Value::UNDEFINED,
             object_proto: Value::UNDEFINED,
             array_proto: Value::UNDEFINED,
             array_push_fn: Value::UNDEFINED,
@@ -110,6 +113,14 @@ impl Context {
 
     pub fn get_loop_control(&self) -> LoopControl {
         self.loop_control
+    }
+
+    pub fn set_return_value(&mut self, val: Value) {
+        self.return_value = val;
+    }
+
+    pub fn get_return_value(&self) -> Value {
+        self.return_value
     }
 
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
