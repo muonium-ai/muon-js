@@ -1328,6 +1328,10 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "false" {
         return Some(Value::FALSE);
     }
+    if s == "Math" {
+        // Return a special marker for Math object
+        return Some(js_new_string(ctx, "__builtin_Math__"));
+    }
     if is_simple_string_literal(s) {
         let inner = &s[1..s.len() - 1];
         return Some(js_new_string(ctx, inner));
@@ -1757,6 +1761,90 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Math_floor__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = Value::from_int32(n.floor() as i32);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_ceil__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = Value::from_int32(n.ceil() as i32);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_round__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = Value::from_int32(n.round() as i32);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_abs__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.abs());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_max__" {
+                        if args.len() > 0 {
+                            let mut max = f64::NEG_INFINITY;
+                            for arg in args {
+                                if let Ok(n) = js_to_number(ctx, arg) {
+                                    if n > max {
+                                        max = n;
+                                    }
+                                }
+                            }
+                            val = number_to_value(ctx, max);
+                        } else {
+                            val = number_to_value(ctx, f64::NEG_INFINITY);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_min__" {
+                        if args.len() > 0 {
+                            let mut min = f64::INFINITY;
+                            for arg in args {
+                                if let Ok(n) = js_to_number(ctx, arg) {
+                                    if n < min {
+                                        min = n;
+                                    }
+                                }
+                            }
+                            val = number_to_value(ctx, min);
+                        } else {
+                            val = number_to_value(ctx, f64::INFINITY);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_sqrt__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.sqrt());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     }
                 }
             }
@@ -1914,6 +2002,52 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     val = js_new_string(ctx, "__builtin_string_toLowerCase__");
                     rest = next;
                     continue;
+                }
+            }
+            
+            // Math methods
+            if let Some(bytes) = ctx.string_bytes(val) {
+                if let Ok(marker) = core::str::from_utf8(bytes) {
+                    if marker == "__builtin_Math__" {
+                        match name {
+                            "floor" => {
+                                val = js_new_string(ctx, "__builtin_Math_floor__");
+                                rest = next;
+                                continue;
+                            }
+                            "ceil" => {
+                                val = js_new_string(ctx, "__builtin_Math_ceil__");
+                                rest = next;
+                                continue;
+                            }
+                            "round" => {
+                                val = js_new_string(ctx, "__builtin_Math_round__");
+                                rest = next;
+                                continue;
+                            }
+                            "abs" => {
+                                val = js_new_string(ctx, "__builtin_Math_abs__");
+                                rest = next;
+                                continue;
+                            }
+                            "max" => {
+                                val = js_new_string(ctx, "__builtin_Math_max__");
+                                rest = next;
+                                continue;
+                            }
+                            "min" => {
+                                val = js_new_string(ctx, "__builtin_Math_min__");
+                                rest = next;
+                                continue;
+                            }
+                            "sqrt" => {
+                                val = js_new_string(ctx, "__builtin_Math_sqrt__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
             
