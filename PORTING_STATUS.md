@@ -240,7 +240,75 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 
 **Success rate improved from 5/10 → 8/10** after fixing `<=` and `>=` operators.
 
+Run with: `make test-integration` or `./tests/run_integration.sh`
+
 ---
+
+## 🧪 Test Infrastructure
+
+### 1. Core Feature Tests (51 tests)
+Tests basic JavaScript features in isolation without mquickjs test framework dependencies.
+
+```bash
+./tests/test_basic_features.sh
+```
+
+**Status: 51/51 passing (100%)** ✅
+
+Categories tested:
+- Arithmetic operators (8 tests)
+- Comparison operators (8 tests)
+- Logical operators (6 tests)
+- Variables (2 tests)
+- Strings (7 tests)
+- Arrays (3 tests)
+- Objects (2 tests)
+- Functions (2 tests)
+- Control flow (6 tests)
+- Math (7 tests)
+
+### 2. Integration Tests (10 tests)
+Real-world JavaScript programs testing complete features.
+
+```bash
+make test-integration
+# or
+./tests/run_integration.sh
+```
+
+**Status: 8/10 passing (80%)** ✅
+
+### 3. mquickjs Compatibility Tests (45 test functions)
+Official test suite from upstream mquickjs repository.
+
+```bash
+make test-mquickjs-detailed
+# or
+./tests/check_mquickjs_compatibility.sh
+```
+
+**Status: 0/45 passing (0%)** ❌  
+**Blocker**: All mquickjs tests use `throw`/`try`/`catch`/`Error()` which we don't support yet.
+
+Test files:
+- `test_language.js` - 9 test functions (operators, type conversion)
+- `test_builtin.js` - 12 test functions (String, Array, Math, JSON, RegExp)
+- `test_loop.js` - 16 test functions (while, for, for-in, switch, try/catch)
+- `test_closure.js` - 3 test functions (closure semantics)
+- `mandelbrot.js`, `test_rect.js` - Simple programs
+
+### 4. Rust Unit Tests
+```bash
+cargo test
+# or
+make test
+```
+
+Tests internal Rust implementation details.
+
+---
+
+## 🎯 Integration Test Status: 8/10 Passing (MOVED ABOVE)
 
 ## 📋 Priority Next Steps
 
