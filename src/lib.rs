@@ -151,6 +151,45 @@ mod tests {
     }
 
     #[test]
+    fn global_nan_infinity_undefined() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let nan = eval_ret(&mut ctx, "NaN");
+        let nan_val = JS_ToNumber(&mut ctx, nan).unwrap();
+        assert!(nan_val.is_nan());
+        let gnan = eval_ret(&mut ctx, "globalThis.NaN");
+        let gnan_val = JS_ToNumber(&mut ctx, gnan).unwrap();
+        assert!(gnan_val.is_nan());
+
+        let inf = eval_ret(&mut ctx, "Infinity");
+        let inf_val = JS_ToNumber(&mut ctx, inf).unwrap();
+        assert!(inf_val.is_infinite() && inf_val.is_sign_positive());
+        let ginf = eval_ret(&mut ctx, "globalThis.Infinity");
+        let ginf_val = JS_ToNumber(&mut ctx, ginf).unwrap();
+        assert!(ginf_val.is_infinite() && ginf_val.is_sign_positive());
+
+        let undef = eval_ret(&mut ctx, "globalThis.undefined");
+        assert!(undef.is_undefined());
+    }
+
+    #[test]
+    fn number_isnan_isfinite_strictness() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "Number.isNaN('foo')");
+        assert_eq!(v, JSValue::FALSE);
+        let v = eval_ret(&mut ctx, "Number.isNaN(NaN)");
+        assert_eq!(v, JSValue::TRUE);
+
+        let v = eval_ret(&mut ctx, "Number.isFinite('10')");
+        assert_eq!(v, JSValue::FALSE);
+        let v = eval_ret(&mut ctx, "Number.isFinite(10)");
+        assert_eq!(v, JSValue::TRUE);
+        let v = eval_ret(&mut ctx, "Number.isFinite(Infinity)");
+        assert_eq!(v, JSValue::FALSE);
+    }
+
+    #[test]
     fn large_int_conversions() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

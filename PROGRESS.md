@@ -143,7 +143,7 @@
 - ✅ Number.EPSILON, POSITIVE_INFINITY, NEGATIVE_INFINITY constants
 
 **Missing:**
-- ❌ Number.isNaN() / Number.isFinite() strictness audit for non-numbers
+- None
 
 ### Phase 2: Built-in Methods - Math (100%)
 **Completed:**
@@ -291,16 +291,8 @@ Number.isFinite(100)            // OK (static method)
 **Fix required**: Parser redesign in Phase 6 (8-12 weeks)
 
 ### Critical Issue #2: Missing NaN/Infinity Literals
-**Severity**: MEDIUM  
-**Impact**: Can't test NaN detection properly
-
-```javascript
-NaN                 // Exception - not parsed
-Infinity            // Exception - not parsed
-0/0                 // Works but can't store in variable due to Issue #1
-```
-
-**Workaround**: Use indirect creation (division by zero)
+**Status**: RESOLVED ✅  
+**Notes**: `NaN`, `Infinity`, and `globalThis` properties now resolve to numeric values.
 
 ### Minor Issue #3: Array Constructor Behavior
 **Severity**: LOW  

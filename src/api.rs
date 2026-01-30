@@ -38,6 +38,11 @@ pub fn js_new_context(mem: &mut [u8]) -> JSContextImpl {
     let mut ctx = Context::new(mem);
     let global = js_get_global_object(&mut ctx);
     let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
+    let nan = number_to_value(&mut ctx, f64::NAN);
+    let inf = number_to_value(&mut ctx, f64::INFINITY);
+    let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
+    let _ = js_set_property_str(&mut ctx, global, "Infinity", inf);
+    let _ = js_set_property_str(&mut ctx, global, "undefined", Value::UNDEFINED);
     ctx
 }
 
@@ -52,6 +57,11 @@ pub fn js_new_context_with_stdlib(
     }
     let global = js_get_global_object(&mut ctx);
     let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
+    let nan = number_to_value(&mut ctx, f64::NAN);
+    let inf = number_to_value(&mut ctx, f64::INFINITY);
+    let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
+    let _ = js_set_property_str(&mut ctx, global, "Infinity", inf);
+    let _ = js_set_property_str(&mut ctx, global, "undefined", Value::UNDEFINED);
     ctx
 }
 
@@ -4168,8 +4178,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         // ES2015 Number.isNaN() - check if value is NaN without coercion
                         // More robust than global isNaN() which coerces to number first
                         if args.len() == 1 {
-                            if let Ok(n) = js_to_number(ctx, args[0]) {
-                                val = Value::new_bool(n.is_nan());
+                            if args[0].is_number() {
+                                val = Value::FALSE;
+                            } else if let Some(f) = ctx.float_value(args[0]) {
+                                val = Value::new_bool(f.is_nan());
                             } else {
                                 // If not a number at all, return false (unlike global isNaN)
                                 val = Value::FALSE;
@@ -4186,8 +4198,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         if args.len() == 1 {
                             if args[0].is_number() {
                                 val = Value::TRUE;
-                            } else if let Ok(n) = js_to_number(ctx, args[0]) {
-                                val = Value::new_bool(n.is_finite());
+                            } else if let Some(f) = ctx.float_value(args[0]) {
+                                val = Value::new_bool(f.is_finite());
                             } else {
                                 val = Value::FALSE;
                             }
