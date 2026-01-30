@@ -1335,6 +1335,15 @@ fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "Object" {
         return Some(js_new_string(ctx, "__builtin_Object__"));
     }
+    if s == "Array" {
+        return Some(js_new_string(ctx, "__builtin_Array__"));
+    }
+    if s == "Number" {
+        return Some(js_new_string(ctx, "__builtin_Number__"));
+    }
+    if s == "String" {
+        return Some(js_new_string(ctx, "__builtin_String__"));
+    }
     if s == "parseInt" {
         return Some(js_new_string(ctx, "__builtin_parseInt__"));
     }
@@ -2014,6 +2023,29 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_lastIndexOf__" {
+                        if args.len() == 1 {
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            if let Some(len) = len_val.int32() {
+                                let search_val = args[0];
+                                let mut found_idx = -1;
+                                for i in (0..len).rev() {
+                                    let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                    if elem.0 == search_val.0 {
+                                        found_idx = i;
+                                        break;
+                                    }
+                                }
+                                val = Value::from_int32(found_idx);
+                            } else {
+                                val = Value::from_int32(-1);
+                            }
+                        } else {
+                            val = Value::from_int32(-1);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_includes__" {
                         if args.len() == 1 {
                             let len_val = js_get_property_str(ctx, this_val, "length");
@@ -2050,6 +2082,98 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 } else {
                                     val = this_val;
                                 }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_replace__" {
+                        if args.len() >= 2 {
+                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                    if let Some(search_bytes) = ctx.string_bytes(args[0]) {
+                                        if let Ok(search) = core::str::from_utf8(search_bytes) {
+                                            if let Some(replace_bytes) = ctx.string_bytes(args[1]) {
+                                                if let Ok(replace) = core::str::from_utf8(replace_bytes) {
+                                                    // Simple replace - only first occurrence
+                                                    let result = s.replacen(search, replace, 1);
+                                                    val = js_new_string(ctx, &result);
+                                                } else {
+                                                    val = this_val;
+                                                }
+                                            } else {
+                                                val = this_val;
+                                            }
+                                        } else {
+                                            val = this_val;
+                                        }
+                                    } else {
+                                        val = this_val;
+                                    }
+                                } else {
+                                    val = this_val;
+                                }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_charCodeAt__" {
+                        if args.len() >= 1 {
+                            if let Some(idx) = args[0].int32() {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                        if idx >= 0 && (idx as usize) < s.len() {
+                                            if let Some(ch) = s.chars().nth(idx as usize) {
+                                                val = Value::from_int32(ch as i32);
+                                            } else {
+                                                val = number_to_value(ctx, f64::NAN);
+                                            }
+                                        } else {
+                                            val = number_to_value(ctx, f64::NAN);
+                                        }
+                                    } else {
+                                        val = number_to_value(ctx, f64::NAN);
+                                    }
+                                } else {
+                                    val = number_to_value(ctx, f64::NAN);
+                                }
+                            } else {
+                                val = number_to_value(ctx, f64::NAN);
+                            }
+                        } else {
+                            val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_trimStart__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let trimmed = s.trim_start().to_string();
+                                val = js_new_string(ctx, &trimmed);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_trimEnd__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let trimmed = s.trim_end().to_string();
+                                val = js_new_string(ctx, &trimmed);
                             } else {
                                 val = this_val;
                             }
@@ -2151,6 +2275,57 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             val = arr;
                         } else {
                             val = js_new_array(ctx, 0);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Array_isArray__" {
+                        if args.len() == 1 {
+                            if let Some(class_id) = ctx.object_class_id(args[0]) {
+                                val = Value::new_bool(class_id == JSObjectClassEnum::Array as u32);
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Number_isInteger__" {
+                        if args.len() == 1 {
+                            if args[0].is_number() {
+                                // It's an int32
+                                val = Value::TRUE;
+                            } else if let Ok(n) = js_to_number(ctx, args[0]) {
+                                // Check if it's an integer value
+                                val = Value::new_bool(n.is_finite() && n.fract() == 0.0);
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_String_fromCharCode__" {
+                        if args.len() >= 1 {
+                            let mut result = String::new();
+                            for arg in args.iter() {
+                                if let Some(code) = arg.int32() {
+                                    if let Some(ch) = char::from_u32(code as u32) {
+                                        result.push(ch);
+                                    }
+                                } else if let Ok(n) = js_to_number(ctx, *arg) {
+                                    if let Some(ch) = char::from_u32(n as u32) {
+                                        result.push(ch);
+                                    }
+                                }
+                            }
+                            val = js_new_string(ctx, &result);
+                        } else {
+                            val = js_new_string(ctx, "");
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -2360,11 +2535,58 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
             
+            // String.replace
+            if name == "replace" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_replace__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.charCodeAt
+            if name == "charCodeAt" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_charCodeAt__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.trimStart
+            if name == "trimStart" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_trimStart__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.trimEnd
+            if name == "trimEnd" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_trimEnd__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
             // Array.concat
             if name == "concat" {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_concat__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.lastIndexOf
+            if name == "lastIndexOf" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_lastIndexOf__");
                         rest = next;
                         continue;
                     }
@@ -2455,6 +2677,33 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         match name {
                             "keys" => {
                                 val = js_new_string(ctx, "__builtin_Object_keys__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_Array__" {
+                        match name {
+                            "isArray" => {
+                                val = js_new_string(ctx, "__builtin_Array_isArray__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_Number__" {
+                        match name {
+                            "isInteger" => {
+                                val = js_new_string(ctx, "__builtin_Number_isInteger__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_String__" {
+                        match name {
+                            "fromCharCode" => {
+                                val = js_new_string(ctx, "__builtin_String_fromCharCode__");
                                 rest = next;
                                 continue;
                             }
