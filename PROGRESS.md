@@ -1,6 +1,6 @@
 # muon-js Implementation Progress
 
-**Last Updated**: January 30, 2026 (Session 5)
+**Last Updated**: January 30, 2026 (Session 7)
 
 ## 📊 Current Status
 
@@ -14,6 +14,14 @@
 ### Build Status
 - ✅ Compiles successfully
 - ⚠️ 6 non-critical warnings (unused variables)
+
+### Session 7 Accomplishments
+- ✅ Added Number constants: `EPSILON`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`
+- ✅ Tightened `Number.isInteger()` to avoid coercion of non-number values
+
+### Session 6 Accomplishments
+- ✅ Implemented `Number.parseInt`, `Number.parseFloat`, `Number.isSafeInteger`
+- ✅ Added `Number.MAX_VALUE` and `Number.MIN_VALUE` constants
 
 ### Session 5 Accomplishments
 - ✅ Added regex literals and `RegExp` constructor (backed by Rust regex)
@@ -120,12 +128,14 @@
 - ✅ Number.isNaN()
 - ✅ Number.isFinite()
 - ✅ toFixed(), toPrecision(), toExponential()
+- ✅ Number.parseInt()
+- ✅ Number.parseFloat()
+- ✅ Number.isSafeInteger()
+- ✅ Number.MAX_VALUE, MIN_VALUE constants
+- ✅ Number.EPSILON, POSITIVE_INFINITY, NEGATIVE_INFINITY constants
 
 **Missing:**
-- ❌ Number.parseInt()
-- ❌ Number.parseFloat()
-- ❌ Number.isSafeInteger()
-- ❌ Number.MAX_VALUE, MIN_VALUE constants
+- ❌ Number.isNaN() / Number.isFinite() strictness audit for non-numbers
 
 ### Phase 2: Built-in Methods - Math (100%)
 **Completed:**

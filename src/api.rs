@@ -3599,11 +3599,9 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     } else if marker == "__builtin_Number_isInteger__" {
                         if args.len() == 1 {
                             if args[0].is_number() {
-                                // It's an int32
                                 val = Value::TRUE;
-                            } else if let Ok(n) = js_to_number(ctx, args[0]) {
-                                // Check if it's an integer value
-                                val = Value::new_bool(n.is_finite() && n.fract() == 0.0);
+                            } else if let Some(f) = ctx.float_value(args[0]) {
+                                val = Value::new_bool(f.is_finite() && f.fract() == 0.0);
                             } else {
                                 val = Value::FALSE;
                             }
@@ -3640,6 +3638,23 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             } else {
                                 val = Value::FALSE;
                             }
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Number_isSafeInteger__" {
+                        if args.len() == 1 {
+                            let max_safe = 9007199254740991.0_f64;
+                            let is_safe = if let Some(n) = args[0].int32() {
+                                (n as f64).abs() <= max_safe
+                            } else if let Some(f) = ctx.float_value(args[0]) {
+                                f.is_finite() && f.fract() == 0.0 && f.abs() <= max_safe
+                            } else {
+                                false
+                            };
+                            val = Value::new_bool(is_safe);
                         } else {
                             val = Value::FALSE;
                         }
@@ -4348,6 +4363,46 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "isFinite" => {
                                 val = js_new_string(ctx, "__builtin_Number_isFinite__");
+                                rest = next;
+                                continue;
+                            }
+                            "isSafeInteger" => {
+                                val = js_new_string(ctx, "__builtin_Number_isSafeInteger__");
+                                rest = next;
+                                continue;
+                            }
+                            "parseInt" => {
+                                val = js_new_string(ctx, "__builtin_parseInt__");
+                                rest = next;
+                                continue;
+                            }
+                            "parseFloat" => {
+                                val = js_new_string(ctx, "__builtin_parseFloat__");
+                                rest = next;
+                                continue;
+                            }
+                            "MAX_VALUE" => {
+                                val = number_to_value(ctx, f64::MAX);
+                                rest = next;
+                                continue;
+                            }
+                            "MIN_VALUE" => {
+                                val = number_to_value(ctx, f64::MIN_POSITIVE);
+                                rest = next;
+                                continue;
+                            }
+                            "EPSILON" => {
+                                val = number_to_value(ctx, f64::EPSILON);
+                                rest = next;
+                                continue;
+                            }
+                            "POSITIVE_INFINITY" => {
+                                val = number_to_value(ctx, f64::INFINITY);
+                                rest = next;
+                                continue;
+                            }
+                            "NEGATIVE_INFINITY" => {
+                                val = number_to_value(ctx, f64::NEG_INFINITY);
                                 rest = next;
                                 continue;
                             }
@@ -5362,6 +5417,27 @@ impl<'a> ArithParser<'a> {
 
                     // Check for built-in string methods
                     if js_is_string(ctx, value) != 0 {
+                        if let Some(bytes) = ctx.string_bytes(value) {
+                            if let Ok(marker) = core::str::from_utf8(bytes) {
+                                if marker == "__builtin_Number__" {
+                                    value = match prop {
+                                        "isInteger" => js_new_string(ctx, "__builtin_Number_isInteger__"),
+                                        "isNaN" => js_new_string(ctx, "__builtin_Number_isNaN__"),
+                                        "isFinite" => js_new_string(ctx, "__builtin_Number_isFinite__"),
+                                        "isSafeInteger" => js_new_string(ctx, "__builtin_Number_isSafeInteger__"),
+                                        "parseInt" => js_new_string(ctx, "__builtin_parseInt__"),
+                                        "parseFloat" => js_new_string(ctx, "__builtin_parseFloat__"),
+                                        "MAX_VALUE" => number_to_value(ctx, f64::MAX),
+                                        "MIN_VALUE" => number_to_value(ctx, f64::MIN_POSITIVE),
+                                        "EPSILON" => number_to_value(ctx, f64::EPSILON),
+                                        "POSITIVE_INFINITY" => number_to_value(ctx, f64::INFINITY),
+                                        "NEGATIVE_INFINITY" => number_to_value(ctx, f64::NEG_INFINITY),
+                                        _ => value,
+                                    };
+                                    continue;
+                                }
+                            }
+                        }
                         value = match prop {
                             "charAt" => js_new_string(ctx, "__builtin_string_charAt__"),
                             "toUpperCase" => js_new_string(ctx, "__builtin_string_toUpperCase__"),
@@ -5809,6 +5885,75 @@ impl<'a> ArithParser<'a> {
                         return Ok(js_new_string(ctx, &s.replace(&search, &replacement)));
                     }
                     return Ok(this_val);
+                } else if marker == "__builtin_parseInt__" {
+                    if args.len() >= 1 {
+                        if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                if let Ok(n) = s.trim().parse::<i32>() {
+                                    return Ok(Value::from_int32(n));
+                                }
+                                return Ok(number_to_value(ctx, f64::NAN));
+                            }
+                        } else if let Some(n) = args[0].int32() {
+                            return Ok(Value::from_int32(n));
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_parseFloat__" {
+                    if args.len() >= 1 {
+                        if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                if let Ok(n) = s.trim().parse::<f64>() {
+                                    return Ok(number_to_value(ctx, n));
+                                }
+                                return Ok(number_to_value(ctx, f64::NAN));
+                            }
+                        } else if let Ok(n) = js_to_number(ctx, args[0]) {
+                            return Ok(number_to_value(ctx, n));
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_Number_isInteger__" {
+                    if args.len() == 1 {
+                        if args[0].is_number() {
+                            return Ok(Value::TRUE);
+                        }
+                        if let Some(f) = ctx.float_value(args[0]) {
+                            return Ok(Value::new_bool(f.is_finite() && f.fract() == 0.0));
+                        }
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_Number_isNaN__" {
+                    if args.len() == 1 {
+                        if let Some(f) = ctx.float_value(args[0]) {
+                            return Ok(Value::new_bool(f.is_nan()));
+                        }
+                        return Ok(Value::FALSE);
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_Number_isFinite__" {
+                    if args.len() == 1 {
+                        if args[0].is_number() {
+                            return Ok(Value::TRUE);
+                        }
+                        if let Some(f) = ctx.float_value(args[0]) {
+                            return Ok(Value::new_bool(f.is_finite()));
+                        }
+                    }
+                    return Ok(Value::FALSE);
+                } else if marker == "__builtin_Number_isSafeInteger__" {
+                    if args.len() == 1 {
+                        let max_safe = 9007199254740991.0_f64;
+                        let is_safe = if let Some(n) = args[0].int32() {
+                            (n as f64).abs() <= max_safe
+                        } else if let Some(f) = ctx.float_value(args[0]) {
+                            f.is_finite() && f.fract() == 0.0 && f.abs() <= max_safe
+                        } else {
+                            false
+                        };
+                        return Ok(Value::new_bool(is_safe));
+                    }
+                    return Ok(Value::FALSE);
                 // Array methods
                 } else if marker == "__builtin_array_push__" {
                     for arg in args {

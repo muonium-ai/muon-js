@@ -894,4 +894,38 @@ mod tests {
         let repgstr = JS_ToCString(&mut ctx, repgs, &mut buf);
         assert_eq!(repgstr, "xbx");
     }
+
+    #[test]
+    fn number_static_methods_and_constants() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "Number.parseInt(\"42\")");
+        assert_eq!(JS_ToInt32(&mut ctx, v).unwrap(), 42);
+        let v2 = eval_ret(&mut ctx, "Number.parseFloat(\"3.5\")");
+        let n2 = JS_ToNumber(&mut ctx, v2).unwrap();
+        assert!((n2 - 3.5).abs() < 1e-9);
+        let v3 = eval_ret(&mut ctx, "Number.isSafeInteger(9007199254740991)");
+        assert_eq!(v3, JSValue::TRUE);
+        let v4 = eval_ret(&mut ctx, "Number.isSafeInteger(9007199254740992)");
+        assert_eq!(v4, JSValue::FALSE);
+        let v5 = eval_ret(&mut ctx, "Number.isSafeInteger(\"1\")");
+        assert_eq!(v5, JSValue::FALSE);
+        let v6 = eval_ret(&mut ctx, "Number.isInteger(\"1\")");
+        assert_eq!(v6, JSValue::FALSE);
+        let maxv = eval_ret(&mut ctx, "Number.MAX_VALUE");
+        let maxn = JS_ToNumber(&mut ctx, maxv).unwrap();
+        assert!(maxn > 1.0e308);
+        let minv = eval_ret(&mut ctx, "Number.MIN_VALUE");
+        let minn = JS_ToNumber(&mut ctx, minv).unwrap();
+        assert!(minn > 0.0 && minn < 1.0e-300);
+        let epsv = eval_ret(&mut ctx, "Number.EPSILON");
+        let epsn = JS_ToNumber(&mut ctx, epsv).unwrap();
+        assert!(epsn > 0.0 && epsn < 1.0e-10);
+        let posv = eval_ret(&mut ctx, "Number.POSITIVE_INFINITY");
+        let posn = JS_ToNumber(&mut ctx, posv).unwrap();
+        assert!(posn.is_infinite() && posn.is_sign_positive());
+        let negv = eval_ret(&mut ctx, "Number.NEGATIVE_INFINITY");
+        let negn = JS_ToNumber(&mut ctx, negv).unwrap();
+        assert!(negn.is_infinite() && negn.is_sign_negative());
+    }
 }
