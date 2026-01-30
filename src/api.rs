@@ -35,7 +35,10 @@ pub type JSContextImpl = Context;
 /// Create a new context with a caller-provided memory buffer.
 /// This mirrors JS_NewContext in mquickjs.h and must stay API-compatible.
 pub fn js_new_context(mem: &mut [u8]) -> JSContextImpl {
-    Context::new(mem)
+    let mut ctx = Context::new(mem);
+    let global = js_get_global_object(&mut ctx);
+    let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
+    ctx
 }
 
 pub fn js_new_context_with_stdlib(
@@ -47,6 +50,8 @@ pub fn js_new_context_with_stdlib(
     if let Some(def) = stdlib_def {
         js_set_stdlib_def(&mut ctx, def, cfunc_len);
     }
+    let global = js_get_global_object(&mut ctx);
+    let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
     ctx
 }
 
@@ -3623,8 +3628,12 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 js_to_string(ctx, key)
                             };
                             if let Some(bytes) = ctx.string_bytes(key_val) {
-                                let owned = bytes.to_vec();
-                                val = Value::new_bool(ctx.has_property_str(target, &owned));
+                                let key_str = core::str::from_utf8(bytes).unwrap_or("");
+                                if let Some(keys) = ctx.object_keys(target) {
+                                    val = Value::new_bool(keys.iter().any(|k| k == key_str));
+                                } else {
+                                    val = Value::FALSE;
+                                }
                             } else {
                                 val = Value::FALSE;
                             }
@@ -3664,6 +3673,28 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             return None;
                         }
                         val = args[0];
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_isSealed__" {
+                        if args.is_empty() {
+                            val = Value::TRUE;
+                        } else if ctx.object_class_id(args[0]).is_none() {
+                            val = Value::TRUE;
+                        } else {
+                            val = Value::FALSE;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_isFrozen__" {
+                        if args.is_empty() {
+                            val = Value::TRUE;
+                        } else if ctx.object_class_id(args[0]).is_none() {
+                            val = Value::TRUE;
+                        } else {
+                            val = Value::FALSE;
+                        }
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -4780,6 +4811,16 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "freeze" => {
                                 val = js_new_string(ctx, "__builtin_Object_freeze__");
+                                rest = next;
+                                continue;
+                            }
+                            "isSealed" => {
+                                val = js_new_string(ctx, "__builtin_Object_isSealed__");
+                                rest = next;
+                                continue;
+                            }
+                            "isFrozen" => {
+                                val = js_new_string(ctx, "__builtin_Object_isFrozen__");
                                 rest = next;
                                 continue;
                             }
@@ -7049,6 +7090,14 @@ impl<'a> ArithParser<'a> {
             _ => {}
         }
         let ctx = unsafe { &mut *self.ctx };
+        if name == "globalThis" {
+            let global = js_get_global_object(ctx);
+            let val = js_get_property_str(ctx, global, "globalThis");
+            if val.is_undefined() && !ctx.has_property_str(global, b"globalThis") {
+                return Ok(global);
+            }
+            return Ok(val);
+        }
         let global = js_get_global_object(ctx);
         let val = js_get_property_str(ctx, global, name);
         if val.is_exception() {

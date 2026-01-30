@@ -71,6 +71,13 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "isFinite" {
         return Some(builtin_or_global("isFinite", "__builtin_isFinite__"));
     }
+    if s == "globalThis" {
+        let val = js_get_property_str(ctx, global, "globalThis");
+        if val.is_undefined() && !ctx.has_property_str(global, b"globalThis") {
+            return Some(global);
+        }
+        return Some(val);
+    }
     // Error constructors
     if s == "Error" {
         return Some(builtin_or_global("Error", "__builtin_Error__"));

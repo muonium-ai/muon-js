@@ -123,9 +123,9 @@
 - ✅ Object.seal() (stub)
 - ✅ Object.defineProperty() (simplified)
 - ✅ Object.getOwnPropertyDescriptor() (simplified)
+- ✅ Object.isSealed() / Object.isFrozen() (stub)
 
 **Missing:**
-- ❌ Object.isFrozen()
 - ❌ Object.getPrototypeOf() improvements
 
 ### Phase 2: Built-in Methods - Number (60%)
@@ -170,6 +170,7 @@
 - ✅ parseInt(), parseFloat()
 - ✅ isNaN(), isFinite()
 - ✅ Error constructors (Error, TypeError, SyntaxError, ReferenceError, RangeError)
+- ✅ globalThis
 
 **Missing:**
 - ❌ setTimeout, setInterval (needs event loop)

@@ -89,6 +89,7 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ `Object.create(proto)` (simplified)
 - ✅ `Object.freeze(obj)` (stub)
 - ✅ `Object.seal(obj)` (stub)
+- ✅ `Object.isSealed(obj)` / `Object.isFrozen(obj)` (stub)
 
 #### Math Object
 - ✅ `Math.abs(x)` / `Math.floor(x)` / `Math.ceil(x)` / `Math.round(x)`
@@ -160,7 +161,6 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ❌ `eval(code)` (only indirect eval in mquickjs)
 - ❌ `console.log()` ⚠️ *Useful for debugging*
 - ❌ `setTimeout()` / `setInterval()` (not in mquickjs)
-- ❌ `globalThis` property (mquickjs supports)
 
 ---
 

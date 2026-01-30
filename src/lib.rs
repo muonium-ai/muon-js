@@ -823,10 +823,18 @@ mod tests {
         assert_eq!(has_prop_inst, JSValue::TRUE);
         let missing_prop = eval_ret(&mut ctx, "Object.hasOwnProperty(o, \"b\")");
         assert_eq!(missing_prop, JSValue::FALSE);
+        let proto_prop = eval_ret(&mut ctx, "p = {z: 1}; o2 = Object.create(p); Object.hasOwnProperty(o2, \"z\")");
+        assert_eq!(proto_prop, JSValue::FALSE);
         let sealed = eval_ret(&mut ctx, "Object.seal(o)");
         assert_eq!(JS_GetClassID(&mut ctx, sealed), JSObjectClassEnum::Object as i32);
         let sealed_val = eval_ret(&mut ctx, "o.a");
         assert_eq!(JS_ToInt32(&mut ctx, sealed_val).unwrap(), 1);
+        let is_sealed = eval_ret(&mut ctx, "Object.isSealed(o)");
+        assert_eq!(is_sealed, JSValue::FALSE);
+        let is_frozen = eval_ret(&mut ctx, "Object.isFrozen(o)");
+        assert_eq!(is_frozen, JSValue::FALSE);
+        let is_frozen_prim = eval_ret(&mut ctx, "Object.isFrozen(1)");
+        assert_eq!(is_frozen_prim, JSValue::TRUE);
         let mut buf = JSCStringBuf { buf: [0u8; 5] };
         let radix_hex = eval_ret(&mut ctx, "n = 255; n.toString(16)");
         let radix_hex_str = JS_ToString(&mut ctx, radix_hex);
@@ -840,6 +848,15 @@ mod tests {
         let radix_def_str = JS_ToString(&mut ctx, radix_default);
         let radix_def_s = JS_ToCString(&mut ctx, radix_def_str, &mut buf);
         assert_eq!(radix_def_s, "10");
+    }
+
+    #[test]
+    fn global_this_binding() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let _ = JS_Eval(&mut ctx, "globalThis.x = 3", "test.js", 0);
+        let xv = eval_ret(&mut ctx, "x");
+        assert_eq!(JS_ToInt32(&mut ctx, xv).unwrap(), 3);
     }
 
     #[test]
