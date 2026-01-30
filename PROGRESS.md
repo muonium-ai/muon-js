@@ -107,8 +107,6 @@
 - ✅ Array.isArray()
 
 **Missing:**
-- ❌ sort() with custom comparator (needs callback support)
-- ❌ flatMap() (needs callback improvements)
 - ❌ Array.from() with custom mapping function for non-closures
 
 ### Phase 2: Built-in Methods - Object (70%)

@@ -872,6 +872,23 @@ mod tests {
     }
 
     #[test]
+    fn array_sort_and_flatmap() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let _ = JS_Eval(&mut ctx, "function cmp(a, b) { return (a < b) - (a > b); }", "test.js", 0);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let sorted = eval_ret(&mut ctx, "a = [1, 2, 3, 4, 5]; a.sort(cmp); a.toString()");
+        let sorted_str = JS_ToString(&mut ctx, sorted);
+        let sorted_s = JS_ToCString(&mut ctx, sorted_str, &mut buf);
+        assert_eq!(sorted_s, "5,4,3,2,1");
+        let _ = JS_Eval(&mut ctx, "function dup(x) { return [x, x + 1]; }", "test.js", 0);
+        let flatmapped = eval_ret(&mut ctx, "b = [1, 2]; b.flatMap(dup).toString()");
+        let flatmapped_str = JS_ToString(&mut ctx, flatmapped);
+        let flatmapped_s = JS_ToCString(&mut ctx, flatmapped_str, &mut buf);
+        assert_eq!(flatmapped_s, "1,2,2,3");
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

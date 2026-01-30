@@ -1661,13 +1661,25 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         if rest_trim.starts_with('(') {
             let (inside, next) = extract_paren(rest_trim)?;
-            let arg_list = split_top_level(inside)?;
+            let mut arg_list = split_top_level(inside)?;
+            if arg_list.is_empty() && !inside.trim().is_empty() {
+                arg_list.push(inside.trim());
+            }
             let mut args = Vec::new();
             for arg in arg_list {
-                if arg.is_empty() {
+                let arg_trim = arg.trim();
+                if arg_trim.is_empty() {
                     continue;
                 }
-                let v = eval_expr(ctx, arg)?;
+                let v = eval_expr(ctx, arg_trim)?;
+                if v.is_undefined() && is_identifier(arg_trim) {
+                    let global = js_get_global_object(ctx);
+                    if ctx.has_property_str(global, arg_trim.as_bytes()) {
+                        let gv = js_get_property_str(ctx, global, arg_trim);
+                        args.push(gv);
+                        continue;
+                    }
+                }
                 args.push(v);
             }
             
@@ -3914,35 +3926,49 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_sort__" {
-                        // Array.sort() - sort array in place (lexicographic by default)
-                        // Without comparator, convert to strings and compare
+                        // Array.sort() - sort array in place (numeric default here; comparator supported)
                         if let Some(arr_len_val) = ctx.get_property_str(this_val, b"length") {
                             if let Some(len) = arr_len_val.int32() {
-                                // Simple bubble sort implementation
+                                let comparator = if args.len() >= 1 { Some(args[0]) } else { None };
+                                // Simple stable bubble sort implementation
                                 for i in 0..len {
                                     for j in 0..(len - i - 1) {
                                         let a = js_get_property_uint32(ctx, this_val, j as u32);
                                         let b = js_get_property_uint32(ctx, this_val, (j + 1) as u32);
-                                        
-                                        // Convert to numbers for comparison
-                                        let a_num = if let Some(n) = a.int32() {
-                                            n as f64
-                                        } else if let Ok(n) = js_to_number(ctx, a) {
-                                            n
+                                        if a.is_undefined() {
+                                            if !b.is_undefined() {
+                                                js_set_property_uint32(ctx, this_val, j as u32, b);
+                                                js_set_property_uint32(ctx, this_val, (j + 1) as u32, a);
+                                            }
+                                            continue;
+                                        }
+                                        if b.is_undefined() {
+                                            continue;
+                                        }
+                                        let cmp = if let Some(cb) = comparator {
+                                            if let Some(res) = call_closure(ctx, cb, &[a, b]) {
+                                                js_to_number(ctx, res).unwrap_or(0.0)
+                                            } else {
+                                                0.0
+                                            }
                                         } else {
-                                            0.0
+                                            let a_num = if let Some(n) = a.int32() {
+                                                n as f64
+                                            } else if let Ok(n) = js_to_number(ctx, a) {
+                                                n
+                                            } else {
+                                                0.0
+                                            };
+                                            let b_num = if let Some(n) = b.int32() {
+                                                n as f64
+                                            } else if let Ok(n) = js_to_number(ctx, b) {
+                                                n
+                                            } else {
+                                                0.0
+                                            };
+                                            a_num - b_num
                                         };
-                                        
-                                        let b_num = if let Some(n) = b.int32() {
-                                            n as f64
-                                        } else if let Ok(n) = js_to_number(ctx, b) {
-                                            n
-                                        } else {
-                                            0.0
-                                        };
-                                        
-                                        // Swap if a > b
-                                        if a_num > b_num {
+                                        if cmp > 0.0 {
                                             js_set_property_uint32(ctx, this_val, j as u32, b);
                                             js_set_property_uint32(ctx, this_val, (j + 1) as u32, a);
                                         }
@@ -3956,8 +3982,33 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_array_flatMap__" {
                         // ES2019 Array.flatMap() - map then flatten by 1 level
-                        // Not yet supported due to callback function limitation
-                        val = js_new_array(ctx, 0);
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as u32;
+                            let result = js_new_array(ctx, 0);
+                            for i in 0..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [elem, idx_val, this_val];
+                                let mapped = call_closure(ctx, callback, &call_args).unwrap_or(Value::UNDEFINED);
+                                if let Some(class_id) = ctx.object_class_id(mapped) {
+                                    if class_id == JSObjectClassEnum::Array as u32 {
+                                        let mlen_val = js_get_property_str(ctx, mapped, "length");
+                                        let mlen = mlen_val.int32().unwrap_or(0) as u32;
+                                        for j in 0..mlen {
+                                            let mv = js_get_property_uint32(ctx, mapped, j);
+                                            let _ = js_array_push(ctx, result, mv);
+                                        }
+                                        continue;
+                                    }
+                                }
+                                let _ = js_array_push(ctx, result, mapped);
+                            }
+                            val = result;
+                        } else {
+                            val = js_new_array(ctx, 0);
+                        }
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -4383,6 +4434,33 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_findIndex__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "flat" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_flat__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "flatMap" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_flatMap__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "sort" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_sort__");
                         rest = next;
                         continue;
                     }

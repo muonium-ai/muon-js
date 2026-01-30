@@ -1236,9 +1236,16 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
     
     let saved_global = js_get_global_object(ctx);
-    
+    let mut saved = Vec::with_capacity(param_names.len());
     for (i, param_name) in param_names.iter().enumerate() {
         let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
+        let had = ctx.has_property_str(saved_global, param_name.as_bytes());
+        let old = if had {
+            js_get_property_str(ctx, saved_global, param_name)
+        } else {
+            Value::UNDEFINED
+        };
+        saved.push((param_name.clone(), had, old));
         js_set_property_str(ctx, saved_global, param_name, arg_val);
     }
     
@@ -1246,6 +1253,14 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     
     if ctx.get_loop_control() == crate::context::LoopControl::Return {
         ctx.set_loop_control(crate::context::LoopControl::None);
+    }
+
+    for (name, had, old) in saved {
+        if had {
+            js_set_property_str(ctx, saved_global, &name, old);
+        } else {
+            js_set_property_str(ctx, saved_global, &name, Value::UNDEFINED);
+        }
     }
     
     result
