@@ -1765,6 +1765,52 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_toString__" {
+                        // Ported from mquickjs.c:14317-14321 js_array_toString
+                        // toString() is just join(',')
+                        let separator = ",";
+                        
+                        // Get array length
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = if let Some(n) = len_val.int32() {
+                            n.max(0) as u32
+                        } else {
+                            0
+                        };
+                        
+                        // Build result string
+                        let mut result = String::new();
+                        for i in 0..len {
+                            if i > 0 {
+                                result.push_str(separator);
+                            }
+                            
+                            // Get array element
+                            let elem = js_get_property_uint32(ctx, this_val, i);
+                            
+                            // Skip undefined and null (mquickjs behavior)
+                            if elem.is_undefined() || elem.is_null() {
+                                continue;
+                            }
+                            
+                            // Convert element to string
+                            if let Some(n) = elem.int32() {
+                                result.push_str(&n.to_string());
+                            } else if let Some(bytes) = ctx.string_bytes(elem) {
+                                if let Ok(s) = core::str::from_utf8(bytes) {
+                                    result.push_str(s);
+                                }
+                            } else if elem == Value::TRUE {
+                                result.push_str("true");
+                            } else if elem == Value::FALSE {
+                                result.push_str("false");
+                            }
+                        }
+                        
+                        val = js_new_string(ctx, &result);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_reverse__" {
                         let len_val = js_get_property_str(ctx, this_val, "length");
                         if let Some(len) = len_val.int32() {
@@ -2675,6 +2721,17 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_join__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.toString
+            if name == "toString" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_toString__");
                         rest = next;
                         continue;
                     }
