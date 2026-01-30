@@ -1533,6 +1533,122 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 }
                             }
                         }
+                    } else if marker == "__builtin_string_substring__" {
+                        if args.len() == 2 {
+                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    let start = start.max(0) as usize;
+                                    let end = end.max(0) as usize;
+                                    let start = start.min(str_bytes.len());
+                                    let end = end.min(str_bytes.len());
+                                    let (start, end) = if start > end { (end, start) } else { (start, end) };
+                                    // Copy the substring to avoid borrow issues
+                                    let substr_bytes = str_bytes[start..end].to_vec();
+                                    if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                        val = js_new_string(ctx, substr);
+                                        this_val = Value::UNDEFINED;
+                                        rest = next;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    } else if marker == "__builtin_string_indexOf__" {
+                        if args.len() == 1 {
+                            if let Some(needle_bytes) = ctx.string_bytes(args[0]) {
+                                if let Some(haystack_bytes) = ctx.string_bytes(this_val) {
+                                    // Simple substring search
+                                    let needle = needle_bytes;
+                                    let haystack = haystack_bytes;
+                                    if needle.is_empty() {
+                                        val = Value::from_int32(0);
+                                    } else {
+                                        let mut found = -1;
+                                        for i in 0..=(haystack.len().saturating_sub(needle.len())) {
+                                            if &haystack[i..i + needle.len()] == needle {
+                                                found = i as i32;
+                                                break;
+                                            }
+                                        }
+                                        val = Value::from_int32(found);
+                                    }
+                                    this_val = Value::UNDEFINED;
+                                    rest = next;
+                                    continue;
+                                }
+                            }
+                        }
+                    } else if marker == "__builtin_string_slice__" {
+                        if args.len() == 2 {
+                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
+                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                    let len = str_bytes.len() as i32;
+                                    let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                                    let end = if end < 0 { (len + end).max(0) } else { end.min(len) } as usize;
+                                    if start <= end {
+                                        // Copy the substring to avoid borrow issues
+                                        let substr_bytes = str_bytes[start..end].to_vec();
+                                        if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                            val = js_new_string(ctx, substr);
+                                            this_val = Value::UNDEFINED;
+                                            rest = next;
+                                            continue;
+                                        }
+                                    } else {
+                                        val = js_new_string(ctx, "");
+                                        this_val = Value::UNDEFINED;
+                                        rest = next;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    } else if marker == "__builtin_array_shift__" {
+                        // Get first element and remove it
+                        let first_elem = js_get_property_uint32(ctx, this_val, 0);
+                        // Get array length
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        if let Some(len) = len_val.int32() {
+                            if len > 0 {
+                                // Shift all elements down
+                                for i in 0..(len - 1) {
+                                    let elem = js_get_property_uint32(ctx, this_val, (i + 1) as u32);
+                                    js_set_property_uint32(ctx, this_val, i as u32, elem);
+                                }
+                                // Set new length
+                                js_set_property_str(ctx, this_val, "length", Value::from_int32(len - 1));
+                                val = first_elem;
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_unshift__" {
+                        if args.len() == 1 {
+                            // Get array length
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            if let Some(len) = len_val.int32() {
+                                // Shift all elements up
+                                for i in (0..len).rev() {
+                                    let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                    js_set_property_uint32(ctx, this_val, (i + 1) as u32, elem);
+                                }
+                                // Set first element
+                                js_set_property_uint32(ctx, this_val, 0, args[0]);
+                                // Set new length
+                                js_set_property_str(ctx, this_val, "length", Value::from_int32(len + 1));
+                                val = Value::from_int32(len + 1);
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     }
                 }
             }
@@ -1592,6 +1708,55 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     val = js_new_string(ctx, "__builtin_string_charAt__");
                     rest = next;
                     continue;
+                }
+            }
+            
+            // String.substring
+            if name == "substring" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_substring__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.indexOf
+            if name == "indexOf" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_indexOf__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // String.slice
+            if name == "slice" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_slice__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
+            // Array.shift
+            if name == "shift" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_shift__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.unshift
+            if name == "unshift" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_unshift__");
+                        rest = next;
+                        continue;
+                    }
                 }
             }
             
