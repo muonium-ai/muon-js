@@ -887,6 +887,16 @@ fn call_builtin_global_marker(
                 Some(Value::FALSE)
             }
         }
+        "__builtin_eval__" => {
+            if args.is_empty() {
+                Some(Value::UNDEFINED)
+            } else if let Some(bytes) = ctx.string_bytes(args[0]) {
+                let code = core::str::from_utf8(bytes).unwrap_or("").to_string();
+                Some(js_eval(ctx, &code, "<eval>", JS_EVAL_RETVAL))
+            } else {
+                Some(args[0])
+            }
+        }
         _ => None,
     }
 }
@@ -1606,6 +1616,18 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
         }
         return None;
+    }
+    // Comma operator (lowest precedence)
+    if s.contains(',') {
+        if let Some(parts) = split_top_level(s) {
+            if parts.len() > 1 {
+                let mut last = Value::UNDEFINED;
+                for part in parts {
+                    last = eval_expr(ctx, part)?;
+                }
+                return Some(last);
+            }
+        }
     }
     // Check for compound assignment operators: +=, -=, *=, /=
     if s.contains("+=") || s.contains("-=") || s.contains("*=") || s.contains("/=") {
@@ -3427,6 +3449,18 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                         } else {
                             val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_eval__" {
+                        if args.is_empty() {
+                            val = Value::UNDEFINED;
+                        } else if let Some(bytes) = ctx.string_bytes(args[0]) {
+                            let code = core::str::from_utf8(bytes).unwrap_or("").to_string();
+                            val = js_eval(ctx, &code, "<eval>", JS_EVAL_RETVAL);
+                        } else {
+                            val = args[0];
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -6206,6 +6240,12 @@ impl<'a> ArithParser<'a> {
         // Check if method is a builtin marker string
         if let Some(bytes) = ctx.string_bytes(method) {
             if let Ok(marker) = core::str::from_utf8(bytes) {
+                let marker = marker.to_string();
+                if marker == "__builtin_eval__" {
+                    if let Some(val) = call_builtin_global_marker(ctx, &marker, args) {
+                        return Ok(val);
+                    }
+                }
                 if marker == "__builtin_Date_now__" {
                     return Ok(js_date_now(ctx));
                 }
@@ -7335,12 +7375,10 @@ impl<'a> ArithParser<'a> {
             }
             return Ok(val);
         }
-        let global = js_get_global_object(ctx);
-        let val = js_get_property_str(ctx, global, name);
-        if val.is_exception() {
-            return Err(());
+        if let Some(val) = eval_value(ctx, name) {
+            return Ok(val);
         }
-        Ok(val)
+        Err(())
     }
 
     fn parse_string(&mut self) -> Result<JSValue, ()> {

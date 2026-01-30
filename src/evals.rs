@@ -71,6 +71,9 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "parseFloat" {
         return Some(builtin_or_global("parseFloat", "__builtin_parseFloat__"));
     }
+    if s == "eval" {
+        return Some(builtin_or_global("eval", "__builtin_eval__"));
+    }
     if s == "isNaN" {
         return Some(builtin_or_global("isNaN", "__builtin_isNaN__"));
     }

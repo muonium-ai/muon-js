@@ -905,6 +905,22 @@ mod tests {
     }
 
     #[test]
+    fn comma_operator_and_eval() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "a = 1, b = 2, a + b");
+        assert_eq!(JS_ToInt32(&mut ctx, v).unwrap(), 3);
+        let aval = eval_ret(&mut ctx, "a");
+        let bval = eval_ret(&mut ctx, "b");
+        assert_eq!(JS_ToInt32(&mut ctx, aval).unwrap(), 1);
+        assert_eq!(JS_ToInt32(&mut ctx, bval).unwrap(), 2);
+        let ev = eval_ret(&mut ctx, "eval('1+2')");
+        assert_eq!(JS_ToInt32(&mut ctx, ev).unwrap(), 3);
+        let ev_passthrough = eval_ret(&mut ctx, "eval(5)");
+        assert_eq!(JS_ToInt32(&mut ctx, ev_passthrough).unwrap(), 5);
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

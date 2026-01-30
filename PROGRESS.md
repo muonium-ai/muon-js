@@ -70,6 +70,7 @@
 - ✅ Arrays (creation, indexing, methods)
 - ✅ typeof operator
 - ✅ switch statements
+- ✅ comma operator
 
 ### Phase 2: Built-in Methods - String (90%)
 **Completed:**
@@ -175,6 +176,7 @@
 **Missing:**
 - ❌ setTimeout, setInterval (needs event loop)
 - ✅ console.log (basic)
+- ✅ eval(code) (basic)
 
 ---
 

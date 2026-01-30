@@ -135,6 +135,7 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ **Switch statements**
 - ✅ **Ternary operator**: `condition ? a : b`
 - ❌ **Comma operator**
+- ✅ **Comma operator**
 - ✅ **Bitwise operators**: `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`
 
 ### Built-in Objects & Methods
@@ -159,7 +160,7 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ❌ Full compatibility audit for `JSON.parse` / `JSON.stringify`
 
 #### Global Functions (Missing)
-- ❌ `eval(code)` (only indirect eval in mquickjs)
+- ✅ `eval(code)` (basic)
 - ✅ `console.log()` (basic)
 - ❌ `setTimeout()` / `setInterval()` (not in mquickjs)
 
