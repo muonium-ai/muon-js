@@ -3,6 +3,8 @@
 use crate::context::Context;
 use crate::types::*;
 use crate::value::Value;
+use crate::helpers::*;
+use crate::json;
 
 /// Opaque handle to a VM instance.
 pub type JSContextImpl = Context;
@@ -263,7 +265,7 @@ pub fn js_parse(
     _eval_flags: i32,
 ) -> JSValue {
     if (_eval_flags & JS_EVAL_JSON) != 0 {
-        if let Some(val) = crate::json::parse_json(_ctx, _input) {
+        if let Some(val) = parse_json(_ctx, _input) {
             return val;
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
@@ -292,7 +294,7 @@ pub fn js_eval(
 ) -> JSValue {
     let src = _input.trim();
     if (_eval_flags & JS_EVAL_JSON) != 0 {
-        if let Some(val) = crate::json::parse_json(_ctx, src) {
+        if let Some(val) = parse_json(_ctx, src) {
             return val;
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
@@ -3185,7 +3187,7 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             val = Value::UNDEFINED;
                         } else {
                             let value = args[0];
-                            let json_str = crate::json::json_stringify_value(ctx, value);
+                            let json_str = json_stringify_value(ctx, value);
                             val = js_new_string(ctx, &json_str);
                         }
                         this_val = Value::UNDEFINED;

@@ -3,6 +3,8 @@
 use crate::context::Context;
 use crate::types::*;
 use crate::value::Value;
+use crate::helpers::*;
+use crate::json;
 
 /// Opaque handle to a VM instance.
 pub type JSContextImpl = Context;
@@ -263,7 +265,7 @@ pub fn js_parse(
     _eval_flags: i32,
 ) -> JSValue {
     if (_eval_flags & JS_EVAL_JSON) != 0 {
-        if let Some(val) = crate::json::parse_json(_ctx, _input) {
+        if let Some(val) = parse_json(_ctx, _input) {
             return val;
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
@@ -292,7 +294,7 @@ pub fn js_eval(
 ) -> JSValue {
     let src = _input.trim();
     if (_eval_flags & JS_EVAL_JSON) != 0 {
-        if let Some(val) = crate::json::parse_json(_ctx, src) {
+        if let Some(val) = parse_json(_ctx, src) {
             return val;
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
@@ -1167,22 +1169,6 @@ fn write_decimal(buf: &mut [u8], mut value: usize) -> usize {
     out_len
 }
 
-fn number_to_value(ctx: &mut JSContextImpl, val: f64) -> JSValue {
-    if !val.is_finite() {
-        ctx.set_exception(Value::UNDEFINED);
-        return Value::EXCEPTION;
-    }
-    if val.fract() == 0.0 && val >= i32::MIN as f64 && val <= i32::MAX as f64 {
-        return Value::from_int32(val as i32);
-    }
-    if let Some(ptr) = ctx.alloc_float(val) {
-        Value::from_ptr(ptr)
-    } else {
-        ctx.set_exception(Value::UNDEFINED);
-        Value::EXCEPTION
-    }
-}
-
 fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
     let mut parser = ExprParser::new(src.as_bytes());
     let value = parser.parse_expr()?;
@@ -1204,91 +1190,6 @@ fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
 }
 
 fn contains_arith_op(src: &str) -> bool {
-    let bytes = src.as_bytes();
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut string_delim = 0u8;
-    let mut last_was_operand = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_string {
-            if b == string_delim {
-                in_string = false;
-                last_was_operand = true;
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'\'' || b == b'\"' {
-            in_string = true;
-            string_delim = b;
-            i += 1;
-            continue;
-        }
-        match b {
-            b'[' | b'{' | b'(' => {
-                depth += 1;
-                last_was_operand = false;
-            }
-            b']' | b'}' | b')' => {
-                depth -= 1;
-                last_was_operand = true;
-            }
-            b'+' | b'-' | b'/' | b'%' if depth == 0 && last_was_operand => {
-                return true;
-            }
-            b'*' if depth == 0 && last_was_operand => {
-                // Check for ** (exponentiation) or * (multiplication)
-                return true;
-            }
-            b'<' | b'>' if depth == 0 => {
-                // Check for <<, >>, <=, >= or simple comparison <, >
-                if i + 1 < bytes.len() {
-                    let next = bytes[i + 1];
-                    // Any of these combinations mean it's an operator
-                    if next == b'<' || next == b'>' || next == b'=' {
-                        return true;
-                    }
-                }
-                // Simple < or > comparison (with operand before it)
-                if last_was_operand {
-                    return true;
-                }
-            }
-            b'=' if depth == 0 && last_was_operand => {
-                return true;
-            }
-            b'!' if depth == 0 => {
-                // Check for != vs !
-                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
-                    if last_was_operand {
-                        return true;
-                    }
-                } else if !last_was_operand {
-                    // Unary ! at start
-                    return true;
-                }
-            }
-            b'~' if depth == 0 && !last_was_operand => {
-                // Bitwise NOT is unary
-                return true;
-            }
-            b'&' | b'|' | b'^' if depth == 0 && last_was_operand => {
-                return true;
-            }
-            b' ' | b'\t' | b'\n' | b'\r' => {
-                // whitespace doesn't affect operand status
-            }
-            _ => {
-                last_was_operand = true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
 fn is_simple_string_literal(src: &str) -> bool {
     let bytes = src.as_bytes();
     if bytes.len() < 2 {
@@ -3185,7 +3086,7 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             val = Value::UNDEFINED;
                         } else {
                             let value = args[0];
-                            let json_str = crate::json::json_stringify_value(ctx, value);
+                            let json_str = json_stringify_value(ctx, value);
                             val = js_new_string(ctx, &json_str);
                         }
                         this_val = Value::UNDEFINED;

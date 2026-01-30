@@ -1,5 +1,7 @@
 //! Muon JS: a native Rust port of MQuickJS (not a wrapper).
 
+mod helpers;
+mod json;
 mod api;
 mod context;
 mod types;
