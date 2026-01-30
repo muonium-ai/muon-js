@@ -1267,6 +1267,33 @@ fn format_exponential(n: f64, digits: Option<i32>) -> String {
     normalize_exponent(&s)
 }
 
+fn format_radix_int(value: i64, radix: u32) -> String {
+    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if radix < 2 || radix > 36 {
+        return String::new();
+    }
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut n = value as i128;
+    let negative = n < 0;
+    if negative {
+        n = -n;
+    }
+    let radix_i = radix as i128;
+    let mut out = Vec::new();
+    while n > 0 {
+        let rem = (n % radix_i) as usize;
+        out.push(digits[rem]);
+        n /= radix_i;
+    }
+    if negative {
+        out.push(b'-');
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
 fn format_precision(n: f64, precision: i32) -> String {
     if n.is_nan() {
         return "NaN".to_string();
@@ -3576,6 +3603,35 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Object_hasOwnProperty__" {
+                        let (target, key) = if args.len() >= 2 {
+                            (args[0], args[1])
+                        } else if args.len() == 1 {
+                            (this_val, args[0])
+                        } else {
+                            val = Value::FALSE;
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        };
+                        if ctx.object_class_id(target).is_none() {
+                            val = Value::FALSE;
+                        } else {
+                            let key_val = if ctx.string_bytes(key).is_some() {
+                                key
+                            } else {
+                                js_to_string(ctx, key)
+                            };
+                            if let Some(bytes) = ctx.string_bytes(key_val) {
+                                let owned = bytes.to_vec();
+                                val = Value::new_bool(ctx.has_property_str(target, &owned));
+                            } else {
+                                val = Value::FALSE;
+                            }
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Object_create__" {
                         // ES5 Object.create(proto) - create new object with specified prototype
                         // For now, we just create an empty object (no prototype chain support yet)
@@ -3592,6 +3648,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         // ES5 Object.freeze(obj) - prevent modifications to object
                         // For now, just return the object (no actual freezing)
                         // Full implementation would require object property flags
+                        if args.is_empty() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert undefined to object");
+                            return None;
+                        }
+                        val = args[0];
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_seal__" {
+                        // ES5 Object.seal(obj) - prevent extensions and mark props non-configurable
+                        // Not fully supported; return the object as-is.
                         if args.is_empty() {
                             js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert undefined to object");
                             return None;
@@ -3965,6 +4032,33 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_number_toString__" {
+                        if args.is_empty() || args[0] == Value::UNDEFINED {
+                            val = js_to_string(ctx, this_val);
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let radix = js_to_int32(ctx, args[0]).unwrap_or(10);
+                        if radix < 2 || radix > 36 {
+                            js_throw_error(ctx, JSObjectClassEnum::RangeError, "toString() radix must be between 2 and 36");
+                            return None;
+                        }
+                        let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                        if !n.is_finite() || radix == 10 {
+                            val = js_to_string(ctx, this_val);
+                        } else {
+                            let rounded = n.trunc();
+                            if rounded.abs() > (i64::MAX as f64) {
+                                val = js_to_string(ctx, this_val);
+                            } else {
+                                let s = format_radix_int(rounded as i64, radix as u32);
+                                val = js_new_string(ctx, &s);
+                            }
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_String_fromCharCode__" {
                         if args.len() >= 1 {
                             let mut result = String::new();
@@ -4149,12 +4243,14 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
 
             // Number formatting methods
-            if name == "toFixed" || name == "toPrecision" || name == "toExponential" {
+            if name == "toFixed" || name == "toPrecision" || name == "toExponential" || name == "toString" {
                 if js_is_number(ctx, val) != 0 {
                     if name == "toFixed" {
                         val = js_new_string(ctx, "__builtin_number_toFixed__");
                     } else if name == "toPrecision" {
                         val = js_new_string(ctx, "__builtin_number_toPrecision__");
+                    } else if name == "toString" {
+                        val = js_new_string(ctx, "__builtin_number_toString__");
                     } else {
                         val = js_new_string(ctx, "__builtin_number_toExponential__");
                     }
@@ -4419,6 +4515,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
 
+            // Object.hasOwnProperty (instance)
+            if name == "hasOwnProperty" {
+                if ctx.object_class_id(val).is_some() {
+                    if !ctx.has_property_str(val, b"hasOwnProperty") {
+                        val = js_new_string(ctx, "__builtin_Object_hasOwnProperty__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+
             // RegExp methods
             if let Some(class_id) = ctx.object_class_id(val) {
                 if class_id == JSObjectClassEnum::Regexp as u32 {
@@ -4661,6 +4768,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "hasOwnProperty" => {
+                                val = js_new_string(ctx, "__builtin_Object_hasOwnProperty__");
+                                rest = next;
+                                continue;
+                            }
                             "create" => {
                                 val = js_new_string(ctx, "__builtin_Object_create__");
                                 rest = next;
@@ -4668,6 +4780,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "freeze" => {
                                 val = js_new_string(ctx, "__builtin_Object_freeze__");
+                                rest = next;
+                                continue;
+                            }
+                            "seal" => {
+                                val = js_new_string(ctx, "__builtin_Object_seal__");
                                 rest = next;
                                 continue;
                             }
@@ -5708,6 +5825,14 @@ impl<'a> ArithParser<'a> {
                             }
                             _ => js_get_property_str(ctx, value, prop),
                         };
+                    } else if js_is_number(ctx, value) != 0 {
+                        value = match prop {
+                            "toFixed" => js_new_string(ctx, "__builtin_number_toFixed__"),
+                            "toPrecision" => js_new_string(ctx, "__builtin_number_toPrecision__"),
+                            "toExponential" => js_new_string(ctx, "__builtin_number_toExponential__"),
+                            "toString" => js_new_string(ctx, "__builtin_number_toString__"),
+                            _ => js_get_property_str(ctx, value, prop),
+                        };
                     } else if let Some(class_id) = ctx.object_class_id(value) {
                         // Check for built-in array methods
                         if class_id == JSObjectClassEnum::Array as u32 {
@@ -5863,6 +5988,30 @@ impl<'a> ArithParser<'a> {
                                 if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
                                     return Ok(js_new_string(ctx, substr));
                                 }
+                            }
+                        }
+                    }
+                    return Ok(js_new_string(ctx, ""));
+                } else if marker == "__builtin_string_substr__" {
+                    if args.len() >= 1 {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            let len = str_bytes.len() as i32;
+                            let mut start = args[0].int32().unwrap_or(0);
+                            if start < 0 {
+                                start = (len + start).max(0);
+                            } else if start > len {
+                                start = len;
+                            }
+                            let mut end = len;
+                            if args.len() >= 2 {
+                                let count = args[1].int32().unwrap_or(0).max(0);
+                                end = (start + count).min(len);
+                            }
+                            let start_u = start as usize;
+                            let end_u = end.max(start) as usize;
+                            let substr_bytes = str_bytes[start_u..end_u].to_vec();
+                            if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
+                                return Ok(js_new_string(ctx, substr));
                             }
                         }
                     }
@@ -6178,6 +6327,96 @@ impl<'a> ArithParser<'a> {
                         }
                     }
                     return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_string_charCodeAt__" {
+                    let idx = if args.len() >= 1 {
+                        args[0].int32().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            if idx >= 0 && (idx as usize) < s.len() {
+                                if let Some(ch) = s.chars().nth(idx as usize) {
+                                    return Ok(number_to_value(ctx, ch as u32 as f64));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_string_codePointAt__" {
+                    let idx = if args.len() >= 1 {
+                        args[0].int32().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            if idx >= 0 && (idx as usize) < s.len() {
+                                if let Some(ch) = s.chars().nth(idx as usize) {
+                                    return Ok(number_to_value(ctx, ch as u32 as f64));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(number_to_value(ctx, f64::NAN));
+                } else if marker == "__builtin_number_toFixed__" {
+                    let digits = if args.is_empty() {
+                        0
+                    } else {
+                        js_to_int32(ctx, args[0]).unwrap_or(0)
+                    };
+                    if digits < 0 || digits > 100 {
+                        js_throw_error(ctx, JSObjectClassEnum::RangeError, "toFixed() digits out of range");
+                        return Err(());
+                    }
+                    let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                    let s = format_fixed(n, digits);
+                    return Ok(js_new_string(ctx, &s));
+                } else if marker == "__builtin_number_toPrecision__" {
+                    if args.is_empty() {
+                        return Ok(js_to_string(ctx, this_val));
+                    }
+                    let precision = js_to_int32(ctx, args[0]).unwrap_or(0);
+                    if precision < 1 || precision > 100 {
+                        js_throw_error(ctx, JSObjectClassEnum::RangeError, "toPrecision() precision out of range");
+                        return Err(());
+                    }
+                    let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                    let s = format_precision(n, precision);
+                    return Ok(js_new_string(ctx, &s));
+                } else if marker == "__builtin_number_toExponential__" {
+                    let digits_opt = if args.is_empty() {
+                        None
+                    } else {
+                        let d = js_to_int32(ctx, args[0]).unwrap_or(0);
+                        if d < 0 || d > 100 {
+                            js_throw_error(ctx, JSObjectClassEnum::RangeError, "toExponential() digits out of range");
+                            return Err(());
+                        }
+                        Some(d)
+                    };
+                    let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                    let s = format_exponential(n, digits_opt);
+                    return Ok(js_new_string(ctx, &s));
+                } else if marker == "__builtin_number_toString__" {
+                    if args.is_empty() || args[0] == Value::UNDEFINED {
+                        return Ok(js_to_string(ctx, this_val));
+                    }
+                    let radix = js_to_int32(ctx, args[0]).unwrap_or(10);
+                    if radix < 2 || radix > 36 {
+                        js_throw_error(ctx, JSObjectClassEnum::RangeError, "toString() radix must be between 2 and 36");
+                        return Err(());
+                    }
+                    let n = js_to_number(ctx, this_val).unwrap_or(f64::NAN);
+                    if !n.is_finite() || radix == 10 {
+                        return Ok(js_to_string(ctx, this_val));
+                    }
+                    let rounded = n.trunc();
+                    if rounded.abs() > (i64::MAX as f64) {
+                        return Ok(js_to_string(ctx, this_val));
+                    }
+                    let s = format_radix_int(rounded as i64, radix as u32);
+                    return Ok(js_new_string(ctx, &s));
                 } else if marker == "__builtin_regexp_test__" {
                     let input = if args.is_empty() {
                         String::new()

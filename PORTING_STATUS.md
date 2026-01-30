@@ -83,10 +83,12 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ Property assignment
 - ✅ `Object.keys(obj)` / `Object.values(obj)` / `Object.entries(obj)`
 - ✅ `Object.assign(target, ...sources)`
+- ✅ `Object.hasOwnProperty(key)`
 - ✅ `Object.defineProperty()` (simplified)
 - ✅ `Object.getOwnPropertyDescriptor()` (simplified)
 - ✅ `Object.create(proto)` (simplified)
 - ✅ `Object.freeze(obj)` (stub)
+- ✅ `Object.seal(obj)` (stub)
 
 #### Math Object
 - ✅ `Math.abs(x)` / `Math.floor(x)` / `Math.ceil(x)` / `Math.round(x)`
@@ -143,11 +145,10 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ❌ **Method chaining** (e.g., `arr.filter().map()`)
 
 #### Object Methods (Missing)
-- ❌ `Object.hasOwnProperty(key)` (mquickjs supports this)
-- ❌ `Object.seal(obj)`
+- None
 
 #### Number Methods (Missing)
-- ❌ `toString(radix)`
+- None
 
 #### Date Object (Missing)
 - ❌ **Entire Date API** (mquickjs only supports `Date.now()`)

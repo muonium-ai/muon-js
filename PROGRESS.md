@@ -117,13 +117,14 @@
 - ✅ Object.values()
 - ✅ Object.entries()
 - ✅ Object.assign()
+- ✅ Object.hasOwnProperty()
 - ✅ Object.create() (simplified)
 - ✅ Object.freeze() (stub)
+- ✅ Object.seal() (stub)
 - ✅ Object.defineProperty() (simplified)
 - ✅ Object.getOwnPropertyDescriptor() (simplified)
 
 **Missing:**
-- ❌ Object.seal(), Object.isSealed()
 - ❌ Object.isFrozen()
 - ❌ Object.getPrototypeOf() improvements
 
@@ -133,6 +134,7 @@
 - ✅ Number.isNaN()
 - ✅ Number.isFinite()
 - ✅ toFixed(), toPrecision(), toExponential()
+- ✅ Number.toString(radix)
 - ✅ Number.parseInt()
 - ✅ Number.parseFloat()
 - ✅ Number.isSafeInteger()

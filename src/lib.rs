@@ -814,6 +814,35 @@ mod tests {
     }
 
     #[test]
+    fn object_and_number_extras() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let has_prop = eval_ret(&mut ctx, "o = {a: 1}; Object.hasOwnProperty(o, \"a\")");
+        assert_eq!(has_prop, JSValue::TRUE);
+        let has_prop_inst = eval_ret(&mut ctx, "o.hasOwnProperty(\"a\")");
+        assert_eq!(has_prop_inst, JSValue::TRUE);
+        let missing_prop = eval_ret(&mut ctx, "Object.hasOwnProperty(o, \"b\")");
+        assert_eq!(missing_prop, JSValue::FALSE);
+        let sealed = eval_ret(&mut ctx, "Object.seal(o)");
+        assert_eq!(JS_GetClassID(&mut ctx, sealed), JSObjectClassEnum::Object as i32);
+        let sealed_val = eval_ret(&mut ctx, "o.a");
+        assert_eq!(JS_ToInt32(&mut ctx, sealed_val).unwrap(), 1);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let radix_hex = eval_ret(&mut ctx, "n = 255; n.toString(16)");
+        let radix_hex_str = JS_ToString(&mut ctx, radix_hex);
+        let radix_hex_s = JS_ToCString(&mut ctx, radix_hex_str, &mut buf);
+        assert_eq!(radix_hex_s, "ff");
+        let radix_bin = eval_ret(&mut ctx, "(-10).toString(2)");
+        let radix_bin_str = JS_ToString(&mut ctx, radix_bin);
+        let radix_bin_s = JS_ToCString(&mut ctx, radix_bin_str, &mut buf);
+        assert_eq!(radix_bin_s, "-1010");
+        let radix_default = eval_ret(&mut ctx, "10..toString()");
+        let radix_def_str = JS_ToString(&mut ctx, radix_default);
+        let radix_def_s = JS_ToCString(&mut ctx, radix_def_str, &mut buf);
+        assert_eq!(radix_def_s, "10");
+    }
+
+    #[test]
     fn eval_default_returns_undefined() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
