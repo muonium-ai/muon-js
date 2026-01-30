@@ -2193,6 +2193,35 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_array_at__" {
+                        // ES2022 feature - Array.at() with negative index support
+                        if args.len() > 0 {
+                            if let Some(index) = args[0].int32() {
+                                let len_val = js_get_property_str(ctx, this_val, "length");
+                                let len = len_val.int32().unwrap_or(0);
+                                
+                                // Handle negative indices (count from end)
+                                let actual_index = if index < 0 {
+                                    len + index
+                                } else {
+                                    index
+                                };
+                                
+                                // Check bounds
+                                if actual_index >= 0 && actual_index < len {
+                                    val = js_get_property_uint32(ctx, this_val, actual_index as u32);
+                                } else {
+                                    val = Value::UNDEFINED;
+                                }
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_splice__" {
                         // Ported from mquickjs.c:14478-14548 js_array_splice
                         let len_val = js_get_property_str(ctx, this_val, "length");
@@ -2584,6 +2613,42 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                                 if let Ok(replace) = core::str::from_utf8(replace_bytes) {
                                                     // Simple replace - only first occurrence
                                                     let result = s.replacen(search, replace, 1);
+                                                    val = js_new_string(ctx, &result);
+                                                } else {
+                                                    val = this_val;
+                                                }
+                                            } else {
+                                                val = this_val;
+                                            }
+                                        } else {
+                                            val = this_val;
+                                        }
+                                    } else {
+                                        val = this_val;
+                                    }
+                                } else {
+                                    val = this_val;
+                                }
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_replaceAll__" {
+                        // ES2021 feature - replaceAll() replaces all occurrences
+                        if args.len() >= 2 {
+                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                                if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                    if let Some(search_bytes) = ctx.string_bytes(args[0]) {
+                                        if let Ok(search) = core::str::from_utf8(search_bytes) {
+                                            if let Some(replace_bytes) = ctx.string_bytes(args[1]) {
+                                                if let Ok(replace) = core::str::from_utf8(replace_bytes) {
+                                                    // Replace all occurrences
+                                                    let result = s.replace(search, replace);
                                                     val = js_new_string(ctx, &result);
                                                 } else {
                                                     val = this_val;
@@ -3380,6 +3445,15 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
             
+            // String.replaceAll
+            if name == "replaceAll" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_replaceAll__");
+                    rest = next;
+                    continue;
+                }
+            }
+            
             // String.charCodeAt
             if name == "charCodeAt" {
                 if js_is_string(ctx, val) != 0 {
@@ -3463,6 +3537,17 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_slice__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            
+            // Array.at
+            if name == "at" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_at__");
                         rest = next;
                         continue;
                     }
