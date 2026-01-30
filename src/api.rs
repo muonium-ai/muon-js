@@ -2838,27 +2838,73 @@ fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_Error__" {
-                        val = create_error_object(ctx, JSObjectClassEnum::Error, &args);
+                        // Error constructor - create error with message
+                        let msg = if args.len() > 0 {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("Error").to_string()
+                            } else {
+                                "Error".to_string()
+                            }
+                        } else {
+                            "Error".to_string()
+                        };
+                        val = js_throw_error(ctx, JSObjectClassEnum::Error, &msg);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
                     } else if marker == "__builtin_TypeError__" {
-                        val = create_error_object(ctx, JSObjectClassEnum::TypeError, &args);
+                        let msg = if args.len() > 0 {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("TypeError").to_string()
+                            } else {
+                                "TypeError".to_string()
+                            }
+                        } else {
+                            "TypeError".to_string()
+                        };
+                        val = js_throw_error(ctx, JSObjectClassEnum::TypeError, &msg);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
                     } else if marker == "__builtin_ReferenceError__" {
-                        val = create_error_object(ctx, JSObjectClassEnum::ReferenceError, &args);
+                        let msg = if args.len() > 0 {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("ReferenceError").to_string()
+                            } else {
+                                "ReferenceError".to_string()
+                            }
+                        } else {
+                            "ReferenceError".to_string()
+                        };
+                        val = js_throw_error(ctx, JSObjectClassEnum::ReferenceError, &msg);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
                     } else if marker == "__builtin_SyntaxError__" {
-                        val = create_error_object(ctx, JSObjectClassEnum::SyntaxError, &args);
+                        let msg = if args.len() > 0 {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("SyntaxError").to_string()
+                            } else {
+                                "SyntaxError".to_string()
+                            }
+                        } else {
+                            "SyntaxError".to_string()
+                        };
+                        val = js_throw_error(ctx, JSObjectClassEnum::SyntaxError, &msg);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
                     } else if marker == "__builtin_RangeError__" {
-                        val = create_error_object(ctx, JSObjectClassEnum::RangeError, &args);
+                        let msg = if args.len() > 0 {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("RangeError").to_string()
+                            } else {
+                                "RangeError".to_string()
+                            }
+                        } else {
+                            "RangeError".to_string()
+                        };
+                        val = js_throw_error(ctx, JSObjectClassEnum::RangeError, &msg);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
