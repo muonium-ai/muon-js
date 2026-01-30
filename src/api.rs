@@ -371,6 +371,55 @@ pub fn js_new_atom(_ctx: &mut JSContextImpl, _buf: &[u8]) -> i32 {
     }
 }
 
+pub fn js_dup_atom(_ctx: &mut JSContextImpl, atom: i32) -> i32 {
+    if atom <= 0 {
+        return atom;
+    }
+    if _ctx.atom_dup(atom as u32) {
+        atom
+    } else {
+        -1
+    }
+}
+
+pub fn js_free_atom(_ctx: &mut JSContextImpl, atom: i32) {
+    if atom <= 0 {
+        return;
+    }
+    _ctx.atom_free(atom as u32);
+}
+
+pub fn js_atom_to_value(_ctx: &mut JSContextImpl, atom: i32) -> JSValue {
+    if atom == JS_ATOM_NULL {
+        return Value::NULL;
+    }
+    if atom <= 0 {
+        return Value::UNDEFINED;
+    }
+    if let Some(bytes) = _ctx.atom_bytes(atom as u32) {
+        let owned = bytes.to_vec();
+        return js_new_string_len(_ctx, &owned);
+    }
+    Value::UNDEFINED
+}
+
+pub fn js_value_to_atom(_ctx: &mut JSContextImpl, val: JSValue) -> i32 {
+    let mut str_val = val;
+    if _ctx.string_bytes(str_val).is_none() {
+        str_val = js_to_string(_ctx, val);
+        if str_val.is_exception() {
+            return -1;
+        }
+    }
+    if let Some(bytes) = _ctx.string_bytes(str_val) {
+        let owned = bytes.to_vec();
+        if let Some(atom) = _ctx.intern_string(&owned) {
+            return atom as i32;
+        }
+    }
+    -1
+}
+
 pub fn js_to_cstring_len<'a>(
     _ctx: &'a mut JSContextImpl,
     _val: JSValue,
@@ -1144,6 +1193,22 @@ pub fn JS_NewString(ctx: &mut JSContextImpl, buf: &str) -> JSValue {
 
 pub fn JS_NewAtom(ctx: &mut JSContextImpl, buf: &[u8]) -> i32 {
     js_new_atom(ctx, buf)
+}
+
+pub fn JS_DupAtom(ctx: &mut JSContextImpl, atom: i32) -> i32 {
+    js_dup_atom(ctx, atom)
+}
+
+pub fn JS_FreeAtom(ctx: &mut JSContextImpl, atom: i32) {
+    js_free_atom(ctx, atom)
+}
+
+pub fn JS_AtomToValue(ctx: &mut JSContextImpl, atom: i32) -> JSValue {
+    js_atom_to_value(ctx, atom)
+}
+
+pub fn JS_ValueToAtom(ctx: &mut JSContextImpl, val: JSValue) -> i32 {
+    js_value_to_atom(ctx, val)
 }
 
 pub fn JS_ToCStringLen<'a>(

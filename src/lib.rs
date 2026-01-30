@@ -202,6 +202,22 @@ mod tests {
     }
 
     #[test]
+    fn atom_roundtrip() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let atom = JS_NewAtom(&mut ctx, b"hello");
+        assert!(atom > 0);
+        let val = JS_AtomToValue(&mut ctx, atom);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let s = JS_ToCString(&mut ctx, val, &mut buf);
+        assert_eq!(s, "hello");
+        let hello = JS_NewString(&mut ctx, "hello");
+        let atom2 = JS_ValueToAtom(&mut ctx, hello);
+        assert_eq!(atom, atom2);
+        JS_FreeAtom(&mut ctx, atom);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

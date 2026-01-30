@@ -470,10 +470,11 @@ impl Context {
 
     pub fn intern_string(&mut self, bytes: &[u8]) -> Option<u32> {
         if let Some(id) = self.atoms.find(bytes) {
+            self.atoms.add_ref(id);
             return Some(id);
         }
         let header = self.alloc_string(bytes)?;
-        let id = self.atoms.push(AtomEntry { bytes: header })?;
+        let id = self.atoms.push(AtomEntry { bytes: header, ref_count: 1 })?;
         Some(id)
     }
 
@@ -488,6 +489,14 @@ impl Context {
             let data = (header as *const u8).add(core::mem::size_of::<StringHeader>());
             Some(core::slice::from_raw_parts(data, len))
         }
+    }
+
+    pub fn atom_dup(&mut self, id: u32) -> bool {
+        self.atoms.add_ref(id)
+    }
+
+    pub fn atom_free(&mut self, id: u32) {
+        self.atoms.release(id);
     }
 
     pub fn object_keys(&self, val: Value) -> Option<Vec<String>> {
@@ -677,7 +686,7 @@ struct AtomTable {
 impl AtomTable {
     fn new() -> Self {
         let mut table = Self { entries: Vec::new() };
-        table.entries.push(AtomEntry { bytes: core::ptr::null_mut() });
+        table.entries.push(AtomEntry { bytes: core::ptr::null_mut(), ref_count: 1 });
         table
     }
 
@@ -699,10 +708,32 @@ impl AtomTable {
     fn get(&self, id: u32) -> Option<&AtomEntry> {
         self.entries.get(id as usize)
     }
+
+    fn get_mut(&mut self, id: u32) -> Option<&mut AtomEntry> {
+        self.entries.get_mut(id as usize)
+    }
+
+    fn add_ref(&mut self, id: u32) -> bool {
+        if let Some(entry) = self.get_mut(id) {
+            entry.ref_count = entry.ref_count.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn release(&mut self, id: u32) {
+        if let Some(entry) = self.get_mut(id) {
+            if entry.ref_count > 0 {
+                entry.ref_count -= 1;
+            }
+        }
+    }
 }
 
 struct AtomEntry {
     bytes: *mut u8,
+    ref_count: u32,
 }
 
 impl AtomEntry {
