@@ -1,6 +1,6 @@
 # muon-js Implementation Progress
 
-**Last Updated**: January 30, 2026 (Session 7)
+**Last Updated**: January 30, 2026 (Session 8)
 
 ## 📊 Current Status
 
@@ -14,6 +14,9 @@
 ### Build Status
 - ✅ Compiles successfully
 - ⚠️ 6 non-critical warnings (unused variables)
+
+### Session 8 Accomplishments
+- ✅ Added `RegExp.prototype.test` and `RegExp.prototype.exec`
 
 ### Session 7 Accomplishments
 - ✅ Added Number constants: `EPSILON`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`
@@ -210,11 +213,11 @@
 
 ### Phase 5: Advanced Features
 
-#### Regular Expressions (50% complete)
+#### Regular Expressions (60% complete)
 - ✅ Regex literals `/pattern/flags` (subset of flags)
 - ✅ RegExp constructor
 - ✅ String methods with regex (match, search, replace)
-- ❌ Regex methods (test, exec)
+- ✅ Regex methods (test, exec)
 - ❌ Full JS regex compatibility (lookaround/backreferences, sticky, unicode semantics)
 
 **Estimated effort**: 20-30 hours  

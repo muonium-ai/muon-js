@@ -896,6 +896,21 @@ mod tests {
     }
 
     #[test]
+    fn regexp_methods_test_exec() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let t = eval_ret(&mut ctx, "r = /a/; r.test(\"cat\")");
+        assert_eq!(t, JSValue::TRUE);
+        let f = eval_ret(&mut ctx, "r = /a/; r.test(\"zzz\")");
+        assert_eq!(f, JSValue::FALSE);
+        let e = eval_ret(&mut ctx, "r = /a/; m = r.exec(\"cat\"); m[0]");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let es = JS_ToString(&mut ctx, e);
+        let estr = JS_ToCString(&mut ctx, es, &mut buf);
+        assert_eq!(estr, "a");
+    }
+
+    #[test]
     fn number_static_methods_and_constants() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

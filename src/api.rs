@@ -2291,6 +2291,53 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_regexp_test__" {
+                        let input = if args.is_empty() {
+                            String::new()
+                        } else {
+                            value_to_string(ctx, args[0])
+                        };
+                        let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
+                        let (re, _) = match compile_regex(ctx, &pattern, &flags) {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        val = Value::new_bool(re.is_match(&input));
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_regexp_exec__" {
+                        let input_val = if args.is_empty() {
+                            js_new_string(ctx, "")
+                        } else {
+                            coerce_to_string_value(ctx, args[0])
+                        };
+                        let input = value_to_string(ctx, input_val);
+                        let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
+                        let (re, _) = match compile_regex(ctx, &pattern, &flags) {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        if let Some(caps) = re.captures(&input) {
+                            let arr = js_new_array(ctx, caps.len() as i32);
+                            for i in 0..caps.len() {
+                                if let Some(m) = caps.get(i) {
+                                    let mv = js_new_string(ctx, m.as_str());
+                                    js_set_property_uint32(ctx, arr, i as u32, mv);
+                                } else {
+                                    js_set_property_uint32(ctx, arr, i as u32, Value::UNDEFINED);
+                                }
+                            }
+                            let idx = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
+                            let _ = js_set_property_str(ctx, arr, "index", Value::from_int32(idx));
+                            let _ = js_set_property_str(ctx, arr, "input", input_val);
+                            val = arr;
+                        } else {
+                            val = Value::NULL;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_array_concat__" {
                         // Ported from mquickjs.c:14347-14395 js_array_concat
                         // Calculate total length needed
@@ -4147,6 +4194,22 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     continue;
                 }
             }
+
+            // RegExp methods
+            if let Some(class_id) = ctx.object_class_id(val) {
+                if class_id == JSObjectClassEnum::Regexp as u32 {
+                    if name == "test" {
+                        val = js_new_string(ctx, "__builtin_regexp_test__");
+                        rest = next;
+                        continue;
+                    }
+                    if name == "exec" {
+                        val = js_new_string(ctx, "__builtin_regexp_exec__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
             
             // Array.concat
             if name == "concat" {
@@ -4325,6 +4388,20 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                             "parse" => {
                                 val = js_new_string(ctx, "__builtin_JSON_parse__");
+                                rest = next;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    } else if marker == "__builtin_RegExp__" {
+                        match name {
+                            "test" => {
+                                val = js_new_string(ctx, "__builtin_regexp_test__");
+                                rest = next;
+                                continue;
+                            }
+                            "exec" => {
+                                val = js_new_string(ctx, "__builtin_regexp_exec__");
                                 rest = next;
                                 continue;
                             }
@@ -5885,6 +5962,40 @@ impl<'a> ArithParser<'a> {
                         return Ok(js_new_string(ctx, &s.replace(&search, &replacement)));
                     }
                     return Ok(this_val);
+                } else if marker == "__builtin_regexp_test__" {
+                    let input = if args.is_empty() {
+                        String::new()
+                    } else {
+                        value_to_string(ctx, args[0])
+                    };
+                    let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
+                    let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                    return Ok(Value::new_bool(re.is_match(&input)));
+                } else if marker == "__builtin_regexp_exec__" {
+                    let input_val = if args.is_empty() {
+                        js_new_string(ctx, "")
+                    } else {
+                        coerce_to_string_value(ctx, args[0])
+                    };
+                    let input = value_to_string(ctx, input_val);
+                    let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
+                    let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
+                    if let Some(caps) = re.captures(&input) {
+                        let arr = js_new_array(ctx, caps.len() as i32);
+                        for i in 0..caps.len() {
+                            if let Some(m) = caps.get(i) {
+                                let mv = js_new_string(ctx, m.as_str());
+                                js_set_property_uint32(ctx, arr, i as u32, mv);
+                            } else {
+                                js_set_property_uint32(ctx, arr, i as u32, Value::UNDEFINED);
+                            }
+                        }
+                        let idx = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
+                        let _ = js_set_property_str(ctx, arr, "index", Value::from_int32(idx));
+                        let _ = js_set_property_str(ctx, arr, "input", input_val);
+                        return Ok(arr);
+                    }
+                    return Ok(Value::NULL);
                 } else if marker == "__builtin_parseInt__" {
                     if args.len() >= 1 {
                         if let Some(str_bytes) = ctx.string_bytes(args[0]) {

@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Current Progress: ~15% core features ported**
+**Current Progress: ~55% core features ported**
 
 Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquickjs), a tiny JavaScript engine designed for embedded systems. This document tracks what has been ported and what remains.
 
@@ -46,17 +46,33 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 
 #### String Methods
 - ✅ `charAt(index)`
+- ✅ `charCodeAt(index)`
 - ✅ `substring(start)` / `substring(start, end)`
+- ✅ `slice(start, end)`
 - ✅ `indexOf(substring)`
+- ✅ `lastIndexOf(substring)`
 - ✅ `split(separator)`
+- ✅ `concat(...strings)`
 - ✅ `toUpperCase()`
 - ✅ `toLowerCase()`
-- ✅ `trim()`
+- ✅ `trim()` / `trimStart()` / `trimEnd()`
 - ✅ `length` property
+- ✅ `startsWith(prefix)` / `endsWith(suffix)`
+- ✅ `includes(substring)` / `repeat(count)`
+- ✅ `padStart(length, fill)` / `padEnd(length, fill)`
+- ✅ `replace(search, replacement)` / `replaceAll(search, replacement)`
+- ✅ `match(regex)` / `matchAll(regex)` / `search(regex)`
 
 #### Array Methods
-- ✅ `push(element)`
-- ✅ `pop()`
+- ✅ `push(element)` / `pop()` / `shift()` / `unshift()`
+- ✅ `slice(start, end)` / `splice(start, deleteCount, ...items)`
+- ✅ `concat(...arrays)` / `join(separator)`
+- ✅ `reverse()` / `sort()` (numeric)
+- ✅ `indexOf(element)` / `lastIndexOf(element)` / `includes(element)`
+- ✅ `forEach(callback)` / `map(callback)` / `filter(callback)` / `reduce(callback, initial)`
+- ✅ `find(callback)` / `findIndex(callback)` / `some(callback)` / `every(callback)`
+- ✅ `flat()` / `flatMap()` (partial)
+- ✅ `Array.isArray()` / `Array.from()` / `Array.of()`
 - ✅ `length` property
 - ✅ Array indexing: `arr[i]`
 - ✅ `for` iteration over arrays
@@ -65,15 +81,19 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ Object creation: `{key: value}`
 - ✅ Property access: `obj.key` and `obj[key]`
 - ✅ Property assignment
+- ✅ `Object.keys(obj)` / `Object.values(obj)` / `Object.entries(obj)`
+- ✅ `Object.assign(target, ...sources)`
+- ✅ `Object.defineProperty()` (simplified)
+- ✅ `Object.getOwnPropertyDescriptor()` (simplified)
+- ✅ `Object.create(proto)` (simplified)
+- ✅ `Object.freeze(obj)` (stub)
 
 #### Math Object
-- ✅ `Math.abs(x)`
-- ✅ `Math.sqrt(x)`
-- ✅ `Math.floor(x)`
-- ✅ `Math.ceil(x)`
-- ✅ `Math.round(x)`
-- ✅ `Math.max(a, b, ...)`
-- ✅ `Math.min(a, b, ...)`
+- ✅ `Math.abs(x)` / `Math.floor(x)` / `Math.ceil(x)` / `Math.round(x)`
+- ✅ `Math.sqrt(x)` / `Math.pow(x, y)`
+- ✅ `Math.max(a, b, ...)` / `Math.min(a, b, ...)`
+- ✅ `Math.trunc(x)` / `Math.random()`
+- ✅ `Math.PI`, `Math.E` constants
 
 ---
 
@@ -91,112 +111,57 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 ### JavaScript Language Features
 - ❌ **Strict mode enforcement** (mquickjs is always strict)
 - ❌ **Typed arrays** (Int8Array, Uint8Array, Float32Array, etc.)
-- ❌ **Regular expressions** (limited in mquickjs: `/pattern/flags`)
-- ❌ **Error handling**: `try`/`catch`/`finally`/`throw`
+- ✅ **Regular expressions** (subset; see Regex section)
+- ✅ **Error handling**: `try`/`catch`/`finally`/`throw`
 - ❌ **Object constructors**: `new Constructor()`
 - ❌ **Prototypes & inheritance**: `prototype`, `__proto__`
-- ❌ **`this` keyword** (not functional yet)
+- ✅ **`this` keyword** (method calls and basic function calls)
 - ❌ **Arrow functions**: `() => {}`
 - ❌ **Template literals**: `` `string ${expr}` ``
 - ❌ **Destructuring**: `[a, b] = arr`, `{x, y} = obj`
 - ❌ **Spread operator**: `...arr`
 - ❌ **Rest parameters**: `function(...args)`
 - ❌ **Default parameters**: `function(a = 1)`
-- ❌ **`for...in` loops** (object property iteration)
-- ❌ **`for...of` loops** (array iteration - mquickjs supports this)
+- ✅ **`for...in` loops** (object property iteration)
+- ✅ **`for...of` loops** (array iteration - mquickjs supports this)
 - ❌ **Block-scoped variables**: `let`, `const`
-- ❌ **Switch statements**
-- ❌ **Ternary operator**: `condition ? a : b`
+- ✅ **Switch statements**
+- ✅ **Ternary operator**: `condition ? a : b`
 - ❌ **Comma operator**
-- ❌ **Bitwise operators**: `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`
+- ✅ **Bitwise operators**: `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`
 
 ### Built-in Objects & Methods
 
 #### String Methods (Missing)
-- ❌ `charCodeAt(index)`
 - ❌ `codePointAt(index)` (ES6)
-- ❌ `slice(start, end)`
 - ❌ `substr(start, length)` (deprecated)
-- ❌ `concat(...strings)`
-- ❌ `replace(search, replacement)`
-- ❌ `replaceAll(search, replacement)` (ES2021)
-- ❌ `match(regex)`
-- ❌ `search(regex)`
-- ❌ `startsWith(prefix)`
-- ❌ `endsWith(suffix)`
-- ❌ `includes(substring)`
-- ❌ `repeat(count)` (added in latest mquickjs)
-- ❌ `padStart(length, fill)`
-- ❌ `padEnd(length, fill)`
-- ❌ `trimStart()` / `trimEnd()`
 - ❌ **Method chaining** (e.g., `str.charAt(0).toUpperCase()`)
 
 #### Array Methods (Missing)
-- ❌ `shift()` / `unshift()`
-- ❌ `slice(start, end)`
-- ❌ `splice(start, deleteCount, ...items)`
-- ❌ `concat(...arrays)`
-- ❌ `join(separator)` ⚠️ *Critical: Blocks integration test 06*
-- ❌ `reverse()`
 - ❌ `sort(compareFn)`
-- ❌ `indexOf(element)`
-- ❌ `lastIndexOf(element)`
-- ❌ `includes(element)`
-- ❌ `forEach(callback)`
-- ❌ `map(callback)`
-- ❌ `filter(callback)`
-- ❌ `reduce(callback, initial)`
-- ❌ `find(callback)`
-- ❌ `findIndex(callback)`
-- ❌ `some(callback)`
-- ❌ `every(callback)`
 - ❌ **Method chaining** (e.g., `arr.filter().map()`)
 
 #### Object Methods (Missing)
-- ❌ `Object.keys(obj)`
-- ❌ `Object.values(obj)`
-- ❌ `Object.entries(obj)`
-- ❌ `Object.assign(target, ...sources)`
 - ❌ `Object.hasOwnProperty(key)` (mquickjs supports this)
-- ❌ `Object.defineProperty()` (limited in mquickjs)
-- ❌ `Object.create(proto)`
-- ❌ `Object.freeze(obj)`
 - ❌ `Object.seal(obj)`
 
 #### Math Methods (Missing)
-- ❌ `Math.pow(x, y)` (use `**` operator)
 - ❌ `Math.sin/cos/tan/asin/acos/atan/atan2`
 - ❌ `Math.exp/log/log2/log10` (log2/log10 in mquickjs)
-- ❌ `Math.random()`
-- ❌ `Math.PI`, `Math.E`, other constants
-- ❌ `Math.trunc(x)` (mquickjs supports)
 - ❌ `Math.fround(x)` (mquickjs supports)
 - ❌ `Math.imul(a, b)` (mquickjs supports)
 - ❌ `Math.clz32(x)` (mquickjs supports)
 
 #### Number Methods (Missing)
-- ❌ `Number.parseInt(string)`
-- ❌ `Number.parseFloat(string)`
-- ❌ `Number.isNaN(value)`
-- ❌ `Number.isFinite(value)`
-- ❌ `Number.isInteger(value)`
-- ❌ `toFixed(digits)`
-- ❌ `toPrecision(digits)`
-- ❌ `toExponential(digits)`
 - ❌ `toString(radix)`
 
 #### Date Object (Missing)
 - ❌ **Entire Date API** (mquickjs only supports `Date.now()`)
 
 #### JSON Object (Missing)
-- ❌ `JSON.parse(string)`
-- ❌ `JSON.stringify(value)`
+- ❌ Full compatibility audit for `JSON.parse` / `JSON.stringify`
 
 #### Global Functions (Missing)
-- ❌ `parseInt(string)`
-- ❌ `parseFloat(string)`
-- ❌ `isNaN(value)`
-- ❌ `isFinite(value)`
 - ❌ `eval(code)` (only indirect eval in mquickjs)
 - ❌ `console.log()` ⚠️ *Useful for debugging*
 - ❌ `setTimeout()` / `setInterval()` (not in mquickjs)
@@ -207,15 +172,15 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 ## 🚧 Known Limitations in Current Implementation
 
 ### Parser & Expression Handling
-1. ⚠️ **No method chaining**: `str.charAt(0).toUpperCase()` fails
+1. ⚠️ **Method chaining gaps**: some chained expressions still fail in complex contexts
 2. ⚠️ **Complex expressions**: Nested calls like `func(obj.method())` may fail
 3. ⚠️ **Operator precedence**: Limited precedence handling in some contexts
 
 ### Arrays
-4. ⚠️ **No holes enforcement**: mquickjs forbids `arr[10] = 1` if `arr.length < 10`
+4. ✅ **No holes enforcement**: mquickjs forbids `arr[10] = 1` if `arr.length < 10`
 
 ### Objects
-5. ⚠️ **No property descriptors**: All properties are writable/enumerable/configurable
+5. ⚠️ **Property descriptors simplified**: defineProperty/getOwnPropertyDescriptor are value-only
 
 ### Strings
 6. ⚠️ **UTF-8 handling**: Not using WTF-8 like mquickjs
