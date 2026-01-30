@@ -312,16 +312,20 @@ pub fn js_parse(
 }
 
 pub fn js_run(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
-    if let Some(bytes) = _ctx.string_bytes(_val) {
+    let mut val = _val;
+    if let Some(src) = js_get_bytecode_source(_ctx, val) {
+        val = src;
+    }
+    if let Some(bytes) = _ctx.string_bytes(val) {
         if let Ok(src) = core::str::from_utf8(bytes) {
             let owned = src.to_owned();
             return js_eval(_ctx, &owned, "<run>", JS_EVAL_RETVAL);
         }
     }
-    if _val.is_exception() {
-        return _val;
+    if val.is_exception() {
+        return val;
     }
-    _val
+    val
 }
 
 pub fn js_eval(
@@ -420,6 +424,27 @@ pub fn js_value_to_atom(_ctx: &mut JSContextImpl, val: JSValue) -> i32 {
         }
     }
     -1
+}
+
+fn js_new_bytecode_object(_ctx: &mut JSContextImpl, source: JSValue) -> JSValue {
+    let obj = js_new_object(_ctx);
+    if obj.is_exception() {
+        return obj;
+    }
+    let _ = js_set_property_str(_ctx, obj, "__bytecode__", source);
+    obj
+}
+
+fn js_get_bytecode_source(_ctx: &mut JSContextImpl, val: JSValue) -> Option<JSValue> {
+    if _ctx.object_class_id(val).is_none() {
+        return None;
+    }
+    let src = js_get_property_str(_ctx, val, "__bytecode__");
+    if src.is_undefined() {
+        None
+    } else {
+        Some(src)
+    }
 }
 
 pub fn js_to_cstring_len<'a>(
@@ -668,7 +693,7 @@ pub fn js_load_bytecode(_ctx: &mut JSContextImpl, _buf: &[u8]) -> JSValue {
     if !_ctx.add_rom_atom_table(hdr.unique_strings) {
         return js_throw_error(_ctx, JSObjectClassEnum::InternalError, "too many rom atom tables");
     }
-    hdr.main_func
+    js_new_bytecode_object(_ctx, hdr.main_func)
 }
 
 pub fn js_set_log_func(_ctx: &mut JSContextImpl, _write_func: Option<JSWriteFunc>) {
