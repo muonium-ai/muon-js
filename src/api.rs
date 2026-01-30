@@ -2117,6 +2117,152 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Math_sin__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.sin());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_cos__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.cos());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_tan__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.tan());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_asin__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.asin());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_acos__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.acos());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_atan__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.atan());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_atan2__" {
+                        if args.len() == 2 {
+                            let y = js_to_number(ctx, args[0]).ok()?;
+                            let x = js_to_number(ctx, args[1]).ok()?;
+                            val = number_to_value(ctx, y.atan2(x));
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_exp__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.exp());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_log__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            val = number_to_value(ctx, n.ln());
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_log2__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            let denom = core::f64::consts::LN_2;
+                            val = number_to_value(ctx, n.ln() / denom);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_log10__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            let denom = core::f64::consts::LN_10;
+                            val = number_to_value(ctx, n.ln() / denom);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_fround__" {
+                        if args.len() == 1 {
+                            let n = js_to_number(ctx, args[0]).ok()?;
+                            let f = n as f32;
+                            val = number_to_value(ctx, f as f64);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_imul__" {
+                        if args.len() == 2 {
+                            let a = js_to_int32(ctx, args[0]).unwrap_or(0);
+                            let b = js_to_int32(ctx, args[1]).unwrap_or(0);
+                            val = Value::from_int32(a.wrapping_mul(b));
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Math_clz32__" {
+                        if args.len() == 1 {
+                            let n = js_to_uint32(ctx, args[0]).unwrap_or(0);
+                            let count = n.leading_zeros() as i32;
+                            val = Value::from_int32(count);
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_string_trim__" {
                         if let Some(str_bytes) = ctx.string_bytes(this_val) {
                             if let Ok(s) = core::str::from_utf8(str_bytes) {
@@ -4333,6 +4479,86 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "sin" => {
+                                val = js_new_string(ctx, "__builtin_Math_sin__");
+                                rest = next;
+                                continue;
+                            }
+                            "cos" => {
+                                val = js_new_string(ctx, "__builtin_Math_cos__");
+                                rest = next;
+                                continue;
+                            }
+                            "tan" => {
+                                val = js_new_string(ctx, "__builtin_Math_tan__");
+                                rest = next;
+                                continue;
+                            }
+                            "asin" => {
+                                val = js_new_string(ctx, "__builtin_Math_asin__");
+                                rest = next;
+                                continue;
+                            }
+                            "acos" => {
+                                val = js_new_string(ctx, "__builtin_Math_acos__");
+                                rest = next;
+                                continue;
+                            }
+                            "atan" => {
+                                val = js_new_string(ctx, "__builtin_Math_atan__");
+                                rest = next;
+                                continue;
+                            }
+                            "atan2" => {
+                                val = js_new_string(ctx, "__builtin_Math_atan2__");
+                                rest = next;
+                                continue;
+                            }
+                            "exp" => {
+                                val = js_new_string(ctx, "__builtin_Math_exp__");
+                                rest = next;
+                                continue;
+                            }
+                            "log" => {
+                                val = js_new_string(ctx, "__builtin_Math_log__");
+                                rest = next;
+                                continue;
+                            }
+                            "log2" => {
+                                val = js_new_string(ctx, "__builtin_Math_log2__");
+                                rest = next;
+                                continue;
+                            }
+                            "log10" => {
+                                val = js_new_string(ctx, "__builtin_Math_log10__");
+                                rest = next;
+                                continue;
+                            }
+                            "fround" => {
+                                val = js_new_string(ctx, "__builtin_Math_fround__");
+                                rest = next;
+                                continue;
+                            }
+                            "imul" => {
+                                val = js_new_string(ctx, "__builtin_Math_imul__");
+                                rest = next;
+                                continue;
+                            }
+                            "clz32" => {
+                                val = js_new_string(ctx, "__builtin_Math_clz32__");
+                                rest = next;
+                                continue;
+                            }
+                            "E" => {
+                                val = number_to_value(ctx, core::f64::consts::E);
+                                rest = next;
+                                continue;
+                            }
+                            "PI" => {
+                                val = number_to_value(ctx, core::f64::consts::PI);
+                                rest = next;
+                                continue;
+                            }
                             _ => {}
                         }
                     } else if marker == "__builtin_Object__" {
@@ -5168,6 +5394,40 @@ impl<'a> ExprParser<'a> {
 
     fn parse_number(&mut self) -> Result<f64, ()> {
         self.skip_ws();
+        if self.peek() == Some(b'0') {
+            if let Some(next) = self.input.get(self.pos + 1).copied() {
+                let (radix, is_prefix) = match next {
+                    b'x' | b'X' => (16, true),
+                    b'o' | b'O' => (8, true),
+                    b'b' | b'B' => (2, true),
+                    _ => (10, false),
+                };
+                if is_prefix {
+                    self.pos += 2;
+                    let start_digits = self.pos;
+                    while let Some(b) = self.peek() {
+                        let ok = match radix {
+                            16 => b.is_ascii_hexdigit(),
+                            8 => matches!(b, b'0'..=b'7'),
+                            2 => matches!(b, b'0' | b'1'),
+                            _ => b.is_ascii_digit(),
+                        };
+                        if ok {
+                            self.pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if self.pos == start_digits {
+                        return Err(());
+                    }
+                    let slice = &self.input[start_digits..self.pos];
+                    let s = core::str::from_utf8(slice).map_err(|_| ())?;
+                    let v = u64::from_str_radix(s, radix).map_err(|_| ())?;
+                    return Ok(v as f64);
+                }
+            }
+        }
         let start = self.pos;
         let mut saw_digit = false;
         while let Some(b) = self.peek() {
@@ -5509,6 +5769,36 @@ impl<'a> ArithParser<'a> {
                                         "EPSILON" => number_to_value(ctx, f64::EPSILON),
                                         "POSITIVE_INFINITY" => number_to_value(ctx, f64::INFINITY),
                                         "NEGATIVE_INFINITY" => number_to_value(ctx, f64::NEG_INFINITY),
+                                        _ => value,
+                                    };
+                                    continue;
+                                }
+                                if marker == "__builtin_Math__" {
+                                    value = match prop {
+                                        "floor" => js_new_string(ctx, "__builtin_Math_floor__"),
+                                        "ceil" => js_new_string(ctx, "__builtin_Math_ceil__"),
+                                        "round" => js_new_string(ctx, "__builtin_Math_round__"),
+                                        "abs" => js_new_string(ctx, "__builtin_Math_abs__"),
+                                        "max" => js_new_string(ctx, "__builtin_Math_max__"),
+                                        "min" => js_new_string(ctx, "__builtin_Math_min__"),
+                                        "sqrt" => js_new_string(ctx, "__builtin_Math_sqrt__"),
+                                        "pow" => js_new_string(ctx, "__builtin_Math_pow__"),
+                                        "sin" => js_new_string(ctx, "__builtin_Math_sin__"),
+                                        "cos" => js_new_string(ctx, "__builtin_Math_cos__"),
+                                        "tan" => js_new_string(ctx, "__builtin_Math_tan__"),
+                                        "asin" => js_new_string(ctx, "__builtin_Math_asin__"),
+                                        "acos" => js_new_string(ctx, "__builtin_Math_acos__"),
+                                        "atan" => js_new_string(ctx, "__builtin_Math_atan__"),
+                                        "atan2" => js_new_string(ctx, "__builtin_Math_atan2__"),
+                                        "exp" => js_new_string(ctx, "__builtin_Math_exp__"),
+                                        "log" => js_new_string(ctx, "__builtin_Math_log__"),
+                                        "log2" => js_new_string(ctx, "__builtin_Math_log2__"),
+                                        "log10" => js_new_string(ctx, "__builtin_Math_log10__"),
+                                        "fround" => js_new_string(ctx, "__builtin_Math_fround__"),
+                                        "imul" => js_new_string(ctx, "__builtin_Math_imul__"),
+                                        "clz32" => js_new_string(ctx, "__builtin_Math_clz32__"),
+                                        "E" => number_to_value(ctx, core::f64::consts::E),
+                                        "PI" => number_to_value(ctx, core::f64::consts::PI),
                                         _ => value,
                                     };
                                     continue;
@@ -6065,6 +6355,156 @@ impl<'a> ArithParser<'a> {
                         return Ok(Value::new_bool(is_safe));
                     }
                     return Ok(Value::FALSE);
+                } else if marker == "__builtin_Math_floor__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(Value::from_int32(n.floor() as i32));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_ceil__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(Value::from_int32(n.ceil() as i32));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_round__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(Value::from_int32(n.round() as i32));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_abs__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.abs()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_max__" {
+                    if !args.is_empty() {
+                        let mut max = f64::NEG_INFINITY;
+                        for arg in args {
+                            if let Ok(n) = js_to_number(ctx, *arg) {
+                                if n > max {
+                                    max = n;
+                                }
+                            }
+                        }
+                        return Ok(number_to_value(ctx, max));
+                    }
+                    return Ok(number_to_value(ctx, f64::NEG_INFINITY));
+                } else if marker == "__builtin_Math_min__" {
+                    if !args.is_empty() {
+                        let mut min = f64::INFINITY;
+                        for arg in args {
+                            if let Ok(n) = js_to_number(ctx, *arg) {
+                                if n < min {
+                                    min = n;
+                                }
+                            }
+                        }
+                        return Ok(number_to_value(ctx, min));
+                    }
+                    return Ok(number_to_value(ctx, f64::INFINITY));
+                } else if marker == "__builtin_Math_sqrt__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.sqrt()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_pow__" {
+                    if args.len() == 2 {
+                        let base = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        let exp = js_to_number(ctx, args[1]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, base.powf(exp)));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_sin__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.sin()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_cos__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.cos()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_tan__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.tan()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_asin__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.asin()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_acos__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.acos()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_atan__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.atan()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_atan2__" {
+                    if args.len() == 2 {
+                        let y = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        let x = js_to_number(ctx, args[1]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, y.atan2(x)));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_exp__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.exp()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_log__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.ln()));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_log2__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.ln() / core::f64::consts::LN_2));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_log10__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        return Ok(number_to_value(ctx, n.ln() / core::f64::consts::LN_10));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_fround__" {
+                    if args.len() == 1 {
+                        let n = js_to_number(ctx, args[0]).map_err(|_| ())?;
+                        let f = n as f32;
+                        return Ok(number_to_value(ctx, f as f64));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_imul__" {
+                    if args.len() == 2 {
+                        let a = js_to_int32(ctx, args[0]).unwrap_or(0);
+                        let b = js_to_int32(ctx, args[1]).unwrap_or(0);
+                        return Ok(Value::from_int32(a.wrapping_mul(b)));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_Math_clz32__" {
+                    if args.len() == 1 {
+                        let n = js_to_uint32(ctx, args[0]).unwrap_or(0);
+                        return Ok(Value::from_int32(n.leading_zeros() as i32));
+                    }
+                    return Ok(Value::UNDEFINED);
                 // Array methods
                 } else if marker == "__builtin_array_push__" {
                     for arg in args {
@@ -6490,8 +6930,44 @@ impl<'a> ArithParser<'a> {
     fn parse_number_raw(&mut self) -> Result<f64, ()> {
         self.skip_ws();
         let start = self.pos;
+        let mut neg = false;
         if self.peek() == Some(b'-') {
+            neg = true;
             self.pos += 1;
+        }
+        if self.peek() == Some(b'0') {
+            if let Some(next) = self.input.get(self.pos + 1).copied() {
+                let (radix, is_prefix) = match next {
+                    b'x' | b'X' => (16, true),
+                    b'o' | b'O' => (8, true),
+                    b'b' | b'B' => (2, true),
+                    _ => (10, false),
+                };
+                if is_prefix {
+                    self.pos += 2;
+                    let start_digits = self.pos;
+                    while let Some(b) = self.peek() {
+                        let ok = match radix {
+                            16 => b.is_ascii_hexdigit(),
+                            8 => matches!(b, b'0'..=b'7'),
+                            2 => matches!(b, b'0' | b'1'),
+                            _ => b.is_ascii_digit(),
+                        };
+                        if ok {
+                            self.pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if self.pos == start_digits {
+                        return Err(());
+                    }
+                    let slice = &self.input[start_digits..self.pos];
+                    let s = core::str::from_utf8(slice).map_err(|_| ())?;
+                    let v = u64::from_str_radix(s, radix).map_err(|_| ())? as f64;
+                    return Ok(if neg { -v } else { v });
+                }
+            }
         }
         match self.peek() {
             Some(b'0') => {

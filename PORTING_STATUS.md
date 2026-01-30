@@ -92,6 +92,9 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 - ✅ `Math.abs(x)` / `Math.floor(x)` / `Math.ceil(x)` / `Math.round(x)`
 - ✅ `Math.sqrt(x)` / `Math.pow(x, y)`
 - ✅ `Math.max(a, b, ...)` / `Math.min(a, b, ...)`
+- ✅ `Math.sin/cos/tan/asin/acos/atan/atan2`
+- ✅ `Math.exp/log/log2/log10`
+- ✅ `Math.fround(x)` / `Math.imul(a, b)` / `Math.clz32(x)`
 - ✅ `Math.trunc(x)` / `Math.random()`
 - ✅ `Math.PI`, `Math.E` constants
 
@@ -144,13 +147,6 @@ Muon-js is a native Rust port of [MicroQuickJS](https://github.com/bellard/mquic
 #### Object Methods (Missing)
 - ❌ `Object.hasOwnProperty(key)` (mquickjs supports this)
 - ❌ `Object.seal(obj)`
-
-#### Math Methods (Missing)
-- ❌ `Math.sin/cos/tan/asin/acos/atan/atan2`
-- ❌ `Math.exp/log/log2/log10` (log2/log10 in mquickjs)
-- ❌ `Math.fround(x)` (mquickjs supports)
-- ❌ `Math.imul(a, b)` (mquickjs supports)
-- ❌ `Math.clz32(x)` (mquickjs supports)
 
 #### Number Methods (Missing)
 - ❌ `toString(radix)`

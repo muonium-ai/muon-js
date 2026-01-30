@@ -680,6 +680,54 @@ mod tests {
     }
 
     #[test]
+    fn math_extended_methods() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let sin_v = eval_ret(&mut ctx, "Math.sin(0)");
+        let sin_n = JS_ToNumber(&mut ctx, sin_v).unwrap();
+        assert!(sin_n.abs() < 1e-12);
+        let cos_v = eval_ret(&mut ctx, "Math.cos(0)");
+        let cos_n = JS_ToNumber(&mut ctx, cos_v).unwrap();
+        assert!((cos_n - 1.0).abs() < 1e-12);
+        let tan_v = eval_ret(&mut ctx, "Math.tan(0)");
+        let tan_n = JS_ToNumber(&mut ctx, tan_v).unwrap();
+        assert!(tan_n.abs() < 1e-12);
+        let asin_v = eval_ret(&mut ctx, "Math.asin(1)");
+        let asin_n = JS_ToNumber(&mut ctx, asin_v).unwrap();
+        assert!((asin_n - core::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        let acos_v = eval_ret(&mut ctx, "Math.acos(1)");
+        let acos_n = JS_ToNumber(&mut ctx, acos_v).unwrap();
+        assert!(acos_n.abs() < 1e-12);
+        let atan_v = eval_ret(&mut ctx, "Math.atan(1)");
+        let atan_n = JS_ToNumber(&mut ctx, atan_v).unwrap();
+        assert!((atan_n - core::f64::consts::FRAC_PI_4).abs() < 1e-9);
+        let atan2_v = eval_ret(&mut ctx, "Math.atan2(1, 0)");
+        let atan2_n = JS_ToNumber(&mut ctx, atan2_v).unwrap();
+        assert!((atan2_n - core::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        let exp_v = eval_ret(&mut ctx, "Math.exp(1)");
+        let exp_n = JS_ToNumber(&mut ctx, exp_v).unwrap();
+        assert!((exp_n - core::f64::consts::E).abs() < 1e-9);
+        let log_v = eval_ret(&mut ctx, "Math.log(Math.E)");
+        let log_n = JS_ToNumber(&mut ctx, log_v).unwrap();
+        assert!((log_n - 1.0).abs() < 1e-9);
+        let log2_v = eval_ret(&mut ctx, "Math.log2(8)");
+        let log2_n = JS_ToNumber(&mut ctx, log2_v).unwrap();
+        assert!((log2_n - 3.0).abs() < 1e-9);
+        let log10_v = eval_ret(&mut ctx, "Math.log10(100)");
+        let log10_n = JS_ToNumber(&mut ctx, log10_v).unwrap();
+        assert!((log10_n - 2.0).abs() < 1e-9);
+        let fround_v = eval_ret(&mut ctx, "Math.fround(0.1)");
+        let fround_n = JS_ToNumber(&mut ctx, fround_v).unwrap();
+        assert!((fround_n - 0.10000000149011612).abs() < 1e-9);
+        let imul_v = eval_ret(&mut ctx, "Math.imul(0x12345678, 123)");
+        assert_eq!(JS_ToInt32(&mut ctx, imul_v).unwrap(), -1088058456);
+        let clz_v = eval_ret(&mut ctx, "Math.clz32(1)");
+        assert_eq!(JS_ToInt32(&mut ctx, clz_v).unwrap(), 31);
+        let clz0_v = eval_ret(&mut ctx, "Math.clz32(0)");
+        assert_eq!(JS_ToInt32(&mut ctx, clz0_v).unwrap(), 32);
+    }
+
+    #[test]
     fn eval_basic_literals() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

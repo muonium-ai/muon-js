@@ -145,6 +145,9 @@
 - ✅ abs(), floor(), ceil(), round()
 - ✅ sqrt(), pow()
 - ✅ max(), min()
+- ✅ sin(), cos(), tan(), asin(), acos(), atan(), atan2()
+- ✅ exp(), log(), log2(), log10()
+- ✅ fround(), imul(), clz32()
 - ✅ random()
 - ✅ Math.PI, Math.E constants
 
