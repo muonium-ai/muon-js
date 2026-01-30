@@ -3780,7 +3780,8 @@ fn split_assignment(src: &str) -> Option<(&str, &str)> {
             b'=' if depth == 0 => {
                 let prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(b'\0');
                 let next = bytes.get(i + 1).copied().unwrap_or(b'\0');
-                if prev == b'=' || next == b'=' {
+                // Skip if this is part of ==, ===, !=, !==, <=, or >=
+                if prev == b'=' || next == b'=' || prev == b'!' || prev == b'<' || prev == b'>' {
                     continue;
                 }
                 let lhs = src[..i].trim();
@@ -4522,17 +4523,17 @@ impl<'a> ArithParser<'a> {
                 b'<' => {
                     if self.peek() == Some(b'=') {
                         self.pos += 1;
-                        "<=".as_bytes()
+                        &[b'<', b'='][..]
                     } else {
-                        "<".as_bytes()
+                        &[b'<'][..]
                     }
                 }
                 b'>' => {
                     if self.peek() == Some(b'=') {
                         self.pos += 1;
-                        ">=".as_bytes()
+                        &[b'>', b'='][..]
                     } else {
-                        ">".as_bytes()
+                        &[b'>'][..]
                     }
                 }
                 b'=' => {
@@ -4949,56 +4950,96 @@ impl<'a> ArithParser<'a> {
 
     fn compare_values(&mut self, left: JSValue, right: JSValue, op: &[u8]) -> Result<JSValue, ()> {
         let ctx = unsafe { &mut *self.ctx };
-        let result = match op {
-            b"<" => {
-                let ln = js_to_number(ctx, left).map_err(|_| ())?;
-                let rn = js_to_number(ctx, right).map_err(|_| ())?;
-                ln < rn
-            }
-            b">" => {
-                let ln = js_to_number(ctx, left).map_err(|_| ())?;
-                let rn = js_to_number(ctx, right).map_err(|_| ())?;
-                ln > rn
-            }
-            b"<=" => {
-                let ln = js_to_number(ctx, left).map_err(|_| ())?;
-                let rn = js_to_number(ctx, right).map_err(|_| ())?;
-                ln <= rn
-            }
-            b">=" => {
-                let ln = js_to_number(ctx, left).map_err(|_| ())?;
-                let rn = js_to_number(ctx, right).map_err(|_| ())?;
-                ln >= rn
-            }
-            b"==" | b"===" => {
-                // Simplified equality - in real JS, == does type coercion
-                if left.0 == right.0 {
-                    true
-                } else {
-                    let ln = js_to_number(ctx, left).ok();
-                    let rn = js_to_number(ctx, right).ok();
-                    if let (Some(l), Some(r)) = (ln, rn) {
-                        l == r
-                    } else {
-                        false
-                    }
+        let result = if op.len() == 1 {
+            match op[0] {
+                b'<' => {
+                    let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                    let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                    ln < rn
                 }
+                b'>' => {
+                    let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                    let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                    ln > rn
+                }
+                _ => return Err(()),
             }
-            b"!=" | b"!==" => {
-                // Simplified inequality
-                if left.0 == right.0 {
-                    false
-                } else {
-                    let ln = js_to_number(ctx, left).ok();
-                    let rn = js_to_number(ctx, right).ok();
-                    if let (Some(l), Some(r)) = (ln, rn) {
-                        l != r
-                    } else {
+        } else if op.len() == 2 {
+            match (op[0], op[1]) {
+                (b'<', b'=') => {
+                    let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                    let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                    ln <= rn
+                }
+                (b'>', b'=') => {
+                    let ln = js_to_number(ctx, left).map_err(|_| ())?;
+                    let rn = js_to_number(ctx, right).map_err(|_| ())?;
+                    ln >= rn
+                }
+                (b'=', b'=') => {
+                    // Simplified equality - in real JS, == does type coercion
+                    if left.0 == right.0 {
                         true
+                    } else {
+                        let ln = js_to_number(ctx, left).ok();
+                        let rn = js_to_number(ctx, right).ok();
+                        if let (Some(l), Some(r)) = (ln, rn) {
+                            l == r
+                        } else {
+                            false
+                        }
                     }
                 }
+                (b'!', b'=') => {
+                    // Simplified inequality
+                    if left.0 == right.0 {
+                        false
+                    } else {
+                        let ln = js_to_number(ctx, left).ok();
+                        let rn = js_to_number(ctx, right).ok();
+                        if let (Some(l), Some(r)) = (ln, rn) {
+                            l != r
+                        } else {
+                            true
+                        }
+                    }
+                }
+                _ => return Err(()),
             }
-            _ => return Err(()),
+        } else if op.len() == 3 {
+            match (op[0], op[1], op[2]) {
+                (b'=', b'=', b'=') => {
+                    // Simplified equality
+                    if left.0 == right.0 {
+                        true
+                    } else {
+                        let ln = js_to_number(ctx, left).ok();
+                        let rn = js_to_number(ctx, right).ok();
+                        if let (Some(l), Some(r)) = (ln, rn) {
+                            l == r
+                        } else {
+                            false
+                        }
+                    }
+                }
+                (b'!', b'=', b'=') => {
+                    // Simplified inequality
+                    if left.0 == right.0 {
+                        false
+                    } else {
+                        let ln = js_to_number(ctx, left).ok();
+                        let rn = js_to_number(ctx, right).ok();
+                        if let (Some(l), Some(r)) = (ln, rn) {
+                            l != r
+                        } else {
+                            true
+                        }
+                    }
+                }
+                _ => return Err(()),
+            }
+        } else {
+            return Err(());
         };
         Ok(if result { Value::TRUE } else { Value::FALSE })
     }
