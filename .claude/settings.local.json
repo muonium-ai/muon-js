@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test:*)",
+      "Bash(bash:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(./tests/run_integration.sh:*)"
+    ]
+  }
+}
