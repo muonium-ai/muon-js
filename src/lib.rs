@@ -165,6 +165,30 @@ mod tests {
     }
 
     #[test]
+    fn nested_closures_chain() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(a){ return function mid(b){ return function inner(c){ return a + b + c; }; }; } outer(1)(2)(3)",
+        );
+        assert_eq!(JS_ToInt32(&mut ctx, res).unwrap(), 6);
+    }
+
+    #[test]
+    fn nested_closures_shadow_and_mutate() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(){ var x=1; return function mid(){ x = x + 1; return function inner(){ var x=10; return x; }; }; } var f = outer(); var g = f(); g()",
+        );
+        assert_eq!(JS_ToInt32(&mut ctx, res).unwrap(), 10);
+        let res2 = eval_ret(&mut ctx, "function outer(){ var x=1; return function(){ return function(){ return x; }; }; } outer()()()");
+        assert_eq!(JS_ToInt32(&mut ctx, res2).unwrap(), 1);
+    }
+
+    #[test]
     fn to_number_strings() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

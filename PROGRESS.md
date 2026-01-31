@@ -236,7 +236,7 @@
 #### Closures (Partial support)
 - ✅ Lexical environments (per-scope bindings + chained lookup)
 - ⚠️ TDZ and strict let/const semantics not complete
-- ❌ Complex nested closures
+- ✅ Complex nested closures (tested)
 
 **Estimated effort**: 20-25 hours  
 **Impact**: Critical for functional programming patterns
@@ -258,6 +258,10 @@
 
 **Estimated effort**: Multiple months  
 **Impact**: Modern JavaScript compatibility
+
+#### Array.from Edge Cases
+- ✅ Length coercion for array-like objects
+- ✅ Non-callable map function throws
 
 ---
 
