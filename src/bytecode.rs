@@ -24,6 +24,9 @@ pub enum OpCode {
     Not,
     And,
     Or,
+    Drop,
+    Jump,
+    JumpIfFalse,
     Return,
 }
 

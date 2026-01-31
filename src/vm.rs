@@ -89,6 +89,9 @@ impl VM {
                     let truthy = crate::evals::is_truthy(v);
                     stack.push(JSValue::new_bool(!truthy));
                 }
+                OpCode::Drop => {
+                    let _ = stack.pop();
+                }
                 OpCode::And | OpCode::Or => {
                     let b = match stack.pop() {
                         Some(v) => v,
@@ -148,6 +151,9 @@ impl VM {
                 }
                 OpCode::Return => {
                     return stack.pop().unwrap_or(JSValue::UNDEFINED);
+                }
+                OpCode::Jump | OpCode::JumpIfFalse => {
+                    return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode jump not implemented");
                 }
             }
         }

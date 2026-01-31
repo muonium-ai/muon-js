@@ -30,7 +30,7 @@ impl Compiler {
         }
 
         let mut expr = ExprCompiler::new(ctx, s);
-        expr.parse_logical_or()?;
+        expr.parse_comma()?;
         expr.skip_ws();
         if expr.pos != expr.input.len() {
             return Err(CompileError {
@@ -114,7 +114,7 @@ impl<'a> ExprCompiler<'a> {
             return Ok(());
         }
         if self.consume(b'(') {
-            self.parse_expr()?;
+            self.parse_comma()?;
             self.skip_ws();
             if !self.consume(b')') {
                 return Err(CompileError { message: "missing ')'".to_string() });
@@ -172,6 +172,20 @@ impl<'a> ExprCompiler<'a> {
         }
         self.pos = start;
         self.parse_expr()
+    }
+
+    fn parse_comma(&mut self) -> Result<(), CompileError> {
+        self.parse_logical_or()?;
+        loop {
+            self.skip_ws();
+            if self.consume(b',') {
+                self.emit_op(OpCode::Drop);
+                self.parse_logical_or()?;
+            } else {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn parse_logical_or(&mut self) -> Result<(), CompileError> {
