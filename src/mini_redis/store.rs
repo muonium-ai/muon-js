@@ -126,6 +126,18 @@ impl Db {
         self.data.keys().cloned().collect()
     }
 
+    pub fn keys_matching(&mut self, pattern: &[u8]) -> Vec<Vec<u8>> {
+        self.purge_expired_all();
+        let mut out = Vec::new();
+        for key in self.data.keys() {
+            if Self::glob_match(key, pattern) {
+                out.push(key.clone());
+            }
+        }
+        out.sort();
+        out
+    }
+
     pub fn flush(&mut self) -> usize {
         let count = self.data.len();
         self.data.clear();
@@ -147,6 +159,126 @@ impl Db {
             Some(Value::Stream(_)) => Some("stream"),
             None => None,
         }
+    }
+
+    fn glob_class_match(pattern: &[u8], mut i: usize, ch: u8) -> Option<(bool, usize)> {
+        let mut neg = false;
+        let mut matched = false;
+        if i >= pattern.len() {
+            return None;
+        }
+        if pattern[i] == b'^' || pattern[i] == b'!' {
+            neg = true;
+            i += 1;
+        }
+        let start = i;
+        while i < pattern.len() {
+            let mut c = pattern[i];
+            if c == b']' && i > start {
+                let res = if neg { !matched } else { matched };
+                return Some((res, i + 1));
+            }
+            if c == b'\\' && i + 1 < pattern.len() {
+                i += 1;
+                c = pattern[i];
+            }
+            if i + 2 < pattern.len() && pattern[i + 1] == b'-' && pattern[i + 2] != b']' {
+                let mut end = pattern[i + 2];
+                if end == b'\\' && i + 3 < pattern.len() {
+                    end = pattern[i + 3];
+                }
+                if c <= ch && ch <= end {
+                    matched = true;
+                }
+                i += 3;
+                continue;
+            }
+            if c == ch {
+                matched = true;
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn glob_match(text: &[u8], pattern: &[u8]) -> bool {
+        let mut ti = 0usize;
+        let mut pi = 0usize;
+        let mut star_pi: Option<usize> = None;
+        let mut star_ti = 0usize;
+
+        while ti <= text.len() {
+            if pi < pattern.len() {
+                match pattern[pi] {
+                    b'*' => {
+                        star_pi = Some(pi);
+                        pi += 1;
+                        star_ti = ti;
+                        continue;
+                    }
+                    b'?' => {
+                        if ti >= text.len() {
+                            return false;
+                        }
+                        ti += 1;
+                        pi += 1;
+                        continue;
+                    }
+                    b'[' => {
+                        if ti >= text.len() {
+                            return false;
+                        }
+                        match Self::glob_class_match(pattern, pi + 1, text[ti]) {
+                            Some((ok, next_pi)) => {
+                                if ok {
+                                    ti += 1;
+                                    pi = next_pi;
+                                    continue;
+                                }
+                            }
+                            None => {
+                                if text[ti] == b'[' {
+                                    ti += 1;
+                                    pi += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    b'\\' => {
+                        if pi + 1 < pattern.len() {
+                            pi += 1;
+                        }
+                        if ti < text.len() && pattern[pi] == text[ti] {
+                            ti += 1;
+                            pi += 1;
+                            continue;
+                        }
+                    }
+                    c => {
+                        if ti < text.len() && c == text[ti] {
+                            ti += 1;
+                            pi += 1;
+                            continue;
+                        }
+                    }
+                }
+            } else if ti == text.len() {
+                return true;
+            }
+
+            if let Some(sp) = star_pi {
+                pi = sp + 1;
+                star_ti += 1;
+                ti = star_ti;
+                continue;
+            }
+            return false;
+        }
+        while pi < pattern.len() && pattern[pi] == b'*' {
+            pi += 1;
+        }
+        pi == pattern.len() && ti == text.len()
     }
 
     pub fn list_push(&mut self, key: &[u8], values: &[Vec<u8>], left: bool) -> Result<i64, ()> {

@@ -862,25 +862,63 @@ async fn handle_command(
         },
         "KEYS" => match args.get(0) {
             Some(pattern) => {
-                if pattern.as_slice() != b"*" {
-                    return RespValue::Error("ERR only '*' pattern supported".to_string());
-                }
                 let db = &mut state.dbs[*db_index];
-                let keys = db.keys();
+                let keys = db.keys_matching(pattern);
                 RespValue::Array(keys.into_iter().map(RespValue::Blob).collect())
             }
             None => RespValue::Error("ERR wrong number of arguments for 'KEYS'".to_string()),
         },
         "SCAN" => match args.get(0) {
             Some(cursor) => {
-                if cursor.as_slice() != b"0" {
-                    return RespValue::Error("ERR only cursor 0 supported".to_string());
+                let cursor_str = match core::str::from_utf8(cursor) {
+                    Ok(s) => s,
+                    Err(_) => return RespValue::Error("ERR invalid cursor".to_string()),
+                };
+                let mut cursor_val = match cursor_str.parse::<usize>() {
+                    Ok(v) => v,
+                    Err(_) => return RespValue::Error("ERR invalid cursor".to_string()),
+                };
+                let mut pattern = b"*".to_vec();
+                let mut count = 10usize;
+                let mut i = 1usize;
+                while i < args.len() {
+                    let opt = args[i].to_ascii_uppercase();
+                    if opt == b"MATCH" {
+                        if i + 1 >= args.len() {
+                            return RespValue::Error("ERR syntax error".to_string());
+                        }
+                        pattern = args[i + 1].clone();
+                        i += 2;
+                        continue;
+                    }
+                    if opt == b"COUNT" {
+                        if i + 1 >= args.len() {
+                            return RespValue::Error("ERR syntax error".to_string());
+                        }
+                        let cnt_str = match core::str::from_utf8(&args[i + 1]) {
+                            Ok(s) => s,
+                            Err(_) => return RespValue::Error("ERR invalid COUNT".to_string()),
+                        };
+                        count = match cnt_str.parse::<usize>() {
+                            Ok(v) => v,
+                            Err(_) => return RespValue::Error("ERR invalid COUNT".to_string()),
+                        };
+                        i += 2;
+                        continue;
+                    }
+                    return RespValue::Error("ERR syntax error".to_string());
                 }
                 let db = &mut state.dbs[*db_index];
-                let keys = db.keys();
+                let keys = db.keys_matching(&pattern);
+                if cursor_val > keys.len() {
+                    cursor_val = keys.len();
+                }
+                let end = (cursor_val + count).min(keys.len());
+                let batch = keys[cursor_val..end].to_vec();
+                let next_cursor = if end >= keys.len() { 0 } else { end };
                 let mut out = Vec::with_capacity(2);
-                out.push(RespValue::Blob(b"0".to_vec()));
-                out.push(RespValue::Array(keys.into_iter().map(RespValue::Blob).collect()));
+                out.push(RespValue::Blob(next_cursor.to_string().into_bytes()));
+                out.push(RespValue::Array(batch.into_iter().map(RespValue::Blob).collect()));
                 RespValue::Array(out)
             }
             None => RespValue::Error("ERR wrong number of arguments for 'SCAN'".to_string()),
