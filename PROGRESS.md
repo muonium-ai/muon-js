@@ -430,6 +430,13 @@ Number.isFinite(100)            // OK (static method)
 
 ---
 
+## 🧪 Mini-redis Parity Notes
+
+- ✅ KEYS supports glob patterns (`*`, `?`, classes)
+- ✅ SCAN supports cursors plus MATCH/COUNT (basic)
+
+---
+
 ## 📚 References
 
 - **ACTION_PLAN.md** - Detailed 6-phase implementation plan
