@@ -2088,7 +2088,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             // Check for built-in method markers
             if let Some(bytes) = ctx.string_bytes(val) {
                 if let Ok(marker) = core::str::from_utf8(bytes) {
-                    if marker == "__builtin_array_pop__" {
+                    if marker == "__builtin_array_push__" {
+                        for arg in &args {
+                            js_array_push(ctx, this_val, *arg);
+                        }
+                        val = js_get_property_str(ctx, this_val, "length");
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_pop__" {
                         val = js_array_pop(ctx, this_val);
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -4702,6 +4710,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
             }
             
+            // Array.push - create a callable wrapper
+            if name == "push" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_push__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+
             // Array.pop - create a callable wrapper
             if name == "pop" {
                 if let Some(class_id) = ctx.object_class_id(val) {

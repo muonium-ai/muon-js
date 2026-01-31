@@ -14,9 +14,7 @@
 
 ### Integration
 - `make test-integration`
-  - ✅ **9/10 passing**
-  - ❌ **08_prime_checker.js** → `Exception`
-    - Current script uses implicit globals (`i`, `primes`, `num`) which may be rejected depending on strict-mode behavior or global handling.
+  - ✅ **10/10 passing**
 
 ### mquickjs Compatibility
 - `make test-mquickjs-detailed`
@@ -66,7 +64,7 @@
 - **TODO marker**: `src/api.rs` references pending float64 typed array support.
 - **`unwrap`/`expect` usage** is confined to tests and controlled paths; no critical runtime panic points found in a quick scan.
 - **Mini-redis**: unused `mut` warnings in `src/mini_redis/store.rs`.
-- **Error visibility**: `examples/eval.rs` prints only `Exception` without error details, which makes failures (like 08_prime_checker) hard to debug.
+- **Error visibility**: `examples/eval.rs` now prints exception details (falls back to debug value).
 
 ---
 
@@ -84,12 +82,10 @@ Primary blockers:
 
 ## Recommended Next Steps (Ordered)
 
-1. **Fix 08_prime_checker** (integration test) by handling implicit globals or enforcing strict-mode with clearer errors.
-2. **Add mquickjs error output** in `examples/eval.rs` to show exception details during test runs.
-3. **Bring `PORTING_STATUS.md` / `PROGRESS.md` in sync** to reduce tracking noise.
-4. **Start mquickjs test-driven porting**: implement missing semantics in the order tests exercise them.
-5. **Plan architecture work**: VM + GC milestones, with compatibility checkpoints.
-6. **Rerun mini-redis parity** in an environment that allows local socket binds, or add a non-sandboxed port selection path for CI.
+1. **Bring `PORTING_STATUS.md` / `PROGRESS.md` in sync** to reduce tracking noise.
+2. **Start mquickjs test-driven porting**: implement missing semantics in the order tests exercise them.
+3. **Plan architecture work**: VM + GC milestones, with compatibility checkpoints.
+4. **Rerun mini-redis parity** in an environment that allows local socket binds, or add a non-sandboxed port selection path for CI.
 
 ---
 

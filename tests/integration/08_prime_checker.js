@@ -8,7 +8,7 @@ function isPrime(n) {
     if (n % 2 == 0) {
         return false
     }
-    i = 3
+    var i = 3
     while (i * i <= n) {
         if (n % i == 0) {
             return false
@@ -18,8 +18,8 @@ function isPrime(n) {
     return true
 }
 
-primes = []
-num = 2
+var primes = []
+var num = 2
 while (num <= 20) {
     if (isPrime(num)) {
         primes.push(num)
