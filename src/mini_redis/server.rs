@@ -890,6 +890,27 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
         }
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec()),
         "EVAL" | "EVALSHA" | "SCRIPT" => RespValue::Error("ERR scripting not implemented".to_string()),
+        "CONFIG" => {
+            if args.len() >= 1 && to_upper_ascii(&args[0]) == "GET" {
+                RespValue::Array(Vec::new())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
+        "CLIENT" => {
+            if args.len() >= 1 && to_upper_ascii(&args[0]) == "LIST" {
+                RespValue::Blob(b"id=1 addr=127.0.0.1:0".to_vec())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
+        "SLOWLOG" => {
+            if args.len() >= 1 && to_upper_ascii(&args[0]) == "GET" {
+                RespValue::Array(Vec::new())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
         "QUIT" => RespValue::Simple("OK".to_string()),
         _ => RespValue::Error(format!("ERR unknown command '{}'", cmd)),
     }

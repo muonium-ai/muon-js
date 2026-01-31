@@ -199,9 +199,9 @@ TESTS = [
     ("SCRIPT (expected fail for now)", ["SCRIPT", "LOAD", "return 1"], expect_error()),
     ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
     # Server / config
-    ("CONFIG (expected fail for now)", ["CONFIG", "GET", "*"], expect_error()),
-    ("CLIENT (expected fail for now)", ["CLIENT", "LIST"], expect_error()),
-    ("SLOWLOG (expected fail for now)", ["SLOWLOG", "GET"], expect_error()),
+    ("CONFIG GET", ["CONFIG", "GET", "*"], lambda r: r[0] == "array"),
+    ("CLIENT LIST", ["CLIENT", "LIST"], lambda r: r[0] in ("blob", "simple")),
+    ("SLOWLOG GET", ["SLOWLOG", "GET"], lambda r: r[0] == "array"),
     # Persistence / replication
     ("SAVE (expected fail for now)", ["SAVE"], expect_error()),
     ("BGSAVE (expected fail for now)", ["BGSAVE"], expect_error()),
