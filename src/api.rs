@@ -1995,7 +1995,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     // Check for ternary operator: condition ? true_val : false_val
     if let Some((cond, true_part, false_part)) = split_ternary(s) {
         let cond_val = eval_expr(ctx, cond)?;
-        let is_true = is_truthy(cond_val);
+        let is_true = is_truthy(ctx, cond_val);
         if is_true {
             return eval_expr(ctx, true_part);
         } else {
@@ -3412,7 +3412,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 let idx_val = Value::from_int32(i as i32);
                                 let call_args = [elem, idx_val, this_val];
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                    if is_truthy(res) {
+                                    if is_truthy(ctx, res) {
                                         js_set_property_uint32(ctx, result, result_idx, elem);
                                         result_idx += 1;
                                     }
@@ -3464,7 +3464,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 let idx_val = Value::from_int32(i as i32);
                                 let call_args = [elem, idx_val, this_val];
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                    if !is_truthy(res) {
+                                    if !is_truthy(ctx, res) {
                                         all_true = false;
                                         break;
                                     }
@@ -3488,7 +3488,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 let idx_val = Value::from_int32(i as i32);
                                 let call_args = [elem, idx_val, this_val];
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                    if is_truthy(res) {
+                                    if is_truthy(ctx, res) {
                                         any_true = true;
                                         break;
                                     }
@@ -3512,7 +3512,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 let idx_val = Value::from_int32(i as i32);
                                 let call_args = [elem, idx_val, this_val];
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                    if is_truthy(res) {
+                                    if is_truthy(ctx, res) {
                                         found_elem = elem;
                                         break;
                                     }
@@ -3536,7 +3536,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 let idx_val = Value::from_int32(i as i32);
                                 let call_args = [elem, idx_val, this_val];
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                    if is_truthy(res) {
+                                    if is_truthy(ctx, res) {
                                         found_idx = i as i32;
                                         break;
                                     }
@@ -7643,7 +7643,7 @@ impl<'a> ArithParser<'a> {
                             let idx_val = Value::from_int32(i as i32);
                             let call_args = [elem, idx_val, this_val];
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                if is_truthy(res) {
+                                if is_truthy(ctx, res) {
                                     js_set_property_uint32(ctx, result, result_idx, elem);
                                     result_idx += 1;
                                 }
@@ -7684,7 +7684,7 @@ impl<'a> ArithParser<'a> {
                             let idx_val = Value::from_int32(i as i32);
                             let call_args = [elem, idx_val, this_val];
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                if !is_truthy(res) {
+                                if !is_truthy(ctx, res) {
                                     return Ok(Value::FALSE);
                                 }
                             }
@@ -7701,7 +7701,7 @@ impl<'a> ArithParser<'a> {
                             let idx_val = Value::from_int32(i as i32);
                             let call_args = [elem, idx_val, this_val];
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                if is_truthy(res) {
+                                if is_truthy(ctx, res) {
                                     return Ok(Value::TRUE);
                                 }
                             }
@@ -7718,7 +7718,7 @@ impl<'a> ArithParser<'a> {
                             let idx_val = Value::from_int32(i as i32);
                             let call_args = [elem, idx_val, this_val];
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                if is_truthy(res) {
+                                if is_truthy(ctx, res) {
                                     return Ok(elem);
                                 }
                             }
@@ -7735,7 +7735,7 @@ impl<'a> ArithParser<'a> {
                             let idx_val = Value::from_int32(i as i32);
                             let call_args = [elem, idx_val, this_val];
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
-                                if is_truthy(res) {
+                                if is_truthy(ctx, res) {
                                     return Ok(Value::from_int32(i as i32));
                                 }
                             }

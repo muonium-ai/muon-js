@@ -88,7 +88,7 @@ impl VM {
                         Some(v) => v,
                         None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
                     };
-                    let truthy = crate::evals::is_truthy(v);
+                    let truthy = crate::evals::is_truthy(ctx, v);
                     stack.push(JSValue::new_bool(!truthy));
                 }
                 OpCode::Drop => {
@@ -103,7 +103,7 @@ impl VM {
                         Some(v) => v,
                         None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
                     };
-                    let a_truthy = crate::evals::is_truthy(a);
+                    let a_truthy = crate::evals::is_truthy(ctx, a);
                     let result = if ins.op == OpCode::And {
                         if a_truthy { b } else { a }
                     } else if a_truthy {
@@ -122,7 +122,7 @@ impl VM {
                         Some(v) => v,
                         None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
                     };
-                    if !crate::evals::is_truthy(v) {
+                    if !crate::evals::is_truthy(ctx, v) {
                         pc = ins.a as usize;
                         continue;
                     }
