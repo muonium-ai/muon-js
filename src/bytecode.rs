@@ -9,6 +9,8 @@ use crate::types::JSValue;
 pub enum OpCode {
     Nop,
     Const,
+    LoadGlobal,
+    StoreGlobal,
     Add,
     Sub,
     Mul,

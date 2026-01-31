@@ -3,7 +3,7 @@
 
 use crate::bytecode::{BytecodeModule, OpCode};
 use crate::types::{JSObjectClassEnum, JSValue};
-use crate::{api::{js_throw_error, js_to_number}, JSContextImpl};
+use crate::{api::{js_throw_error, js_to_number, js_get_property_str, js_set_property_str}, JSContextImpl};
 
 pub struct VM;
 
@@ -18,6 +18,7 @@ impl VM {
         }
         let func = &_module.functions[_module.main];
         let mut stack: Vec<JSValue> = Vec::new();
+        let global = crate::api::js_get_global_object(ctx);
         for ins in &func.code {
             match ins.op {
                 OpCode::Nop => {}
@@ -54,6 +55,44 @@ impl VM {
                         _ => an,
                     };
                     stack.push(crate::helpers::number_to_value(ctx, out));
+                }
+                OpCode::LoadGlobal => {
+                    let idx = ins.a as usize;
+                    let name_val = match func.constants.get(idx) {
+                        Some(v) => *v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode const out of range"),
+                    };
+                    let name = match ctx.string_bytes(name_val) {
+                        Some(b) => b,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode global name not string"),
+                    };
+                    let name = match core::str::from_utf8(name) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode global name invalid"),
+                    };
+                    let val = js_get_property_str(ctx, global, &name);
+                    stack.push(val);
+                }
+                OpCode::StoreGlobal => {
+                    let idx = ins.a as usize;
+                    let name_val = match func.constants.get(idx) {
+                        Some(v) => *v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode const out of range"),
+                    };
+                    let name = match ctx.string_bytes(name_val) {
+                        Some(b) => b,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode global name not string"),
+                    };
+                    let name = match core::str::from_utf8(name) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode global name invalid"),
+                    };
+                    let value = match stack.pop() {
+                        Some(v) => v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
+                    };
+                    let _ = js_set_property_str(ctx, global, &name, value);
+                    stack.push(value);
                 }
                 OpCode::Return => {
                     return stack.pop().unwrap_or(JSValue::UNDEFINED);

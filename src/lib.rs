@@ -279,6 +279,22 @@ mod tests {
     }
 
     #[test]
+    fn bytecode_compiler_assignment() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut compiler = crate::compiler::Compiler::new();
+        let module = compiler.compile_program(&mut ctx, "x = 4 + 1").expect("compile");
+        let mut vm = crate::vm::VM::new();
+        let out = vm.run_module(&mut ctx, &module);
+        let n = JS_ToNumber(&mut ctx, out).unwrap();
+        assert_eq!(n, 5.0);
+        let global = JS_GetGlobalObject(&mut ctx);
+        let gx = JS_GetPropertyStr(&mut ctx, global, "x");
+        let gxv = JS_ToNumber(&mut ctx, gx).unwrap();
+        assert_eq!(gxv, 5.0);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

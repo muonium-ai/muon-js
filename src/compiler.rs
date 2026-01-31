@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::bytecode::{BytecodeFunction, BytecodeModule, Instruction, OpCode};
-use crate::helpers::{is_simple_string_literal, number_to_value};
+use crate::helpers::{is_simple_string_literal, number_to_value, is_ident_start};
 use crate::JSContextImpl;
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ impl Compiler {
         }
 
         let mut expr = ExprCompiler::new(ctx, s);
-        expr.parse_expr()?;
+        expr.parse_assignment()?;
         expr.skip_ws();
         if expr.pos != expr.input.len() {
             return Err(CompileError {
@@ -116,9 +116,28 @@ impl<'a> ExprCompiler<'a> {
             }
             return Ok(());
         }
+        if let Some(name) = self.parse_identifier() {
+            self.emit_global(name, OpCode::LoadGlobal);
+            return Ok(());
+        }
         let num = self.parse_number()?;
         self.emit_const(num);
         Ok(())
+    }
+
+    fn parse_assignment(&mut self) -> Result<(), CompileError> {
+        self.skip_ws();
+        let start = self.pos;
+        if let Some(name) = self.parse_identifier() {
+            self.skip_ws();
+            if self.consume(b'=') {
+                self.parse_expr()?;
+                self.emit_global(name, OpCode::StoreGlobal);
+                return Ok(());
+            }
+        }
+        self.pos = start;
+        self.parse_expr()
     }
 
     fn parse_number(&mut self) -> Result<f64, CompileError> {
@@ -150,6 +169,26 @@ impl<'a> ExprCompiler<'a> {
         Ok(n)
     }
 
+    fn parse_identifier(&mut self) -> Option<String> {
+        self.skip_ws();
+        let start = self.pos;
+        let first = self.peek()?;
+        if !is_ident_start(first) {
+            return None;
+        }
+        self.pos += 1;
+        while let Some(b) = self.peek() {
+            if is_ident_start(b) || (b'0'..=b'9').contains(&b) {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let slice = &self.input[start..self.pos];
+        let s = core::str::from_utf8(slice).ok()?.to_string();
+        Some(s)
+    }
+
     fn consume_digits(&mut self) {
         while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.pos += 1;
@@ -165,6 +204,13 @@ impl<'a> ExprCompiler<'a> {
 
     fn emit_op(&mut self, op: OpCode) {
         self.func.code.push(Instruction { op, a: 0, b: 0, c: 0 });
+    }
+
+    fn emit_global(&mut self, name: String, op: OpCode) {
+        let name_val = crate::api::js_new_string(self.ctx, &name);
+        let idx = self.func.constants.len();
+        self.func.constants.push(name_val);
+        self.func.code.push(Instruction { op, a: idx as u32, b: 0, c: 0 });
     }
 
     fn skip_ws(&mut self) {
