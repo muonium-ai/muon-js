@@ -197,6 +197,7 @@ TESTS = [
     ("EVAL", ["EVAL", "return 1", "0"], expect_int(1)),
     ("EVAL redis.call", ["EVAL", "return redis.call('SET', KEYS[0], ARGV[0])", "1", "evalkey", "evalval"], lambda r: (r[0] in ("simple", "blob") and r[1] == b"OK") or (r[0] == "simple" and r[1] == "OK")),
     ("GET evalkey", ["GET", "evalkey"], expect_blob(b"evalval")),
+    ("EVAL redis.pcall", ["EVAL", "return redis.pcall('NOPE')", "0"], expect_error()),
     ("SCRIPT LOAD", ["SCRIPT", "LOAD", "return 2"], lambda r: r[0] == "blob"),
     ("SCRIPT EXISTS", ["SCRIPT", "EXISTS", "__SCRIPT_SHA__", "deadbeef"], lambda r: r[0] == "array" and len(r[1]) == 2),
     ("EVALSHA", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_int(2)),
