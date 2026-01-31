@@ -203,7 +203,9 @@ TESTS = [
     ("EVALSHA", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_int(2)),
     ("SCRIPT FLUSH", ["SCRIPT", "FLUSH"], expect_simple("OK")),
     ("EVALSHA missing", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_error()),
-    ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
+    ("FUNCTION LIST", ["FUNCTION", "LIST"], lambda r: r[0] == "array"),
+    ("FUNCTION LOAD", ["FUNCTION", "LOAD", "return 3"], expect_simple("OK")),
+    ("FUNCTION FLUSH", ["FUNCTION", "FLUSH"], expect_simple("OK")),
     # Server / config
     ("CONFIG GET", ["CONFIG", "GET", "*"], lambda r: r[0] == "array"),
     ("CLIENT LIST", ["CLIENT", "LIST"], lambda r: r[0] in ("blob", "simple")),

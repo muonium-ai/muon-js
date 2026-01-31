@@ -929,6 +929,32 @@ async fn handle_command(
                 RespValue::Error("ERR syntax error".to_string())
             }
         }
+        "FUNCTION" => {
+            if args.is_empty() {
+                return RespValue::Error("ERR wrong number of arguments for 'FUNCTION'".to_string());
+            }
+            let sub = to_upper_ascii(&args[0]);
+            match sub.as_str() {
+                "LIST" => RespValue::Array(Vec::new()),
+                "FLUSH" => {
+                    state.script_cache.clear();
+                    RespValue::Simple("OK".to_string())
+                }
+                "LOAD" => {
+                    if args.len() != 2 {
+                        return RespValue::Error("ERR wrong number of arguments for 'FUNCTION LOAD'".to_string());
+                    }
+                    let script = match std::str::from_utf8(&args[1]) {
+                        Ok(s) => s,
+                        Err(_) => return RespValue::Error("ERR invalid function".to_string()),
+                    };
+                    let sha = sha1_hex(script.as_bytes());
+                    state.script_cache.insert(sha, script.to_string());
+                    RespValue::Simple("OK".to_string())
+                }
+                _ => RespValue::Error("ERR unknown subcommand for FUNCTION".to_string()),
+            }
+        }
         "CLIENT" => {
             if args.len() >= 1 && to_upper_ascii(&args[0]) == "LIST" {
                 RespValue::Blob(b"id=1 addr=127.0.0.1:0".to_vec())
