@@ -2,31 +2,41 @@
 #![allow(dead_code)]
 
 use async_std::io;
-use async_trait::async_trait;
 
-use crate::mini_redis::store::{Db, Value};
+use crate::mini_redis::store::Db;
 
-#[async_trait]
-pub trait Persist: Send + Sync {
-    async fn load(&self, dbs: &mut [Db]) -> io::Result<()>;
-    async fn log_command(&self, db: usize, cmd: &[Vec<u8>]) -> io::Result<()>;
-    async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()>;
+#[cfg(feature = "mini-redis-libsql")]
+use crate::mini_redis::store::Value;
+
+pub enum Persist {
+    Noop,
+    #[cfg(feature = "mini-redis-libsql")]
+    Libsql(LibsqlPersist),
 }
 
-pub struct NoopPersist;
-
-#[async_trait]
-impl Persist for NoopPersist {
-    async fn load(&self, _dbs: &mut [Db]) -> io::Result<()> {
-        Ok(())
+impl Persist {
+    pub async fn load(&self, _dbs: &mut [Db]) -> io::Result<()> {
+        match self {
+            Persist::Noop => Ok(()),
+            #[cfg(feature = "mini-redis-libsql")]
+            Persist::Libsql(persist) => persist.load(dbs).await,
+        }
     }
 
-    async fn log_command(&self, _db: usize, _cmd: &[Vec<u8>]) -> io::Result<()> {
-        Ok(())
+    pub async fn log_command(&self, _db: usize, _cmd: &[Vec<u8>]) -> io::Result<()> {
+        match self {
+            Persist::Noop => Ok(()),
+            #[cfg(feature = "mini-redis-libsql")]
+            Persist::Libsql(persist) => persist.log_command(db, cmd).await,
+        }
     }
 
-    async fn snapshot(&self, _dbs: &mut [Db]) -> io::Result<()> {
-        Ok(())
+    pub async fn snapshot(&self, _dbs: &mut [Db]) -> io::Result<()> {
+        match self {
+            Persist::Noop => Ok(()),
+            #[cfg(feature = "mini-redis-libsql")]
+            Persist::Libsql(persist) => persist.snapshot(dbs).await,
+        }
     }
 }
 
@@ -72,8 +82,7 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-#[async_trait]
-impl Persist for LibsqlPersist {
+impl LibsqlPersist {
     async fn load(&self, dbs: &mut [Db]) -> io::Result<()> {
         let mut rows = self.conn.query("SELECT db, key, type, value, expires_at_ms FROM kv", ()).await.map_err(to_io)?;
         while let Some(row) = rows.next().await.map_err(to_io)? {

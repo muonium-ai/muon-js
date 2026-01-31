@@ -6,7 +6,7 @@ use async_std::sync::{Arc, Mutex};
 use async_std::task;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
-use crate::mini_redis::persist::{Persist, NoopPersist};
+use crate::mini_redis::persist::Persist;
 use crate::mini_redis::store::{Db, Value};
 
 #[derive(Clone)]
@@ -20,15 +20,11 @@ pub struct ServerConfig {
 
 pub struct ServerState {
     dbs: Vec<Db>,
-    persist: Option<Arc<dyn Persist>>,
+    persist: Option<Persist>,
 }
 
 impl ServerState {
-    fn new(databases: usize, persist: Option<Arc<dyn Persist>>) -> Self {
-        let mut dbs = Vec::with_capacity(databases);
-        for _ in 0..databases {
-            dbs.push(Db::new());
-        }
+    fn new(dbs: Vec<Db>, persist: Option<Persist>) -> Self {
         Self { dbs, persist }
     }
 }
@@ -37,13 +33,14 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     let addr = format!("{}:{}", config.bind, config.port);
     let listener = TcpListener::bind(&addr).await?;
     let persist = init_persist(&config).await?;
-    let state = Arc::new(Mutex::new(ServerState::new(config.databases, persist)));
-    {
-        let mut guard = state.lock().await;
-        if let Some(p) = guard.persist.as_ref() {
-            let _ = p.load(&mut guard.dbs).await;
-        }
+    let mut dbs = Vec::with_capacity(config.databases);
+    for _ in 0..config.databases {
+        dbs.push(Db::new());
     }
+    if let Some(p) = persist.as_ref() {
+        let _ = p.load(&mut dbs).await;
+    }
+    let state = Arc::new(Mutex::new(ServerState::new(dbs, persist)));
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
@@ -116,6 +113,7 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
                 let db = &mut state.dbs[*db_index];
                 match db.get(key) {
                     Some(Value::String(v)) => RespValue::Blob(v),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Null,
                 }
             }
@@ -288,12 +286,12 @@ fn build_cmd(cmd: &str, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
     out
 }
 
-async fn init_persist(config: &ServerConfig) -> io::Result<Option<Arc<dyn Persist>>> {
+async fn init_persist(config: &ServerConfig) -> io::Result<Option<Persist>> {
     if let Some(path) = config.persist_path.as_ref() {
         #[cfg(feature = "mini-redis-libsql")]
         {
             let p = crate::mini_redis::persist::LibsqlPersist::open(path, config.aof_enabled).await?;
-            return Ok(Some(Arc::new(p)));
+            return Ok(Some(Persist::Libsql(p)));
         }
         #[cfg(not(feature = "mini-redis-libsql"))]
         {
