@@ -215,6 +215,70 @@ impl Db {
         }
     }
 
+    pub fn get_string(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::String(val)) => Ok(Some(val.clone())),
+            Some(_) => Err(()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_string(&mut self, key: Vec<u8>, value: Vec<u8>, expire_at_ms: Option<u64>) {
+        self.set(key, Value::String(value), expire_at_ms);
+    }
+
+    pub fn set_nx(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+        if self.is_expired(&key) {
+            self.remove(&key);
+        }
+        if self.data.contains_key(&key) {
+            return Ok(false);
+        }
+        self.data.insert(key, Value::String(value));
+        Ok(true)
+    }
+
+    pub fn append(&mut self, key: Vec<u8>, value: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(&key) {
+            self.remove(&key);
+        }
+        match self.data.get_mut(&key) {
+            Some(Value::String(buf)) => {
+                buf.extend_from_slice(value);
+                Ok(buf.len() as i64)
+            }
+            Some(_) => Err(()),
+            None => {
+                self.data.insert(key.clone(), Value::String(value.to_vec()));
+                Ok(value.len() as i64)
+            }
+        }
+    }
+
+    pub fn incr_by(&mut self, key: Vec<u8>, delta: i64) -> Result<i64, ()> {
+        if self.is_expired(&key) {
+            self.remove(&key);
+        }
+        match self.data.get_mut(&key) {
+            Some(Value::String(buf)) => {
+                let s = std::str::from_utf8(buf).map_err(|_| ())?;
+                let n: i64 = s.parse().map_err(|_| ())?;
+                let next = n.saturating_add(delta);
+                *buf = next.to_string().into_bytes();
+                Ok(next)
+            }
+            Some(_) => Err(()),
+            None => {
+                let next = delta;
+                self.data.insert(key, Value::String(next.to_string().into_bytes()));
+                Ok(next)
+            }
+        }
+    }
+
     pub fn hash_set(&mut self, key: &[u8], field: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);

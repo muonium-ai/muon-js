@@ -7,7 +7,7 @@ use async_std::task;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
 use crate::mini_redis::persist::Persist;
-use crate::mini_redis::store::{Db, Value};
+use crate::mini_redis::store::Db;
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -111,13 +111,170 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
         "GET" => match args.get(0) {
             Some(key) => {
                 let db = &mut state.dbs[*db_index];
-                match db.get(key) {
-                    Some(Value::String(v)) => RespValue::Blob(v),
-                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-                    None => RespValue::Null,
+                match db.get_string(key) {
+                    Ok(Some(v)) => RespValue::Blob(v),
+                    Ok(None) => RespValue::Null,
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                 }
             }
             None => RespValue::Error("ERR wrong number of arguments for 'GET'".to_string()),
+        },
+        "SETNX" => match args.get(0).zip(args.get(1)) {
+            Some((key, value)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.set_nx(key.clone(), value.clone()) {
+                    Ok(set) => {
+                        if set {
+                            if let Some(p) = state.persist.as_ref() {
+                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                            }
+                        }
+                        RespValue::Integer(if set { 1 } else { 0 })
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'SETNX'".to_string()),
+        },
+        "MSET" => {
+            if args.len() < 2 || args.len() % 2 != 0 {
+                return RespValue::Error("ERR wrong number of arguments for 'MSET'".to_string());
+            }
+            let db = &mut state.dbs[*db_index];
+            let mut idx = 0;
+            while idx + 1 < args.len() {
+                let key = args[idx].clone();
+                let value = args[idx + 1].clone();
+                db.set_string(key, value, None);
+                idx += 2;
+            }
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+            }
+            RespValue::Simple("OK".to_string())
+        }
+        "MGET" => {
+            if args.is_empty() {
+                return RespValue::Error("ERR wrong number of arguments for 'MGET'".to_string());
+            }
+            let db = &mut state.dbs[*db_index];
+            let mut out = Vec::with_capacity(args.len());
+            for key in args {
+                match db.get_string(key) {
+                    Ok(Some(v)) => out.push(RespValue::Blob(v)),
+                    Ok(None) => out.push(RespValue::Null),
+                    Err(_) => return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            RespValue::Array(out)
+        }
+        "GETSET" => match args.get(0).zip(args.get(1)) {
+            Some((key, value)) => {
+                let db = &mut state.dbs[*db_index];
+                let prev = match db.get_string(key) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())
+                    }
+                };
+                db.set_string(key.clone(), value.clone(), None);
+                if let Some(p) = state.persist.as_ref() {
+                    let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                }
+                match prev {
+                    Some(v) => RespValue::Blob(v),
+                    None => RespValue::Null,
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'GETSET'".to_string()),
+        },
+        "APPEND" => match args.get(0).zip(args.get(1)) {
+            Some((key, value)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.append(key.clone(), value) {
+                    Ok(len) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Integer(len)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'APPEND'".to_string()),
+        },
+        "INCR" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.incr_by(key.clone(), 1) {
+                    Ok(val) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Integer(val)
+                    }
+                    Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'INCR'".to_string()),
+        },
+        "INCRBY" => match args.get(0).zip(args.get(1)) {
+            Some((key, delta)) => {
+                let delta = parse_i64(delta).unwrap_or(0);
+                let db = &mut state.dbs[*db_index];
+                match db.incr_by(key.clone(), delta) {
+                    Ok(val) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Integer(val)
+                    }
+                    Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'INCRBY'".to_string()),
+        },
+        "DECR" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.incr_by(key.clone(), -1) {
+                    Ok(val) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Integer(val)
+                    }
+                    Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'DECR'".to_string()),
+        },
+        "DECRBY" => match args.get(0).zip(args.get(1)) {
+            Some((key, delta)) => {
+                let delta = parse_i64(delta).unwrap_or(0);
+                let db = &mut state.dbs[*db_index];
+                match db.incr_by(key.clone(), -delta) {
+                    Ok(val) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Integer(val)
+                    }
+                    Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'DECRBY'".to_string()),
+        },
+        "STRLEN" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.get_string(key) {
+                    Ok(Some(v)) => RespValue::Integer(v.len() as i64),
+                    Ok(None) => RespValue::Integer(0),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'STRLEN'".to_string()),
         },
         "HSET" => {
             if args.len() < 3 || args.len() % 2 == 0 {
@@ -358,7 +515,7 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
                 let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-                db.set(key, Value::String(value), expire_at);
+                db.set_string(key, value, expire_at);
                 if let Some(p) = state.persist.as_ref() {
                     let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
                 }
