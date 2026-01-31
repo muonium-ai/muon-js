@@ -298,7 +298,10 @@ async fn init_persist(config: &ServerConfig) -> io::Result<Option<Arc<dyn Persis
         #[cfg(not(feature = "mini-redis-libsql"))]
         {
             let _ = path;
-            return Ok(Some(Arc::new(NoopPersist)));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "persist requested but mini-redis-libsql feature is not enabled",
+            ));
         }
     }
     Ok(None)
