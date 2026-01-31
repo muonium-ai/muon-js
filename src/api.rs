@@ -54,6 +54,44 @@ fn is_const_binding(ctx: &mut JSContextImpl, env: JSValue, name: &str) -> bool {
     v == Value::TRUE
 }
 
+fn has_top_level_arrow(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == string_delim {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && b == b'=' && bytes[i + 1] == b'>' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Opaque handle to a VM instance.
 pub type JSContextImpl = Context;
 
@@ -1857,6 +1895,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
                 return Some(last);
             }
+        }
+    }
+    if s.contains("=>") && has_top_level_arrow(s) {
+        if let Some(val) = eval_value(ctx, s) {
+            return Some(val);
         }
     }
     // Check for compound assignment operators: +=, -=, *=, /=

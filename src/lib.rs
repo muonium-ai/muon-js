@@ -1426,6 +1426,25 @@ mod tests {
     }
 
     #[test]
+    fn arrow_default_and_rest_params() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let v = eval_ret(&mut ctx, "((a,b)=>a+b)(2,3)");
+        assert_eq!(JS_ToInt32(&mut ctx, v).unwrap(), 5);
+        let v2 = eval_ret(&mut ctx, "((a=2,b=3)=>a+b)()");
+        assert_eq!(JS_ToInt32(&mut ctx, v2).unwrap(), 5);
+        let f = eval_ret(&mut ctx, "(...args)=>args.length");
+        let marker = JS_GetPropertyStr(&mut ctx, f, "__closure__");
+        assert_eq!(marker, JSValue::TRUE);
+        let v3 = eval_ret(&mut ctx, "((...args)=>args.length)(1,2,3)");
+        assert_eq!(JS_ToInt32(&mut ctx, v3).unwrap(), 3);
+        let v4 = eval_ret(&mut ctx, "(x=>x+1)(2)");
+        assert_eq!(JS_ToInt32(&mut ctx, v4).unwrap(), 3);
+        let v5 = eval_ret(&mut ctx, "((x)=>{ return x+1; })(2)");
+        assert_eq!(JS_ToInt32(&mut ctx, v5).unwrap(), 3);
+    }
+
+    #[test]
     fn regexp_methods_test_exec() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

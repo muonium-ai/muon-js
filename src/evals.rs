@@ -9,6 +9,44 @@ use crate::value::*;
 use crate::helpers::*;
 use crate::parser::{create_function, extract_braces, extract_paren, parse_identifier};
 
+fn find_arrow_top_level(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == string_delim {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && b == b'=' && bytes[i + 1] == b'>' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Evaluate a simple value expression (literals, identifiers, etc.)
 pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
@@ -29,6 +67,43 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     if s == "false" {
         return Some(Value::FALSE);
+    }
+    if let Some(pos) = find_arrow_top_level(s) {
+        let (left, right) = s.split_at(pos);
+        let params_src = left.trim();
+        let body_src = right[2..].trim();
+        let params: Vec<String> = if params_src.starts_with('(') {
+            let (inside, rest) = extract_paren(params_src)?;
+            if !rest.trim().is_empty() {
+                return None;
+            }
+            let parts = split_top_level(inside)?;
+            let mut out = Vec::new();
+            for p in parts {
+                let p = p.trim();
+                if !p.is_empty() {
+                    out.push(p.to_string());
+                }
+            }
+            out
+        } else if is_identifier(params_src) {
+            vec![params_src.to_string()]
+        } else if params_src.is_empty() {
+            Vec::new()
+        } else {
+            return None;
+        };
+        let body = if body_src.starts_with('{') {
+            let (block, rest) = extract_braces(body_src)?;
+            if !rest.trim().is_empty() {
+                return None;
+            }
+            block.to_string()
+        } else {
+            format!("return {};", body_src)
+        };
+        let func = create_function(ctx, &params, &body)?;
+        return Some(func);
     }
     if s.starts_with("function") {
         let rest = s[8..].trim_start();

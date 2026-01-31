@@ -1140,7 +1140,7 @@ pub fn split_assignment(src: &str) -> Option<(&str, &str)> {
             b'=' if depth == 0 => {
                 let prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(b'\0');
                 let next = bytes.get(i + 1).copied().unwrap_or(b'\0');
-                if prev == b'=' || next == b'=' || prev == b'!' || prev == b'<' || prev == b'>' {
+                if next == b'>' || prev == b'=' || next == b'=' || prev == b'!' || prev == b'<' || prev == b'>' {
                     continue;
                 }
                 let lhs = src[..i].trim();
@@ -1315,11 +1315,33 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     
     let params_bytes = ctx.string_bytes(params_val)?;
     let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
-    let param_names: Vec<String> = if params_str.is_empty() {
-        Vec::new()
-    } else {
-        params_str.split(',').map(|s| s.trim().to_string()).collect()
-    };
+    #[derive(Clone)]
+    struct ParamSpec {
+        name: String,
+        default: Option<String>,
+        rest: bool,
+    }
+    let mut param_specs: Vec<ParamSpec> = Vec::new();
+    if !params_str.is_empty() {
+        for raw in params_str.split(',') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if raw.starts_with("...") {
+                let name = raw[3..].trim().to_string();
+                param_specs.push(ParamSpec { name, default: None, rest: true });
+                break;
+            }
+            if let Some(eq_pos) = raw.find('=') {
+                let name = raw[..eq_pos].trim().to_string();
+                let default = raw[eq_pos + 1..].trim().to_string();
+                param_specs.push(ParamSpec { name, default: Some(default), rest: false });
+            } else {
+                param_specs.push(ParamSpec { name: raw.to_string(), default: None, rest: false });
+            }
+        }
+    }
     
     let body_bytes = ctx.string_bytes(body_val)?;
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
@@ -1331,9 +1353,25 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     ctx.push_env(env);
     predeclare_block_bindings(ctx, &body_str);
 
-    for (i, param_name) in param_names.iter().enumerate() {
-        let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
-        js_set_property_str(ctx, env, param_name, arg_val);
+    let mut arg_index = 0usize;
+    for spec in &param_specs {
+        if spec.rest {
+            let remaining = &args[arg_index..];
+            let arr = js_new_array(ctx, remaining.len() as i32);
+            for (i, val) in remaining.iter().enumerate() {
+                let _ = js_set_property_uint32(ctx, arr, i as u32, *val);
+            }
+            js_set_property_str(ctx, env, &spec.name, arr);
+            break;
+        }
+        let mut arg_val = args.get(arg_index).copied().unwrap_or(Value::UNDEFINED);
+        if arg_val == Value::UNDEFINED {
+            if let Some(expr) = &spec.default {
+                arg_val = eval_expr(ctx, expr).unwrap_or(Value::UNDEFINED);
+            }
+        }
+        js_set_property_str(ctx, env, &spec.name, arg_val);
+        arg_index += 1;
     }
     
     let result = eval_function_body(ctx, &body_str);
