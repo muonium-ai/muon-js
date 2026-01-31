@@ -4,6 +4,7 @@ use async_std::io::{self, BufReader};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
+use async_std::channel::Sender;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
 use crate::mini_redis::persist::Persist;
@@ -21,11 +22,16 @@ pub struct ServerConfig {
 pub struct ServerState {
     dbs: Vec<Db>,
     persist: Option<Persist>,
+    pubsub: std::collections::HashMap<Vec<u8>, Vec<Sender<RespValue>>>,
 }
 
 impl ServerState {
     fn new(dbs: Vec<Db>, persist: Option<Persist>) -> Self {
-        Self { dbs, persist }
+        Self {
+            dbs,
+            persist,
+            pubsub: std::collections::HashMap::new(),
+        }
     }
 }
 
@@ -56,6 +62,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
     let mut current_db: usize = 0;
     let mut in_multi = false;
     let mut queued: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+    let (pub_tx, pub_rx) = async_std::channel::unbounded::<RespValue>();
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -74,7 +81,11 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             continue;
         }
         let cmd = to_upper_ascii(&args[0]);
-        let resp = if in_multi && cmd != "EXEC" && cmd != "DISCARD" && cmd != "MULTI" {
+        let resp = if cmd == "SUBSCRIBE" {
+            handle_subscribe(&state, &pub_tx, &args[1..]).await
+        } else if cmd == "PUBLISH" {
+            handle_publish(&state, &args[1..]).await
+        } else if in_multi && cmd != "EXEC" && cmd != "DISCARD" && cmd != "MULTI" {
             queued.push((cmd.clone(), args[1..].to_vec()));
             RespValue::Simple("QUEUED".to_string())
         } else if cmd == "MULTI" {
@@ -111,11 +122,67 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             handle_command(&mut guard, &mut current_db, &cmd, &args[1..]).await
         };
         write_value(&mut &stream, &resp).await?;
+        while let Ok(msg) = pub_rx.try_recv() {
+            let _ = write_value(&mut &stream, &msg).await;
+        }
         if cmd == "QUIT" {
             let _ = peer;
             return Ok(());
         }
     }
+}
+
+async fn handle_subscribe(
+    state: &Arc<Mutex<ServerState>>,
+    sender: &Sender<RespValue>,
+    channels: &[Vec<u8>],
+) -> RespValue {
+    if channels.is_empty() {
+        return RespValue::Error("ERR wrong number of arguments for 'SUBSCRIBE'".to_string());
+    }
+    let mut guard = state.lock().await;
+    let mut count = 0;
+    for channel in channels {
+        let entry = guard.pubsub.entry(channel.clone()).or_default();
+        entry.push(sender.clone());
+        count += 1;
+    }
+    let channel = channels[0].clone();
+    RespValue::Array(vec![
+        RespValue::Blob(b"subscribe".to_vec()),
+        RespValue::Blob(channel),
+        RespValue::Integer(count),
+    ])
+}
+
+async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Vec<u8>]) -> RespValue {
+    if args.len() != 2 {
+        return RespValue::Error("ERR wrong number of arguments for 'PUBLISH'".to_string());
+    }
+    let channel = args[0].clone();
+    let message = args[1].clone();
+    let mut receivers = Vec::new();
+    {
+        let guard = state.lock().await;
+        if let Some(list) = guard.pubsub.get(&channel) {
+            receivers.extend(list.iter().cloned());
+        }
+    }
+    let mut delivered = 0;
+    for tx in receivers {
+        if tx
+            .send(RespValue::Array(vec![
+                RespValue::Blob(b"message".to_vec()),
+                RespValue::Blob(channel.clone()),
+                RespValue::Blob(message.clone()),
+            ]))
+            .await
+            .is_ok()
+        {
+            delivered += 1;
+        }
+    }
+    RespValue::Integer(delivered)
 }
 
 async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args: &[Vec<u8>]) -> RespValue {

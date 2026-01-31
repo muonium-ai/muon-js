@@ -134,9 +134,9 @@ TESTS = [
     ("KEYS", ["KEYS", "*"], lambda r: r[0] == "array"),
     ("SCAN", ["SCAN", "0"], lambda r: r[0] == "array" and len(r[1]) == 2),
     # Expire
-    ("EXPIRE (expected fail for now)", ["EXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
-    ("PEXPIRE (expected fail for now)", ["PEXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
-    ("PTTL (expected fail for now)", ["PTTL", "b"], lambda r: r[0] in ("int", "error")),
+    ("EXPIRE", ["EXPIRE", "b", "10"], lambda r: r[0] == "int"),
+    ("PEXPIRE", ["PEXPIRE", "b", "1000"], lambda r: r[0] == "int"),
+    ("PTTL", ["PTTL", "b"], lambda r: r[0] == "int" and r[1] >= 0),
     ("PERSIST", ["PERSIST", "b"], expect_int(1)),
     ("PTTL after PERSIST", ["PTTL", "b"], expect_int(-1)),
     # String ops
@@ -185,8 +185,6 @@ TESTS = [
     ("XADD", ["XADD", "s", "*", "f", "v"], lambda r: r[0] == "blob"),
     ("XRANGE", ["XRANGE", "s", "-", "+"], lambda r: r[0] == "array" and len(r[1]) >= 1),
     # Pub/Sub
-    ("SUBSCRIBE (expected fail for now)", ["SUBSCRIBE", "c"], expect_error()),
-    ("PUBLISH (expected fail for now)", ["PUBLISH", "c", "msg"], expect_error()),
     # Transactions
     ("MULTI", ["MULTI"], expect_simple("OK")),
     ("MULTI SET", ["SET", "tx", "1"], expect_simple("QUEUED")),
@@ -210,6 +208,8 @@ TESTS = [
     ("REPLICAOF (expected fail for now)", ["REPLICAOF", "NO", "ONE"], expect_error()),
     ("FLUSHDB", ["FLUSHDB"], expect_simple("OK")),
     ("FLUSHALL", ["FLUSHALL"], expect_simple("OK")),
+    ("SUBSCRIBE", ["SUBSCRIBE", "c"], lambda r: r[0] == "array"),
+    ("PUBLISH", ["PUBLISH", "c", "msg"], expect_int(1)),
 ]
 
 
