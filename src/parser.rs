@@ -7,7 +7,6 @@ use crate::api::*;
 use crate::types::*;
 use crate::value::*;
 use crate::evals::*;
-use std::collections::HashSet;
 
 /// LValue key type for property access
 pub enum LValueKey {
@@ -52,9 +51,9 @@ pub fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<
     // Create a closure object
     let func = create_function(ctx, &params, body)?;
     
-    // Store function in global object
-    let global = js_get_global_object(ctx);
-    js_set_property_str(ctx, global, name, func);
+    // Store function in current environment
+    let env = ctx.current_env();
+    js_set_property_str(ctx, env, name, func);
     
     Some(func)
 }
@@ -389,11 +388,11 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
             if let Some(len_val) = ctx.get_property_str(iter_val, b"length") {
                 if let Some(len) = len_val.int32() {
                     let mut last = Value::UNDEFINED;
-                    let global = js_get_global_object(ctx);
+                    let env = ctx.current_env();
 
                     for i in 0..len {
                         let elem = js_get_property_uint32(ctx, iter_val, i as u32);
-                        js_set_property_str(ctx, global, var_name, elem);
+                        js_set_property_str(ctx, env, var_name, elem);
                         last = eval_function_body(ctx, body)?;
 
                         match ctx.get_loop_control() {
@@ -441,11 +440,11 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
     let keys = get_object_keys(ctx, obj_val)?;
 
     let mut last = Value::UNDEFINED;
-    let global = js_get_global_object(ctx);
+    let env = ctx.current_env();
 
     for key in keys {
         let key_val = js_new_string(ctx, &key);
-        js_set_property_str(ctx, global, var_name, key_val);
+        js_set_property_str(ctx, env, var_name, key_val);
 
         last = eval_function_body(ctx, body)?;
 
@@ -683,15 +682,20 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 let exception_val = ctx.get_exception();
                 ctx.set_exception(Value::UNDEFINED);
 
+                let parent_env = ctx.current_env();
+                let catch_env = js_new_object(ctx);
+                js_set_property_str(ctx, catch_env, "__parent__", parent_env);
+                ctx.push_env(catch_env);
                 if let Some(param) = catch_param {
-                    let global = ctx.global_object();
-                    js_set_property_str(ctx, global, param, exception_val);
+                    js_set_property_str(ctx, catch_env, param, exception_val);
                 }
 
-                match eval_function_body(ctx, body) {
+                let out = match eval_function_body(ctx, body) {
                     Some(v) => v,
                     None => return None,
-                }
+                };
+                ctx.pop_env();
+                out
             } else {
                 val
             }
@@ -701,15 +705,20 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if let Some(body) = catch_body {
                 ctx.set_exception(Value::UNDEFINED);
 
+                let parent_env = ctx.current_env();
+                let catch_env = js_new_object(ctx);
+                js_set_property_str(ctx, catch_env, "__parent__", parent_env);
+                ctx.push_env(catch_env);
                 if let Some(param) = catch_param {
-                    let global = ctx.global_object();
-                    js_set_property_str(ctx, global, param, Value::UNDEFINED);
+                    js_set_property_str(ctx, catch_env, param, Value::UNDEFINED);
                 }
 
-                match eval_function_body(ctx, body) {
+                let out = match eval_function_body(ctx, body) {
                     Some(v) => v,
                     None => return None,
-                }
+                };
+                ctx.pop_env();
+                out
             } else {
                 return None;
             }
@@ -940,11 +949,13 @@ pub fn parse_lvalue(ctx: &mut JSContextImpl, src: &str) -> Option<(JSValue, LVal
     let s = src.trim();
     let (base_str, tail) = split_base_and_tail(s)?;
     let mut base = if is_identifier(base_str) {
-        let global = js_get_global_object(ctx);
         if tail.trim().is_empty() {
-            return Some((global, LValueKey::Name(base_str.to_string())));
+            let env = ctx
+                .resolve_binding_env(base_str)
+                .unwrap_or_else(|| ctx.current_env());
+            return Some((env, LValueKey::Name(base_str.to_string())));
         }
-        js_get_property_str(ctx, global, base_str)
+        ctx.resolve_binding_value(base_str)
     } else {
         eval_value(ctx, base_str)?
     };
@@ -1204,142 +1215,6 @@ pub fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
     Some((s, ""))
 }
 
-fn collect_free_vars(body: &str, params: &[String]) -> Vec<String> {
-    let mut locals: HashSet<String> = params.iter().cloned().collect();
-    let mut used: HashSet<String> = HashSet::new();
-    let keywords: HashSet<&str> = [
-        "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return",
-        "throw", "try", "catch", "finally", "var", "let", "const", "function", "new", "this",
-        "null", "true", "false", "undefined", "typeof", "in", "of", "instanceof", "delete",
-        "void", "yield", "await",
-    ]
-    .into_iter()
-    .collect();
-    let mut decl_mode = false;
-    let mut expect_func_name = false;
-    let mut wait_func_paren = false;
-    let mut func_param_depth: i32 = 0;
-    let bytes = body.as_bytes();
-    let mut i = 0usize;
-    let mut in_string = false;
-    let mut string_delim = 0u8;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut prev_non_ws: Option<u8> = None;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_line_comment {
-            if b == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_block_comment {
-            if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        if in_string {
-            if b == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if b == string_delim {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'/' && i + 1 < bytes.len() {
-            if bytes[i + 1] == b'/' {
-                in_line_comment = true;
-                i += 2;
-                continue;
-            }
-            if bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-        }
-        if b == b'\'' || b == b'\"' {
-            in_string = true;
-            string_delim = b;
-            i += 1;
-            continue;
-        }
-        if func_param_depth > 0 {
-            if b == b'(' {
-                func_param_depth += 1;
-            } else if b == b')' {
-                func_param_depth -= 1;
-            }
-            i += 1;
-            continue;
-        }
-        if wait_func_paren && b == b'(' {
-            wait_func_paren = false;
-            func_param_depth = 1;
-            i += 1;
-            continue;
-        }
-        if is_ident_start(b) {
-            let start = i;
-            i += 1;
-            while i < bytes.len() {
-                let c = bytes[i];
-                if is_ident_start(c) || (b'0'..=b'9').contains(&c) {
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
-            let name = &body[start..i];
-            if keywords.contains(name) {
-                if name == "var" || name == "let" || name == "const" {
-                    decl_mode = true;
-                } else if name == "function" {
-                    expect_func_name = true;
-                    wait_func_paren = true;
-                    decl_mode = false;
-                }
-                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
-                continue;
-            }
-            if expect_func_name {
-                locals.insert(name.to_string());
-                expect_func_name = false;
-                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
-                continue;
-            }
-            if decl_mode {
-                locals.insert(name.to_string());
-                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
-                continue;
-            }
-            if prev_non_ws != Some(b'.') {
-                used.insert(name.to_string());
-            }
-            prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
-            continue;
-        }
-        if b == b';' || b == b'\n' {
-            decl_mode = false;
-        }
-        if !b.is_ascii_whitespace() {
-            prev_non_ws = Some(b);
-        }
-        i += 1;
-    }
-    used.retain(|name| !locals.contains(name));
-    used.into_iter().collect()
-}
-
 /// Create a function object with parameters and body
 pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
     let params_str = params.join(",");
@@ -1353,14 +1228,7 @@ pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -
     js_set_property_str(ctx, func, "__body__", body_val);
     js_set_property_str(ctx, func, "__closure__", Value::TRUE);
 
-    let env = js_new_object(ctx);
-    let global = js_get_global_object(ctx);
-    for key in collect_free_vars(body, params) {
-        if ctx.has_property_str(global, key.as_bytes()) {
-            let val = js_get_property_str(ctx, global, &key);
-            js_set_property_str(ctx, env, &key, val);
-        }
-    }
+    let env = ctx.current_env();
     js_set_property_str(ctx, func, "__env__", env);
     
     Some(func)
@@ -1370,7 +1238,6 @@ pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -
 pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Option<JSValue> {
     let params_val = js_get_property_str(ctx, func, "__params__");
     let body_val = js_get_property_str(ctx, func, "__body__");
-    let env_val = js_get_property_str(ctx, func, "__env__");
     
     let params_bytes = ctx.string_bytes(params_val)?;
     let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
@@ -1383,33 +1250,14 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     let body_bytes = ctx.string_bytes(body_val)?;
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
     
-    let saved_global = js_get_global_object(ctx);
-    let mut saved_env = Vec::new();
-    if let Some(keys) = get_object_keys(ctx, env_val) {
-        for key in keys {
-            let had = ctx.has_property_str(saved_global, key.as_bytes());
-            let old = if had {
-                js_get_property_str(ctx, saved_global, &key)
-            } else {
-                Value::UNDEFINED
-            };
-            saved_env.push((key.clone(), had, old));
-            let val = js_get_property_str(ctx, env_val, &key);
-            js_set_property_str(ctx, saved_global, &key, val);
-        }
-    }
+    let parent_env = js_get_property_str(ctx, func, "__env__");
+    let env = js_new_object(ctx);
+    js_set_property_str(ctx, env, "__parent__", parent_env);
+    ctx.push_env(env);
 
-    let mut saved = Vec::with_capacity(param_names.len());
     for (i, param_name) in param_names.iter().enumerate() {
         let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
-        let had = ctx.has_property_str(saved_global, param_name.as_bytes());
-        let old = if had {
-            js_get_property_str(ctx, saved_global, param_name)
-        } else {
-            Value::UNDEFINED
-        };
-        saved.push((param_name.clone(), had, old));
-        js_set_property_str(ctx, saved_global, param_name, arg_val);
+        js_set_property_str(ctx, env, param_name, arg_val);
     }
     
     let result = eval_function_body(ctx, &body_str);
@@ -1418,21 +1266,7 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
         ctx.set_loop_control(crate::context::LoopControl::None);
     }
 
-    for (name, had, old) in saved {
-        if had {
-            js_set_property_str(ctx, saved_global, &name, old);
-        } else {
-            js_set_property_str(ctx, saved_global, &name, Value::UNDEFINED);
-        }
-    }
-
-    for (name, had, old) in saved_env {
-        if had {
-            js_set_property_str(ctx, saved_global, &name, old);
-        } else {
-            js_set_property_str(ctx, saved_global, &name, Value::UNDEFINED);
-        }
-    }
+    ctx.pop_env();
     
     result
 }

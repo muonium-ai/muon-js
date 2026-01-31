@@ -66,6 +66,11 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return Some(func);
     }
     let global = js_get_global_object(ctx);
+    if is_identifier(s) {
+        if let Some((_, val)) = ctx.resolve_binding(s) {
+            return Some(val);
+        }
+    }
     let mut builtin_or_global = |name: &str, marker: &str| -> JSValue {
         let val = js_get_property_str(ctx, global, name);
         if val.is_undefined() && !ctx.has_property_str(global, name.as_bytes()) {

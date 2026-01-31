@@ -33,6 +33,7 @@ pub struct Context {
     array_pop_fn: Value,
     loop_control: LoopControl,
     return_value: Value,
+    env_stack: Vec<Value>,
     gc_objects: Vec<*mut u8>,
     gc_marks: Vec<*mut u8>,
     rom_atom_tables: Vec<Value>,
@@ -66,6 +67,7 @@ impl Context {
             array_push_fn: Value::UNDEFINED,
             array_pop_fn: Value::UNDEFINED,
             loop_control: LoopControl::None,
+            env_stack: Vec::new(),
             gc_objects: Vec::new(),
             gc_marks: Vec::new(),
             rom_atom_tables: Vec::new(),
@@ -140,6 +142,59 @@ impl Context {
 
     pub fn get_return_value(&self) -> Value {
         self.return_value
+    }
+
+    pub fn current_env(&self) -> Value {
+        match self.env_stack.last() {
+            Some(env) => *env,
+            None => self.global_object,
+        }
+    }
+
+    pub fn push_env(&mut self, env: Value) {
+        self.env_stack.push(env);
+    }
+
+    pub fn pop_env(&mut self) {
+        self.env_stack.pop();
+    }
+
+    pub fn resolve_binding(&mut self, name: &str) -> Option<(Value, Value)> {
+        let mut env = self.current_env();
+        let global = self.global_object;
+        loop {
+            if self.has_property_str(env, name.as_bytes()) {
+                let val = self.get_property_str(env, name.as_bytes()).unwrap_or(Value::UNDEFINED);
+                return Some((env, val));
+            }
+            if env == global {
+                break;
+            }
+            let parent = self
+                .get_property_str(env, b"__parent__")
+                .unwrap_or(Value::UNDEFINED);
+            if parent.is_undefined() {
+                break;
+            }
+            env = parent;
+        }
+        if self.has_property_str(global, name.as_bytes()) {
+            let val = self
+                .get_property_str(global, name.as_bytes())
+                .unwrap_or(Value::UNDEFINED);
+            return Some((global, val));
+        }
+        None
+    }
+
+    pub fn resolve_binding_env(&mut self, name: &str) -> Option<Value> {
+        self.resolve_binding(name).map(|(env, _)| env)
+    }
+
+    pub fn resolve_binding_value(&mut self, name: &str) -> Value {
+        self.resolve_binding(name)
+            .map(|(_, val)| val)
+            .unwrap_or(Value::UNDEFINED)
     }
 
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
@@ -242,6 +297,10 @@ impl Context {
         self.gc_clear_marks();
         let mut stack = Vec::new();
         self.gc_mark_value(self.global_object, &mut stack);
+        let envs = self.env_stack.clone();
+        for env in envs {
+            self.gc_mark_value(env, &mut stack);
+        }
         let call_stack = self.call_stack.clone();
         for val in call_stack {
             self.gc_mark_value(val, &mut stack);

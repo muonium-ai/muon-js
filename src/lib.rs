@@ -107,6 +107,30 @@ mod tests {
     }
 
     #[test]
+    fn closure_lexical_chain() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(){ var x=1; function inner(){ return x; } x=2; return inner(); } outer()",
+        );
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 2);
+    }
+
+    #[test]
+    fn closure_shadowing() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(){ var x=1; return function(){ var x=2; return x; }; } var f=outer(); f()",
+        );
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 2);
+    }
+
+    #[test]
     fn to_number_strings() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

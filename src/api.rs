@@ -1786,8 +1786,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             let init_expr = rest[eq_pos + 1..].trim();
             if is_identifier(var_name) {
                 let val = eval_expr(ctx, init_expr)?;
-                let global = js_get_global_object(ctx);
-                js_set_property_str(ctx, global, var_name, val);
+                let env = ctx.current_env();
+                js_set_property_str(ctx, env, var_name, val);
                 return Some(Value::UNDEFINED);
             }
         } else {
@@ -1796,8 +1796,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if kind == "const" {
                     return Some(js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "const declarations require initialization"));
                 }
-                let global = js_get_global_object(ctx);
-                js_set_property_str(ctx, global, rest, Value::UNDEFINED);
+                let env = ctx.current_env();
+                js_set_property_str(ctx, env, rest, Value::UNDEFINED);
                 return Some(Value::UNDEFINED);
             }
         }
@@ -1886,15 +1886,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.ends_with("++") || s.ends_with("--") {
         let var_name = &s[..s.len() - 2].trim();
         if is_identifier(var_name) {
-            let global = js_get_global_object(ctx);
-            let old_val = js_get_property_str(ctx, global, var_name);
+            let env = ctx
+                .resolve_binding_env(var_name)
+                .unwrap_or_else(|| ctx.current_env());
+            let old_val = js_get_property_str(ctx, env, var_name);
             let n = js_to_number(ctx, old_val).ok()?;
             let new_val = if s.ends_with("++") {
                 number_to_value(ctx, n + 1.0)
             } else {
                 number_to_value(ctx, n - 1.0)
             };
-            js_set_property_str(ctx, global, var_name, new_val);
+            js_set_property_str(ctx, env, var_name, new_val);
             return Some(old_val); // postfix returns old value
         }
     }
@@ -1902,15 +1904,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.starts_with("++") || s.starts_with("--") {
         let var_name = &s[2..].trim();
         if is_identifier(var_name) {
-            let global = js_get_global_object(ctx);
-            let old_val = js_get_property_str(ctx, global, var_name);
+            let env = ctx
+                .resolve_binding_env(var_name)
+                .unwrap_or_else(|| ctx.current_env());
+            let old_val = js_get_property_str(ctx, env, var_name);
             let n = js_to_number(ctx, old_val).ok()?;
             let new_val = if s.starts_with("++") {
                 number_to_value(ctx, n + 1.0)
             } else {
                 number_to_value(ctx, n - 1.0)
             };
-            js_set_property_str(ctx, global, var_name, new_val);
+            js_set_property_str(ctx, env, var_name, new_val);
             return Some(new_val); // prefix returns new value
         }
     }
@@ -1965,9 +1969,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 }
                 let v = eval_expr(ctx, arg_trim)?;
                 if v.is_undefined() && is_identifier(arg_trim) {
-                    let global = js_get_global_object(ctx);
-                    if ctx.has_property_str(global, arg_trim.as_bytes()) {
-                        let gv = js_get_property_str(ctx, global, arg_trim);
+                    if let Some((_, gv)) = ctx.resolve_binding(arg_trim) {
                         args.push(gv);
                         continue;
                     }
@@ -5495,6 +5497,15 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
                 if ctx.get_loop_control() != crate::context::LoopControl::None {
                     return Some(last);
                 }
+                continue;
+            }
+            return None;
+        }
+
+        // Check for function declaration
+        if trimmed.starts_with("function ") {
+            if let Some(val) = parse_function_declaration(ctx, trimmed) {
+                last = val;
                 continue;
             }
             return None;
