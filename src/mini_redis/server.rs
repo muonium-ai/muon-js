@@ -34,6 +34,7 @@ pub struct ServerState {
     dbs: Vec<Db>,
     persist: Option<Persist>,
     pubsub: std::collections::HashMap<Vec<u8>, Vec<Sender<RespValue>>>,
+    script_cache: std::collections::HashMap<String, String>,
 }
 
 impl ServerState {
@@ -42,6 +43,7 @@ impl ServerState {
             dbs,
             persist,
             pubsub: std::collections::HashMap::new(),
+            script_cache: std::collections::HashMap::new(),
         }
     }
 }
@@ -911,9 +913,15 @@ async fn handle_command(
             if script.is_none() {
                 *script = Some(ScriptRuntime::new());
             }
-            eval_script(state, db_index, script.as_mut().unwrap(), args)
+            eval_script(state, db_index, script.as_mut().unwrap(), args, true)
         }
-        "EVALSHA" | "SCRIPT" => RespValue::Error("ERR scripting not implemented".to_string()),
+        "EVALSHA" => {
+            if script.is_none() {
+                *script = Some(ScriptRuntime::new());
+            }
+            eval_script_sha(state, db_index, script.as_mut().unwrap(), args)
+        }
+        "SCRIPT" => handle_script_command(state, args),
         "CONFIG" => {
             if args.len() >= 1 && to_upper_ascii(&args[0]) == "GET" {
                 RespValue::Array(Vec::new())
@@ -948,6 +956,7 @@ fn eval_script(
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     args: &[Vec<u8>],
+    cache: bool,
 ) -> RespValue {
     if args.len() < 2 {
         return RespValue::Error("ERR wrong number of arguments for 'EVAL'".to_string());
@@ -956,6 +965,10 @@ fn eval_script(
         Ok(s) => s,
         Err(_) => return RespValue::Error("ERR invalid script".to_string()),
     };
+    if cache {
+        let sha = sha1_hex(script.as_bytes());
+        state.script_cache.insert(sha, script.to_string());
+    }
     let numkeys = match parse_usize(&args[1]) {
         Some(n) => n,
         None => return RespValue::Error("ERR invalid number of keys".to_string()),
@@ -981,6 +994,107 @@ fn eval_script(
         return RespValue::Error(msg);
     }
     js_to_resp(ctx, result)
+}
+
+fn eval_script_sha(
+    state: &mut ServerState,
+    db_index: &mut usize,
+    script_runtime: &mut ScriptRuntime,
+    args: &[Vec<u8>],
+) -> RespValue {
+    if args.len() < 2 {
+        return RespValue::Error("ERR wrong number of arguments for 'EVALSHA'".to_string());
+    }
+    let sha = match std::str::from_utf8(&args[0]) {
+        Ok(s) => s,
+        Err(_) => return RespValue::Error("ERR invalid script".to_string()),
+    };
+    let script = match state.script_cache.get(sha) {
+        Some(s) => s.clone(),
+        None => return RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string()),
+    };
+    let mut new_args = Vec::with_capacity(args.len());
+    new_args.push(script.into_bytes());
+    new_args.extend_from_slice(&args[1..]);
+    eval_script(state, db_index, script_runtime, &new_args, false)
+}
+
+fn handle_script_command(state: &mut ServerState, args: &[Vec<u8>]) -> RespValue {
+    if args.len() < 1 {
+        return RespValue::Error("ERR wrong number of arguments for 'SCRIPT'".to_string());
+    }
+    let sub = to_upper_ascii(&args[0]);
+    match sub.as_str() {
+        "LOAD" => {
+            if args.len() != 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'SCRIPT LOAD'".to_string());
+            }
+            let script = match std::str::from_utf8(&args[1]) {
+                Ok(s) => s,
+                Err(_) => return RespValue::Error("ERR invalid script".to_string()),
+            };
+            let sha = sha1_hex(script.as_bytes());
+            state.script_cache.insert(sha.clone(), script.to_string());
+            RespValue::Blob(sha.into_bytes())
+        }
+        _ => RespValue::Error("ERR unknown subcommand for SCRIPT".to_string()),
+    }
+}
+
+fn sha1_hex(input: &[u8]) -> String {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+    let mut msg = input.to_vec();
+    let bit_len = (msg.len() as u64) * 8;
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in w.iter_mut().take(16).enumerate() {
+            let start = i * 4;
+            *word = u32::from_be_bytes([chunk[start], chunk[start + 1], chunk[start + 2], chunk[start + 3]]);
+        }
+        for i in 16..80 {
+            let v = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+            w[i] = v.rotate_left(1);
+        }
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+    format!("{:08x}{:08x}{:08x}{:08x}{:08x}", h0, h1, h2, h3, h4)
 }
 
 struct ScriptRuntime {

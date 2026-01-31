@@ -197,8 +197,8 @@ TESTS = [
     ("EVAL", ["EVAL", "return 1", "0"], expect_int(1)),
     ("EVAL redis.call", ["EVAL", "return redis.call('SET', KEYS[0], ARGV[0])", "1", "evalkey", "evalval"], lambda r: (r[0] in ("simple", "blob") and r[1] == b"OK") or (r[0] == "simple" and r[1] == "OK")),
     ("GET evalkey", ["GET", "evalkey"], expect_blob(b"evalval")),
-    ("EVALSHA (expected fail for now)", ["EVALSHA", "deadbeef", "0"], expect_error()),
-    ("SCRIPT (expected fail for now)", ["SCRIPT", "LOAD", "return 1"], expect_error()),
+    ("SCRIPT LOAD", ["SCRIPT", "LOAD", "return 2"], lambda r: r[0] == "blob"),
+    ("EVALSHA", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_int(2)),
     ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
     # Server / config
     ("CONFIG GET", ["CONFIG", "GET", "*"], lambda r: r[0] == "array"),
@@ -229,9 +229,21 @@ def main():
 
     passed = 0
     failed = 0
+    last_script_sha = None
     for name, cmd, check in TESTS:
+        if cmd and cmd[0] == "EVALSHA":
+            if last_script_sha is None:
+                failed += 1
+                print(f"FAIL {name:30} -> missing SCRIPT LOAD sha")
+                continue
+            cmd = [cmd[0], last_script_sha] + cmd[2:]
         sock.sendall(resp_encode(cmd))
         resp = resp_read(sock)
+        if name == "SCRIPT LOAD" and resp is not None and resp[0] == "blob":
+            try:
+                last_script_sha = resp[1].decode()
+            except Exception:
+                last_script_sha = None
         if resp is None:
             failed += 1
             print(f"FAIL {name:30} -> no response (connection closed)")
