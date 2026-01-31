@@ -14,6 +14,17 @@ pub enum LValueKey {
     Name(String),
 }
 
+fn eval_block(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
+    let parent = ctx.current_env();
+    let env = js_new_object(ctx);
+    js_set_property_str(ctx, env, "__parent__", parent);
+    js_set_property_str(ctx, env, "__block__", Value::TRUE);
+    ctx.push_env(env);
+    let result = eval_function_body(ctx, body);
+    ctx.pop_env();
+    result
+}
+
 /// Parse function declaration: "function name(params) { body }"
 /// Stores the function in the global object.
 pub fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
@@ -224,14 +235,14 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
     
     // Execute appropriate block
     if is_true {
-        let result = eval_function_body(ctx, then_block)?;
+        let result = eval_block(ctx, then_block)?;
         // Propagate return control
         if ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
         }
         Some(result)
     } else if let Some(else_body) = else_block {
-        let result = eval_function_body(ctx, else_body)?;
+        let result = eval_block(ctx, else_body)?;
         // Propagate return control
         if ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
@@ -286,7 +297,7 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         
         // Execute body
-        last = eval_function_body(ctx, body)?;
+        last = eval_block(ctx, body)?;
         
         // Check for loop control
         match ctx.get_loop_control() {
@@ -381,6 +392,12 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
     }
     let (body, _) = extract_braces(after_header)?;
 
+    let loop_parent = ctx.current_env();
+    let loop_env = js_new_object(ctx);
+    js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
+    js_set_property_str(ctx, loop_env, "__block__", Value::TRUE);
+    ctx.push_env(loop_env);
+
     let iter_val = eval_expr(ctx, iter_expr)?;
 
     if let Some(class_id) = ctx.object_class_id(iter_val) {
@@ -388,12 +405,16 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
             if let Some(len_val) = ctx.get_property_str(iter_val, b"length") {
                 if let Some(len) = len_val.int32() {
                     let mut last = Value::UNDEFINED;
-                    let env = ctx.current_env();
+                    let env = if var_part.starts_with("var ") {
+                        ctx.current_var_env()
+                    } else {
+                        ctx.current_env()
+                    };
 
                     for i in 0..len {
                         let elem = js_get_property_uint32(ctx, iter_val, i as u32);
                         js_set_property_str(ctx, env, var_name, elem);
-                        last = eval_function_body(ctx, body)?;
+                        last = eval_block(ctx, body)?;
 
                         match ctx.get_loop_control() {
                             crate::context::LoopControl::Break => {
@@ -405,18 +426,21 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
                                 continue;
                             }
                             crate::context::LoopControl::Return => {
+                                ctx.pop_env();
                                 return Some(last);
                             }
                             crate::context::LoopControl::None => {}
                         }
                     }
 
+                    ctx.pop_env();
                     return Some(last);
                 }
             }
         }
     }
 
+    ctx.pop_env();
     Some(Value::UNDEFINED)
 }
 
@@ -436,17 +460,27 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
     }
     let (body, _) = extract_braces(after_header)?;
 
+    let loop_parent = ctx.current_env();
+    let loop_env = js_new_object(ctx);
+    js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
+    js_set_property_str(ctx, loop_env, "__block__", Value::TRUE);
+    ctx.push_env(loop_env);
+
     let obj_val = eval_expr(ctx, obj_expr)?;
     let keys = get_object_keys(ctx, obj_val)?;
 
     let mut last = Value::UNDEFINED;
-    let env = ctx.current_env();
+    let env = if var_part.starts_with("var ") {
+        ctx.current_var_env()
+    } else {
+        ctx.current_env()
+    };
 
     for key in keys {
         let key_val = js_new_string(ctx, &key);
         js_set_property_str(ctx, env, var_name, key_val);
 
-        last = eval_function_body(ctx, body)?;
+        last = eval_block(ctx, body)?;
 
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -463,6 +497,7 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
         }
     }
 
+    ctx.pop_env();
     Some(last)
 }
 
@@ -523,6 +558,12 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     let (body, _) = extract_braces(after_header)?;
     
+    let loop_parent = ctx.current_env();
+    let loop_env = js_new_object(ctx);
+    js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
+    js_set_property_str(ctx, loop_env, "__block__", Value::TRUE);
+    ctx.push_env(loop_env);
+
     if !init.is_empty() {
         eval_expr(ctx, init)?;
     }
@@ -544,7 +585,7 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
         }
         
-        last = eval_function_body(ctx, body)?;
+        last = eval_block(ctx, body)?;
         
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -565,6 +606,7 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
     }
     
+    ctx.pop_env();
     Some(last)
 }
 
@@ -597,7 +639,7 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
     }
     let (condition, _) = extract_paren(after_while)?;
 
-    let mut last = eval_function_body(ctx, body)?;
+    let mut last = eval_block(ctx, body)?;
     loop {
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -617,7 +659,7 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
         if !is_truthy(cond_val) {
             break;
         }
-        last = eval_function_body(ctx, body)?;
+        last = eval_block(ctx, body)?;
     }
 
     Some(last)
@@ -674,7 +716,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return None;
     }
 
-    let try_result = eval_function_body(ctx, try_body);
+    let try_result = eval_block(ctx, try_body);
 
     let mut result = match try_result {
         Some(val) if val.is_exception() => {
@@ -690,7 +732,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     js_set_property_str(ctx, catch_env, param, exception_val);
                 }
 
-                let out = match eval_function_body(ctx, body) {
+                let out = match eval_block(ctx, body) {
                     Some(v) => v,
                     None => return None,
                 };
@@ -713,7 +755,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     js_set_property_str(ctx, catch_env, param, Value::UNDEFINED);
                 }
 
-                let out = match eval_function_body(ctx, body) {
+                let out = match eval_block(ctx, body) {
                     Some(v) => v,
                     None => return None,
                 };
@@ -732,7 +774,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             Value::UNDEFINED
         };
 
-        match eval_function_body(ctx, body) {
+        match eval_block(ctx, body) {
             Some(finally_val) => {
                 if finally_val.is_exception() {
                     result = finally_val;
@@ -774,6 +816,12 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
     let (body, _) = extract_braces(after_expr)?;
 
     let cases = parse_switch_cases(body)?;
+
+    let parent = ctx.current_env();
+    let env = js_new_object(ctx);
+    js_set_property_str(ctx, env, "__parent__", parent);
+    js_set_property_str(ctx, env, "__block__", Value::TRUE);
+    ctx.push_env(env);
 
     let mut matched = false;
     let mut last = Value::UNDEFINED;
@@ -821,7 +869,7 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
             }
         }
     }
-
+    ctx.pop_env();
     Some(last)
 }
 
@@ -1253,6 +1301,7 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     let parent_env = js_get_property_str(ctx, func, "__env__");
     let env = js_new_object(ctx);
     js_set_property_str(ctx, env, "__parent__", parent_env);
+    js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
     ctx.push_env(env);
 
     for (i, param_name) in param_names.iter().enumerate() {

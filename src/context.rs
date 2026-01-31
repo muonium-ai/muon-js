@@ -197,6 +197,23 @@ impl Context {
             .unwrap_or(Value::UNDEFINED)
     }
 
+    pub fn current_var_env(&mut self) -> Value {
+        let mut env = self.current_env();
+        loop {
+            if self.has_property_str(env, b"__var_env__") {
+                return env;
+            }
+            let parent = self
+                .get_property_str(env, b"__parent__")
+                .unwrap_or(Value::UNDEFINED);
+            if parent.is_undefined() {
+                break;
+            }
+            env = parent;
+        }
+        self.global_object
+    }
+
     pub fn set_c_function_table(&mut self, ptr: *const crate::types::JSCFunctionDef, len: usize) {
         self.c_function_table = ptr;
         self.c_function_table_len = len;

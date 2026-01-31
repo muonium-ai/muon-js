@@ -131,6 +131,24 @@ mod tests {
     }
 
     #[test]
+    fn let_block_scope_in_if() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(&mut ctx, "var x=1; if (true) { let x=2; } x");
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn let_shadow_in_loop_body() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(&mut ctx, "var x=1; while (false) { let x=2; } x");
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
     fn to_number_strings() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

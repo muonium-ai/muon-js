@@ -38,6 +38,7 @@ pub fn js_new_context(mem: &mut [u8]) -> JSContextImpl {
     let mut ctx = Context::new(mem);
     let global = js_get_global_object(&mut ctx);
     let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
+    let _ = js_set_property_str(&mut ctx, global, "__var_env__", Value::TRUE);
     let nan = number_to_value(&mut ctx, f64::NAN);
     let inf = number_to_value(&mut ctx, f64::INFINITY);
     let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
@@ -57,6 +58,7 @@ pub fn js_new_context_with_stdlib(
     }
     let global = js_get_global_object(&mut ctx);
     let _ = js_set_property_str(&mut ctx, global, "globalThis", global);
+    let _ = js_set_property_str(&mut ctx, global, "__var_env__", Value::TRUE);
     let nan = number_to_value(&mut ctx, f64::NAN);
     let inf = number_to_value(&mut ctx, f64::INFINITY);
     let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
@@ -1786,7 +1788,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             let init_expr = rest[eq_pos + 1..].trim();
             if is_identifier(var_name) {
                 let val = eval_expr(ctx, init_expr)?;
-                let env = ctx.current_env();
+                let env = if kind == "var" {
+                    ctx.current_var_env()
+                } else {
+                    ctx.current_env()
+                };
                 js_set_property_str(ctx, env, var_name, val);
                 return Some(Value::UNDEFINED);
             }
@@ -1796,7 +1802,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if kind == "const" {
                     return Some(js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "const declarations require initialization"));
                 }
-                let env = ctx.current_env();
+                let env = if kind == "var" {
+                    ctx.current_var_env()
+                } else {
+                    ctx.current_env()
+                };
                 js_set_property_str(ctx, env, rest, Value::UNDEFINED);
                 return Some(Value::UNDEFINED);
             }
