@@ -4226,7 +4226,14 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             is_string = true;
                             bytes.len() as i32
                         } else if ctx.object_class_id(source).is_some() {
-                            js_get_property_str(ctx, source, "length").int32().unwrap_or(0)
+                            let len_val = js_get_property_str(ctx, source, "length");
+                            let len_num = js_to_number(ctx, len_val).unwrap_or(0.0);
+                            let len_num = if len_num.is_nan() || len_num <= 0.0 {
+                                0.0
+                            } else {
+                                len_num
+                            };
+                            len_num.min(i32::MAX as f64) as i32
                         } else {
                             js_throw_error(ctx, JSObjectClassEnum::TypeError, "Array.from requires an array-like object");
                             return None;
@@ -4245,6 +4252,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 if let Ok(marker) = core::str::from_utf8(bytes) {
                                     map_marker = Some(marker.to_string());
                                 }
+                            }
+                            if map_closure.is_none() && map_cfunc.is_none() && map_marker.is_none() {
+                                js_throw_error(ctx, JSObjectClassEnum::TypeError, "Array.from map function is not callable");
+                                return None;
                             }
                         }
                         for i in 0..(len.max(0) as u32) {

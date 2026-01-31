@@ -1332,6 +1332,15 @@ mod tests {
         assert_eq!(JS_ToInt32(&mut ctx, v3).unwrap(), 7);
         let v4 = eval_ret(&mut ctx, "o = {a:1}; d = Object.getOwnPropertyDescriptor(o, \"a\"); d.value");
         assert_eq!(JS_ToInt32(&mut ctx, v4).unwrap(), 1);
+        let v5 = eval_ret(&mut ctx, "o = {0:'a',1:'b',length:'2'}; Array.from(o).join(',')");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let v5s = JS_ToString(&mut ctx, v5);
+        let v5c = JS_ToCString(&mut ctx, v5s, &mut buf);
+        assert_eq!(v5c, "a,b");
+        let v6 = eval_ret(&mut ctx, "o = {0:'a',length:-2}; Array.from(o).length");
+        assert_eq!(JS_ToInt32(&mut ctx, v6).unwrap(), 0);
+        let v7 = JS_Eval(&mut ctx, "Array.from([1], 1)", "test.js", 0);
+        assert!(v7.is_exception());
     }
 
     #[test]
