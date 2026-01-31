@@ -122,7 +122,8 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
-                db.set(key, Value::String(value), expire_ms);
+                let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
+                db.set(key, Value::String(value), expire_at);
                 if let Some(p) = state.persist.as_ref() {
                     let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
                 }
@@ -275,6 +276,14 @@ fn parse_u64(input: &[u8]) -> Option<u64> {
 
 fn to_upper_ascii(input: &[u8]) -> String {
     input.iter().map(|b| b.to_ascii_uppercase() as char).collect()
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn build_cmd(cmd: &str, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
