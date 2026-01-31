@@ -1,8 +1,7 @@
-use std::env;
-
 #[cfg(feature = "mini-redis")]
 #[async_std::main]
 async fn main() -> std::io::Result<()> {
+    use std::env;
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 6379;
     let mut databases: usize = 16;

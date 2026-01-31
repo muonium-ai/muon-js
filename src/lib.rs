@@ -358,6 +358,22 @@ mod tests {
     }
 
     #[test]
+    fn let_const_declarations() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let _ = JS_Eval(&mut ctx, "let x = 3; x", "test.js", 0);
+        let x = eval_ret(&mut ctx, "x");
+        assert_eq!(JS_ToInt32(&mut ctx, x).unwrap(), 3);
+
+        let _ = JS_Eval(&mut ctx, "const y = 5; y", "test.js", 0);
+        let y = eval_ret(&mut ctx, "y");
+        assert_eq!(JS_ToInt32(&mut ctx, y).unwrap(), 5);
+
+        let bad = JS_Eval(&mut ctx, "const z;", "test.js", 0);
+        assert!(bad.is_exception());
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

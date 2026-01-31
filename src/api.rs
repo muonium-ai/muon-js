@@ -1772,9 +1772,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.is_empty() {
         return None;
     }
-    // Handle var declarations: var x = expr OR var x
-    if s.starts_with("var ") {
-        let rest = s[4..].trim();
+    // Handle var/let/const declarations: var x = expr OR var x
+    if s.starts_with("var ") || s.starts_with("let ") || s.starts_with("const ") {
+        let (kind, rest) = if s.starts_with("var ") {
+            ("var", s[4..].trim())
+        } else if s.starts_with("let ") {
+            ("let", s[4..].trim())
+        } else {
+            ("const", s[6..].trim())
+        };
         if let Some(eq_pos) = rest.find('=') {
             let var_name = rest[..eq_pos].trim();
             let init_expr = rest[eq_pos + 1..].trim();
@@ -1785,8 +1791,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 return Some(Value::UNDEFINED);
             }
         } else {
-            // var x; (no initialization)
+            // var/let x; (no initialization)
             if is_identifier(rest) {
+                if kind == "const" {
+                    return Some(js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "const declarations require initialization"));
+                }
                 let global = js_get_global_object(ctx);
                 js_set_property_str(ctx, global, rest, Value::UNDEFINED);
                 return Some(Value::UNDEFINED);
