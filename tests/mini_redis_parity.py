@@ -182,8 +182,8 @@ TESTS = [
     ("ZRANGE", ["ZRANGE", "z", "0", "-1"], expect_list([b"a", b"b"])),
     ("ZREM", ["ZREM", "z", "a"], expect_int(1)),
     # Streams
-    ("XADD (expected fail for now)", ["XADD", "s", "*", "f", "v"], expect_error()),
-    ("XRANGE (expected fail for now)", ["XRANGE", "s", "-", "+"], expect_error()),
+    ("XADD", ["XADD", "s", "*", "f", "v"], lambda r: r[0] == "blob"),
+    ("XRANGE", ["XRANGE", "s", "-", "+"], lambda r: r[0] == "array" and len(r[1]) >= 1),
     # Pub/Sub
     ("SUBSCRIBE (expected fail for now)", ["SUBSCRIBE", "c"], expect_error()),
     ("PUBLISH (expected fail for now)", ["PUBLISH", "c", "msg"], expect_error()),

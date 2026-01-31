@@ -9,6 +9,7 @@ pub enum Value {
     Set(HashSet<Vec<u8>>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
     ZSet(Vec<(Vec<u8>, f64)>),
+    Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
 
 #[derive(Default)]
@@ -143,6 +144,7 @@ impl Db {
             Some(Value::Set(_)) => Some("set"),
             Some(Value::Hash(_)) => Some("hash"),
             Some(Value::ZSet(_)) => Some("zset"),
+            Some(Value::Stream(_)) => Some("stream"),
             None => None,
         }
     }
@@ -582,6 +584,40 @@ impl Db {
                     out.push(sorted[i as usize].0.clone());
                 }
                 Ok(out)
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn stream_add(&mut self, key: &[u8], id: &str, fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<String, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if id != "*" {
+            return Err(());
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Stream(Vec::new()));
+        match entry {
+            Value::Stream(items) => {
+                let next_id = format!("{}-0", items.len() + 1);
+                items.push((next_id.clone(), fields));
+                Ok(next_id)
+            }
+            _ => Err(()),
+        }
+    }
+
+    pub fn stream_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Stream(items)) => {
+                if start == "-" && end == "+" {
+                    return Ok(items.clone());
+                }
+                Ok(Vec::new())
             }
             Some(_) => Err(()),
             None => Ok(Vec::new()),

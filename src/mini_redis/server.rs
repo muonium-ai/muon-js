@@ -614,6 +614,58 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             None => RespValue::Error("ERR wrong number of arguments for 'ZCARD'".to_string()),
         },
+        "XADD" => {
+            if args.len() < 4 || args.len() % 2 != 0 {
+                return RespValue::Error("ERR wrong number of arguments for 'XADD'".to_string());
+            }
+            let key = &args[0];
+            let id = match std::str::from_utf8(&args[1]) {
+                Ok(v) => v,
+                Err(_) => return RespValue::Error("ERR invalid stream ID".to_string()),
+            };
+            let mut fields = Vec::new();
+            let mut idx = 2;
+            while idx + 1 < args.len() {
+                fields.push((args[idx].clone(), args[idx + 1].clone()));
+                idx += 2;
+            }
+            let db = &mut state.dbs[*db_index];
+            match db.stream_add(key, id, fields) {
+                Ok(new_id) => {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Blob(new_id.into_bytes())
+                }
+                Err(_) => RespValue::Error("ERR invalid stream ID".to_string()),
+            }
+        }
+        "XRANGE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(start), Some(end)) => {
+                let start = std::str::from_utf8(start).unwrap_or("-");
+                let end = std::str::from_utf8(end).unwrap_or("+");
+                let db = &mut state.dbs[*db_index];
+                match db.stream_range(key, start, end) {
+                    Ok(items) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for (id, fields) in items {
+                            let mut field_array = Vec::with_capacity(fields.len() * 2);
+                            for (field, value) in fields {
+                                field_array.push(RespValue::Blob(field));
+                                field_array.push(RespValue::Blob(value));
+                            }
+                            out.push(RespValue::Array(vec![
+                                RespValue::Blob(id.into_bytes()),
+                                RespValue::Array(field_array),
+                            ]));
+                        }
+                        RespValue::Array(out)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'XRANGE'".to_string()),
+        },
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
