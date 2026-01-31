@@ -203,9 +203,9 @@ TESTS = [
     ("CLIENT LIST", ["CLIENT", "LIST"], lambda r: r[0] in ("blob", "simple")),
     ("SLOWLOG GET", ["SLOWLOG", "GET"], lambda r: r[0] == "array"),
     # Persistence / replication
-    ("SAVE (expected fail for now)", ["SAVE"], expect_error()),
-    ("BGSAVE (expected fail for now)", ["BGSAVE"], expect_error()),
-    ("REPLICAOF (expected fail for now)", ["REPLICAOF", "NO", "ONE"], expect_error()),
+    ("SAVE", ["SAVE"], expect_error()),
+    ("BGSAVE", ["BGSAVE"], expect_error()),
+    ("REPLICAOF", ["REPLICAOF", "NO", "ONE"], expect_error()),
     ("FLUSHDB", ["FLUSHDB"], expect_simple("OK")),
     ("FLUSHALL", ["FLUSHALL"], expect_simple("OK")),
     ("SUBSCRIBE", ["SUBSCRIBE", "c"], lambda r: r[0] == "array"),

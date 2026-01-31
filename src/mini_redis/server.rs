@@ -911,6 +911,9 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
                 RespValue::Error("ERR syntax error".to_string())
             }
         }
+        "SAVE" => RespValue::Error("ERR persistence not implemented".to_string()),
+        "BGSAVE" => RespValue::Error("ERR persistence not implemented".to_string()),
+        "REPLICAOF" => RespValue::Error("ERR replication not implemented".to_string()),
         "QUIT" => RespValue::Simple("OK".to_string()),
         _ => RespValue::Error(format!("ERR unknown command '{}'", cmd)),
     }
