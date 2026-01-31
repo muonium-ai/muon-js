@@ -6,6 +6,7 @@ use async_std::sync::{Arc, Mutex};
 use async_std::task;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
+use crate::mini_redis::persist::{Persist, NoopPersist};
 use crate::mini_redis::store::{Db, Value};
 
 #[derive(Clone)]
@@ -13,26 +14,36 @@ pub struct ServerConfig {
     pub bind: String,
     pub port: u16,
     pub databases: usize,
+    pub persist_path: Option<String>,
+    pub aof_enabled: bool,
 }
 
 pub struct ServerState {
     dbs: Vec<Db>,
+    persist: Option<Arc<dyn Persist>>,
 }
 
 impl ServerState {
-    fn new(databases: usize) -> Self {
+    fn new(databases: usize, persist: Option<Arc<dyn Persist>>) -> Self {
         let mut dbs = Vec::with_capacity(databases);
         for _ in 0..databases {
             dbs.push(Db::new());
         }
-        Self { dbs }
+        Self { dbs, persist }
     }
 }
 
 pub async fn run(config: ServerConfig) -> io::Result<()> {
     let addr = format!("{}:{}", config.bind, config.port);
     let listener = TcpListener::bind(&addr).await?;
-    let state = Arc::new(Mutex::new(ServerState::new(config.databases)));
+    let persist = init_persist(&config).await?;
+    let state = Arc::new(Mutex::new(ServerState::new(config.databases, persist)));
+    {
+        let mut guard = state.lock().await;
+        if let Some(p) = guard.persist.as_ref() {
+            let _ = p.load(&mut guard.dbs).await;
+        }
+    }
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
@@ -66,7 +77,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
         let cmd = to_upper_ascii(&args[0]);
         let resp = {
             let mut guard = state.lock().await;
-            handle_command(&mut guard, &mut current_db, &cmd, &args[1..])
+            handle_command(&mut guard, &mut current_db, &cmd, &args[1..]).await
         };
         write_value(&mut &stream, &resp).await?;
         if cmd == "QUIT" {
@@ -76,7 +87,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
     }
 }
 
-fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args: &[Vec<u8>]) -> RespValue {
+async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args: &[Vec<u8>]) -> RespValue {
     match cmd {
         "PING" => {
             if let Some(arg) = args.get(0) {
@@ -114,6 +125,9 @@ fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
                 db.set(key, Value::String(value), expire_ms);
+                if let Some(p) = state.persist.as_ref() {
+                    let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                }
                 RespValue::Simple("OK".to_string())
             }
             Err(e) => RespValue::Error(e),
@@ -125,6 +139,9 @@ fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args
                 if db.remove(key) {
                     removed += 1;
                 }
+            }
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
             }
             RespValue::Integer(removed)
         }
@@ -142,7 +159,13 @@ fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args
             (Some(key), Some(sec)) => {
                 let db = &mut state.dbs[*db_index];
                 let ms = parse_u64(sec).unwrap_or(0).saturating_mul(1000);
-                RespValue::Integer(if db.set_expire_ms(key, ms) { 1 } else { 0 })
+                let ok = db.set_expire_ms(key, ms);
+                if ok {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                }
+                RespValue::Integer(if ok { 1 } else { 0 })
             }
             _ => RespValue::Error("ERR wrong number of arguments for 'EXPIRE'".to_string()),
         },
@@ -150,7 +173,13 @@ fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args
             (Some(key), Some(ms)) => {
                 let db = &mut state.dbs[*db_index];
                 let ms = parse_u64(ms).unwrap_or(0);
-                RespValue::Integer(if db.set_expire_ms(key, ms) { 1 } else { 0 })
+                let ok = db.set_expire_ms(key, ms);
+                if ok {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                }
+                RespValue::Integer(if ok { 1 } else { 0 })
             }
             _ => RespValue::Error("ERR wrong number of arguments for 'PEXPIRE'".to_string()),
         },
@@ -248,4 +277,29 @@ fn parse_u64(input: &[u8]) -> Option<u64> {
 
 fn to_upper_ascii(input: &[u8]) -> String {
     input.iter().map(|b| b.to_ascii_uppercase() as char).collect()
+}
+
+fn build_cmd(cmd: &str, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut out = Vec::with_capacity(args.len() + 1);
+    out.push(cmd.as_bytes().to_vec());
+    for arg in args {
+        out.push(arg.clone());
+    }
+    out
+}
+
+async fn init_persist(config: &ServerConfig) -> io::Result<Option<Arc<dyn Persist>>> {
+    if let Some(path) = config.persist_path.as_ref() {
+        #[cfg(feature = "mini-redis-libsql")]
+        {
+            let p = crate::mini_redis::persist::LibsqlPersist::open(path, config.aof_enabled).await?;
+            return Ok(Some(Arc::new(p)));
+        }
+        #[cfg(not(feature = "mini-redis-libsql"))]
+        {
+            let _ = path;
+            return Ok(Some(Arc::new(NoopPersist)));
+        }
+    }
+    Ok(None)
 }

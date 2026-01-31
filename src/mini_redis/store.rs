@@ -35,6 +35,10 @@ impl Db {
         self.data.insert(key, value);
     }
 
+    pub fn set_with_expire_at(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
+        self.set(key, value, expire_at_ms);
+    }
+
     pub fn remove(&mut self, key: &[u8]) -> bool {
         let existed = self.data.remove(key).is_some();
         self.expires.remove(key);
@@ -81,6 +85,16 @@ impl Db {
         for key in expired {
             self.remove(&key);
         }
+    }
+
+    pub fn snapshot_items(&mut self) -> Vec<(Vec<u8>, Value, Option<u64>)> {
+        self.purge_expired_all();
+        let mut out = Vec::with_capacity(self.data.len());
+        for (k, v) in self.data.iter() {
+            let exp = self.expires.get(k).copied();
+            out.push((k.clone(), v.clone(), exp));
+        }
+        out
     }
 
     pub fn len(&mut self) -> usize {

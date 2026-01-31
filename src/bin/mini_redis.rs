@@ -6,6 +6,8 @@ async fn main() -> std::io::Result<()> {
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 6379;
     let mut databases: usize = 16;
+    let mut persist_path: Option<String> = None;
+    let mut aof_enabled: bool = false;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -29,11 +31,25 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
             }
+            "--persist" => {
+                if let Some(v) = args.next() {
+                    persist_path = Some(v);
+                }
+            }
+            "--aof" => {
+                aof_enabled = true;
+            }
             _ => {}
         }
     }
 
-    let config = muon_js::mini_redis::server::ServerConfig { bind, port, databases };
+    let config = muon_js::mini_redis::server::ServerConfig {
+        bind,
+        port,
+        databases,
+        persist_path,
+        aof_enabled,
+    };
     muon_js::mini_redis::server::run(config).await
 }
 

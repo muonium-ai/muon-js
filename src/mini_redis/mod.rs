@@ -4,3 +4,4 @@
 pub mod resp;
 pub mod server;
 pub mod store;
+pub mod persist;
