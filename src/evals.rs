@@ -262,19 +262,151 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 /// and is re-exported here for use by other modules.
 pub use crate::api::eval_expr;
 
-/// Check if a value is truthy in JavaScript semantics
-pub fn is_truthy(val: JSValue) -> bool {
-    if val.is_bool() {
-        val == Value::TRUE
-    } else if val.is_number() {
-        if let Some(n) = val.int32() {
-            n != 0
-        } else {
-            true
+/// Strip line (`//`) and block (`/* */`) comments while preserving strings.
+pub fn strip_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            out.push(b);
+            if b == b'\\' {
+                if i + 1 < bytes.len() {
+                    out.push(bytes[i + 1]);
+                    i += 2;
+                    continue;
+                }
+            } else if b == string_delim {
+                in_string = false;
+            }
+            i += 1;
+            continue;
         }
-    } else {
-        !val.is_null() && !val.is_undefined()
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'/' {
+                // Line comment: skip until newline, then keep newline.
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'\n' {
+                    out.push(b'\n');
+                    i += 1;
+                }
+                continue;
+            }
+            if next == b'*' {
+                // Block comment: skip until closing */, then add space.
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                out.push(b' ');
+                continue;
+            }
+        }
+        out.push(b);
+        i += 1;
     }
+    String::from_utf8(out).unwrap_or_else(|_| src.to_string())
+}
+
+/// Join single-line control flow without braces to keep statements together.
+pub fn normalize_line_continuations(src: &str) -> String {
+    fn line_ends_with_operator(line: &str) -> bool {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let bytes = trimmed.as_bytes();
+        let len = bytes.len();
+        let last = bytes[len - 1];
+        if last == b'+' || last == b'-' {
+            if len >= 2 && bytes[len - 2] == last {
+                return false; // ++ or -- should not force continuation
+            }
+            return true;
+        }
+        matches!(
+            last,
+            b'*' | b'/' | b'%' | b'&' | b'|' | b'^' | b'<' | b'>' | b'=' | b'?' | b':' | b',' | b'.'
+        )
+    }
+
+    let mut out = String::new();
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        let mut current = line.to_string();
+        loop {
+            let trimmed = current.trim_start();
+            let is_control = trimmed.starts_with("if ")
+                || trimmed.starts_with("if(")
+                || trimmed.starts_with("else")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("while ")
+                || trimmed.starts_with("while(")
+                || trimmed.starts_with("for ")
+                || trimmed.starts_with("for(")
+                || trimmed.starts_with("try")
+                || trimmed.starts_with("catch");
+            if is_control && !trimmed.contains('{') && !trimmed.trim_end().ends_with(';') {
+                if let Some(next) = lines.next() {
+                    current.push(' ');
+                    current.push_str(next.trim_start());
+                    continue;
+                }
+            }
+            if line_ends_with_operator(&current) {
+                if let Some(next) = lines.next() {
+                    current.push(' ');
+                    current.push_str(next.trim_start());
+                    continue;
+                }
+            }
+            break;
+        }
+        out.push_str(&current);
+        out.push('\n');
+    }
+    out
+}
+
+/// Check if a value is truthy in JavaScript semantics
+pub fn is_truthy(ctx: &mut JSContextImpl, val: JSValue) -> bool {
+    if val.is_bool() {
+        return val == Value::TRUE;
+    }
+    if let Some(n) = val.int32() {
+        return n != 0;
+    }
+    if val.is_null() || val.is_undefined() {
+        return false;
+    }
+    if let Some(f) = ctx.float_value(val) {
+        return f != 0.0 && !f.is_nan();
+    }
+    if js_is_string(ctx, val) != 0 {
+        if let Some(bytes) = ctx.string_bytes(val) {
+            return !bytes.is_empty();
+        }
+        return false;
+    }
+    true
 }
 
 /// Evaluate an array literal: [1, 2, 3]

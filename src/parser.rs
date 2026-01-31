@@ -133,6 +133,45 @@ pub fn extract_braces(s: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn extract_statement(src: &str) -> Option<(&str, &str)> {
+    let s = src.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                // Skip escaped char
+                continue;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' | b'\n' if depth == 0 => {
+                let stmt = s[..i].trim();
+                let rest = s[i + 1..].trim_start();
+                return Some((stmt, rest));
+            }
+            _ => {}
+        }
+    }
+    Some((s.trim(), ""))
+}
+
 /// Extract content within parentheses ( )
 pub fn extract_paren(src: &str) -> Option<(&str, &str)> {
     let bytes = src.as_bytes();
@@ -229,25 +268,27 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
     let (condition, after_cond) = extract_paren(rest)?;
     let after_cond = after_cond.trim_start();
     
-    // Parse then block
-    if !after_cond.starts_with('{') {
-        return None;
-    }
-    let (then_block, after_then) = extract_braces(after_cond)?;
+    // Parse then body (block or single statement)
+    let (then_body, after_then, then_is_block) = if after_cond.starts_with('{') {
+        let (block, after) = extract_braces(after_cond)?;
+        (block, after.trim_start(), true)
+    } else {
+        let (stmt, after) = extract_statement(after_cond)?;
+        (stmt, after.trim_start(), false)
+    };
+
+    // Parse optional else body (block or single statement)
+    let mut else_body: Option<(&str, bool)> = None;
     let after_then = after_then.trim_start();
-    
-    // Parse optional else block
-    let else_block = if after_then.starts_with("else") {
+    if after_then.starts_with("else") {
         let after_else = after_then[4..].trim_start();
         if after_else.starts_with('{') {
             let (block, _) = extract_braces(after_else)?;
-            Some(block)
-        } else {
-            None
+            else_body = Some((block, true));
+        } else if let Some((stmt, _)) = extract_statement(after_else) {
+            else_body = Some((stmt, false));
         }
-    } else {
-        None
-    };
+    }
     
     // Evaluate condition
     let cond_val = eval_expr(ctx, condition)?;
@@ -261,14 +302,22 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
     
     // Execute appropriate block
     if is_true {
-        let result = eval_block(ctx, then_block)?;
+        let result = if then_is_block {
+            eval_block(ctx, then_body)?
+        } else {
+            eval_function_body(ctx, then_body)?
+        };
         // Propagate return control
         if ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
         }
         Some(result)
-    } else if let Some(else_body) = else_block {
-        let result = eval_block(ctx, else_body)?;
+    } else if let Some((else_src, else_is_block)) = else_body {
+        let result = if else_is_block {
+            eval_block(ctx, else_src)?
+        } else {
+            eval_function_body(ctx, else_src)?
+        };
         // Propagate return control
         if ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
@@ -299,11 +348,14 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let (condition, after_cond) = extract_paren(rest)?;
     let after_cond = after_cond.trim_start();
     
-    // Parse body block
-    if !after_cond.starts_with('{') {
-        return None;
-    }
-    let (body, _) = extract_braces(after_cond)?;
+    // Parse body (block or single statement)
+    let (body, body_is_block) = if after_cond.starts_with('{') {
+        let (block, _) = extract_braces(after_cond)?;
+        (block, true)
+    } else {
+        let (stmt, _) = extract_statement(after_cond)?;
+        (stmt, false)
+    };
     
     // Execute loop
     let mut last = Value::UNDEFINED;
@@ -323,7 +375,11 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         
         // Execute body
-        last = eval_block(ctx, body)?;
+        last = if body_is_block {
+            eval_block(ctx, body)?
+        } else {
+            eval_function_body(ctx, body)?
+        };
         
         // Check for loop control
         match ctx.get_loop_control() {
@@ -413,10 +469,13 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
         var_part
     };
 
-    if !after_header.starts_with('{') {
-        return None;
-    }
-    let (body, _) = extract_braces(after_header)?;
+    let (body, body_is_block) = if after_header.starts_with('{') {
+        let (block, _) = extract_braces(after_header)?;
+        (block, true)
+    } else {
+        let (stmt, _) = extract_statement(after_header)?;
+        (stmt, false)
+    };
 
     let loop_parent = ctx.current_env();
     let loop_env = js_new_object(ctx);
@@ -440,7 +499,11 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
                     for i in 0..len {
                         let elem = js_get_property_uint32(ctx, iter_val, i as u32);
                         js_set_property_str(ctx, env, var_name, elem);
-                        last = eval_block(ctx, body)?;
+                        last = if body_is_block {
+                            eval_block(ctx, body)?
+                        } else {
+                            eval_function_body(ctx, body)?
+                        };
 
                         match ctx.get_loop_control() {
                             crate::context::LoopControl::Break => {
@@ -1289,6 +1352,73 @@ pub fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
     Some((s, ""))
 }
 
+/// Split expression on top-level `instanceof`.
+pub fn split_instanceof(src: &str) -> Option<(&str, &str)> {
+    let s = src.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let token = b"instanceof";
+    let is_ident_char = |b: u8| -> bool {
+        (b'A'..=b'Z').contains(&b)
+            || (b'a'..=b'z').contains(&b)
+            || (b'0'..=b'9').contains(&b)
+            || b == b'_'
+    };
+    let mut i = 0usize;
+    while i + token.len() <= bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' {
+                i += 1; // skip escaped
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            b']' | b'}' | b')' => {
+                depth -= 1;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if depth == 0 && bytes[i..].starts_with(token) {
+            let before = if i == 0 { None } else { Some(bytes[i - 1]) };
+            let after = bytes.get(i + token.len()).copied();
+            if before.map(is_ident_char).unwrap_or(false) || after.map(is_ident_char).unwrap_or(false) {
+                i += 1;
+                continue;
+            }
+            let lhs = s[..i].trim();
+            let rhs = s[i + token.len()..].trim();
+            if !lhs.is_empty() && !rhs.is_empty() {
+                return Some((lhs, rhs));
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Create a function object with parameters and body
 pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
     let params_str = params.join(",");
@@ -1352,6 +1482,15 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
     ctx.push_env(env);
     predeclare_block_bindings(ctx, &body_str);
+
+    // Populate `arguments` for function scope.
+    let args_obj = js_new_array(ctx, args.len() as i32);
+    if !args_obj.is_exception() {
+        for (i, val) in args.iter().enumerate() {
+            let _ = js_set_property_uint32(ctx, args_obj, i as u32, *val);
+        }
+        js_set_property_str(ctx, env, "arguments", args_obj);
+    }
 
     let mut arg_index = 0usize;
     for spec in &param_specs {
