@@ -11,8 +11,11 @@ path = "src/lib.rs"
 [features]
 # Keep default minimal; add feature flags as ports land.
 default = []
+mini-redis = ["async-std"]
 
 [dependencies]
 regex = "1.10.3"
+async-std = { version = "1.12.0", features = ["attributes"], optional = true }
+libsql = { version = "0.4.0", optional = true }
 
 [dev-dependencies]

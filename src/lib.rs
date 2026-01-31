@@ -11,6 +11,8 @@ mod api;
 mod context;
 mod types;
 mod value;
+#[cfg(feature = "mini-redis")]
+pub mod mini_redis;
 
 pub use api::*;
 pub use types::*;
