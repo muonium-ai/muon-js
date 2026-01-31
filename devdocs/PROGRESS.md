@@ -445,7 +445,7 @@ Number.isFinite(100)            // OK (static method)
 
 - **ACTION_PLAN.md** - Detailed 6-phase implementation plan
 - **CODE_REVIEW.md** - Architecture comparison with mquickjs
-- **AGENTS.md** - Project goals and compatibility requirements
+- **../AGENTS.md** - Project goals and compatibility requirements
 - **vendor/mquickjs/** - Upstream reference implementation (28,664 lines)
 
 ---
