@@ -1393,6 +1393,20 @@ mod tests {
     }
 
     #[test]
+    fn string_utf16_length_and_codepoint() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let len = eval_ret(&mut ctx, "\"😀\".length");
+        assert_eq!(JS_ToInt32(&mut ctx, len).unwrap(), 2);
+        let code = eval_ret(&mut ctx, "\"😀\".charCodeAt(0)");
+        assert_eq!(JS_ToInt32(&mut ctx, code).unwrap(), 55357);
+        let cp = eval_ret(&mut ctx, "\"😀\".codePointAt(0)");
+        assert_eq!(JS_ToInt32(&mut ctx, cp).unwrap(), 128512);
+        let arr = eval_ret(&mut ctx, "Array.from(\"😀\").length");
+        assert_eq!(JS_ToInt32(&mut ctx, arr).unwrap(), 2);
+    }
+
+    #[test]
     fn regexp_methods_test_exec() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

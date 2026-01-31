@@ -23,6 +23,16 @@ use crate::json::parse_json;
 use crate::evals::{eval_value, split_top_level, split_statements, is_truthy};
 use crate::parser::*;
 
+fn string_utf16_units(ctx: &mut JSContextImpl, val: JSValue) -> Option<Vec<u16>> {
+    let bytes = ctx.string_bytes(val)?;
+    let s = core::str::from_utf8(bytes).ok()?;
+    Some(s.encode_utf16().collect())
+}
+
+fn string_utf16_len(ctx: &mut JSContextImpl, val: JSValue) -> Option<usize> {
+    Some(string_utf16_units(ctx, val)?.len())
+}
+
 pub(crate) fn mark_const_binding(ctx: &mut JSContextImpl, env: JSValue, name: &str) {
     let map = js_get_property_str(ctx, env, "__const__");
     let map = if map.is_undefined() && !ctx.has_property_str(env, b"__const__") {
@@ -2043,14 +2053,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     } else if marker == "__builtin_string_charAt__" {
                         if args.len() == 1 {
                             if let Some(idx) = args[0].int32() {
-                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                    if idx >= 0 && (idx as usize) < str_bytes.len() {
-                                        let ch = str_bytes[idx as usize];
-                                        // Create a vector to own the byte
-                                        let mut ch_buf = [0u8; 4];
-                                        ch_buf[0] = ch;
-                                        let ch_str = core::str::from_utf8(&ch_buf[..1]).unwrap_or("");
-                                        val = js_new_string(ctx, ch_str);
+                                if let Some(units) = string_utf16_units(ctx, this_val) {
+                                    if idx >= 0 && (idx as usize) < units.len() {
+                                        let unit = units[idx as usize];
+                                        let s = String::from_utf16_lossy(&[unit]);
+                                        val = js_new_string(ctx, &s);
                                     } else {
                                         val = js_new_string(ctx, "");
                                     }
@@ -3490,17 +3497,9 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     } else if marker == "__builtin_string_charCodeAt__" {
                         if args.len() >= 1 {
                             if let Some(idx) = args[0].int32() {
-                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                    if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                        if idx >= 0 && (idx as usize) < s.len() {
-                                            if let Some(ch) = s.chars().nth(idx as usize) {
-                                                val = Value::from_int32(ch as i32);
-                                            } else {
-                                                val = number_to_value(ctx, f64::NAN);
-                                            }
-                                        } else {
-                                            val = number_to_value(ctx, f64::NAN);
-                                        }
+                                if let Some(units) = string_utf16_units(ctx, this_val) {
+                                    if idx >= 0 && (idx as usize) < units.len() {
+                                        val = Value::from_int32(units[idx as usize] as i32);
                                     } else {
                                         val = number_to_value(ctx, f64::NAN);
                                     }
@@ -3522,16 +3521,19 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         } else {
                             0
                         };
-                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                            if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                if idx >= 0 && (idx as usize) < s.len() {
-                                    if let Some(ch) = s.chars().nth(idx as usize) {
-                                        val = number_to_value(ctx, ch as u32 as f64);
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            if idx >= 0 && (idx as usize) < units.len() {
+                                let first = units[idx as usize] as u32;
+                                if (0xD800..=0xDBFF).contains(&first) && (idx as usize + 1) < units.len() {
+                                    let second = units[idx as usize + 1] as u32;
+                                    if (0xDC00..=0xDFFF).contains(&second) {
+                                        let cp = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
+                                        val = number_to_value(ctx, cp as f64);
                                     } else {
-                                        val = number_to_value(ctx, f64::NAN);
+                                        val = number_to_value(ctx, first as f64);
                                     }
                                 } else {
-                                    val = number_to_value(ctx, f64::NAN);
+                                    val = number_to_value(ctx, first as f64);
                                 }
                             } else {
                                 val = number_to_value(ctx, f64::NAN);
@@ -4222,9 +4224,9 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         let map_fn = if args.len() >= 2 { Some(args[1]) } else { None };
                         let this_arg = if args.len() >= 3 { args[2] } else { Value::UNDEFINED };
                         let mut is_string = false;
-                        let len = if let Some(bytes) = ctx.string_bytes(source) {
+                        let len = if ctx.string_bytes(source).is_some() {
                             is_string = true;
-                            bytes.len() as i32
+                            string_utf16_len(ctx, source).unwrap_or(0) as i32
                         } else if ctx.object_class_id(source).is_some() {
                             let len_val = js_get_property_str(ctx, source, "length");
                             let len_num = js_to_number(ctx, len_val).unwrap_or(0.0);
@@ -4260,11 +4262,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         }
                         for i in 0..(len.max(0) as u32) {
                             let elem = if is_string {
-                                let bytes = ctx.string_bytes(source).unwrap_or(b"");
-                                let b = bytes.get(i as usize).copied().unwrap_or(0);
-                                let ch = [b];
-                                let s = core::str::from_utf8(&ch).unwrap_or("");
-                                js_new_string(ctx, s)
+                                let units = string_utf16_units(ctx, source).unwrap_or_default();
+                                let unit = units.get(i as usize).copied().unwrap_or(0);
+                                let s = String::from_utf16_lossy(&[unit]);
+                                js_new_string(ctx, &s)
                             } else {
                                 js_get_property_uint32(ctx, source, i)
                             };
@@ -4617,8 +4618,9 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     }
                 }
                 // String.length
-                if let Some(bytes) = ctx.string_bytes(val) {
-                    val = Value::from_int32(bytes.len() as i32);
+                if ctx.string_bytes(val).is_some() {
+                    let len = string_utf16_len(ctx, val).unwrap_or(0) as i32;
+                    val = Value::from_int32(len);
                     rest = next;
                     continue;
                 }
