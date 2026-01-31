@@ -21,6 +21,9 @@ pub enum OpCode {
     Gt,
     Le,
     Ge,
+    Not,
+    And,
+    Or,
     Return,
 }
 

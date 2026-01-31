@@ -309,6 +309,25 @@ mod tests {
     }
 
     #[test]
+    fn bytecode_compiler_logical() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut compiler = crate::compiler::Compiler::new();
+        let module = compiler.compile_program(&mut ctx, "1 && 0").expect("compile");
+        let mut vm = crate::vm::VM::new();
+        let out = vm.run_module(&mut ctx, &module);
+        let n = JS_ToNumber(&mut ctx, out).unwrap();
+        assert_eq!(n, 0.0);
+        let module = compiler.compile_program(&mut ctx, "0 || 5").expect("compile");
+        let out = vm.run_module(&mut ctx, &module);
+        let n = JS_ToNumber(&mut ctx, out).unwrap();
+        assert_eq!(n, 5.0);
+        let module = compiler.compile_program(&mut ctx, "!0").expect("compile");
+        let out = vm.run_module(&mut ctx, &module);
+        assert_eq!(out, JSValue::TRUE);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

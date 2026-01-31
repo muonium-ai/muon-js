@@ -81,6 +81,33 @@ impl VM {
                         }
                     }
                 }
+                OpCode::Not => {
+                    let v = match stack.pop() {
+                        Some(v) => v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
+                    };
+                    let truthy = crate::evals::is_truthy(v);
+                    stack.push(JSValue::new_bool(!truthy));
+                }
+                OpCode::And | OpCode::Or => {
+                    let b = match stack.pop() {
+                        Some(v) => v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
+                    };
+                    let a = match stack.pop() {
+                        Some(v) => v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
+                    };
+                    let a_truthy = crate::evals::is_truthy(a);
+                    let result = if ins.op == OpCode::And {
+                        if a_truthy { b } else { a }
+                    } else if a_truthy {
+                        a
+                    } else {
+                        b
+                    };
+                    stack.push(result);
+                }
                 OpCode::LoadGlobal => {
                     let idx = ins.a as usize;
                     let name_val = match func.constants.get(idx) {

@@ -30,7 +30,7 @@ impl Compiler {
         }
 
         let mut expr = ExprCompiler::new(ctx, s);
-        expr.parse_comparison()?;
+        expr.parse_logical_or()?;
         expr.skip_ws();
         if expr.pos != expr.input.len() {
             return Err(CompileError {
@@ -108,6 +108,11 @@ impl<'a> ExprCompiler<'a> {
             self.emit_op(OpCode::Sub);
             return Ok(());
         }
+        if self.consume(b'!') {
+            self.parse_factor()?;
+            self.emit_op(OpCode::Not);
+            return Ok(());
+        }
         if self.consume(b'(') {
             self.parse_expr()?;
             self.skip_ws();
@@ -167,6 +172,34 @@ impl<'a> ExprCompiler<'a> {
         }
         self.pos = start;
         self.parse_expr()
+    }
+
+    fn parse_logical_or(&mut self) -> Result<(), CompileError> {
+        self.parse_logical_and()?;
+        loop {
+            self.skip_ws();
+            if self.consume_seq(b"||") {
+                self.parse_logical_and()?;
+                self.emit_op(OpCode::Or);
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_logical_and(&mut self) -> Result<(), CompileError> {
+        self.parse_comparison()?;
+        loop {
+            self.skip_ws();
+            if self.consume_seq(b"&&") {
+                self.parse_comparison()?;
+                self.emit_op(OpCode::And);
+            } else {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn parse_number(&mut self) -> Result<f64, CompileError> {
