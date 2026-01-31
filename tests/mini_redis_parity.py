@@ -195,6 +195,8 @@ TESTS = [
     ("DISCARD", ["DISCARD"], expect_simple("OK")),
     # Scripting
     ("EVAL", ["EVAL", "return 1", "0"], expect_int(1)),
+    ("EVAL redis.call", ["EVAL", "return redis.call('SET', KEYS[0], ARGV[0])", "1", "evalkey", "evalval"], lambda r: (r[0] in ("simple", "blob") and r[1] == b"OK") or (r[0] == "simple" and r[1] == "OK")),
+    ("GET evalkey", ["GET", "evalkey"], expect_blob(b"evalval")),
     ("EVALSHA (expected fail for now)", ["EVALSHA", "deadbeef", "0"], expect_error()),
     ("SCRIPT (expected fail for now)", ["SCRIPT", "LOAD", "return 1"], expect_error()),
     ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
