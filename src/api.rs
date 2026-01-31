@@ -2462,6 +2462,39 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_string_toLocaleUpperCase__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let upper = s.to_uppercase();
+                                val = js_new_string(ctx, &upper);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_toLocaleLowerCase__" {
+                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                            if let Ok(s) = core::str::from_utf8(str_bytes) {
+                                let lower = s.to_lowercase();
+                                val = js_new_string(ctx, &lower);
+                            } else {
+                                val = this_val;
+                            }
+                        } else {
+                            val = this_val;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_string_normalize__" {
+                        val = this_val;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Math_floor__" {
                         if args.len() == 1 {
                             let n = js_to_number(ctx, args[0]).ok()?;
@@ -4893,11 +4926,29 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     continue;
                 }
             }
+
+            // String.toLocaleUpperCase (stub)
+            if name == "toLocaleUpperCase" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_toLocaleUpperCase__");
+                    rest = next;
+                    continue;
+                }
+            }
             
             // String.toLowerCase
             if name == "toLowerCase" {
                 if js_is_string(ctx, val) != 0 {
                     val = js_new_string(ctx, "__builtin_string_toLowerCase__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.toLocaleLowerCase (stub)
+            if name == "toLocaleLowerCase" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_toLocaleLowerCase__");
                     rest = next;
                     continue;
                 }
@@ -5042,6 +5093,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if name == "padEnd" {
                 if js_is_string(ctx, val) != 0 {
                     val = js_new_string(ctx, "__builtin_string_padEnd__");
+                    rest = next;
+                    continue;
+                }
+            }
+
+            // String.normalize (stub)
+            if name == "normalize" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_normalize__");
                     rest = next;
                     continue;
                 }
@@ -6553,6 +6613,24 @@ impl<'a> ArithParser<'a> {
                             return Ok(js_new_string(ctx, &lower));
                         }
                     }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_toLocaleUpperCase__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            let upper = s.to_uppercase();
+                            return Ok(js_new_string(ctx, &upper));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_toLocaleLowerCase__" {
+                    if let Some(str_bytes) = ctx.string_bytes(this_val) {
+                        if let Ok(s) = core::str::from_utf8(str_bytes) {
+                            let lower = s.to_lowercase();
+                            return Ok(js_new_string(ctx, &lower));
+                        }
+                    }
+                    return Ok(this_val);
+                } else if marker == "__builtin_string_normalize__" {
                     return Ok(this_val);
                 } else if marker == "__builtin_string_substring__" {
                     if args.len() >= 1 && args.len() <= 2 {

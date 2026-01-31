@@ -1407,6 +1407,25 @@ mod tests {
     }
 
     #[test]
+    fn string_locale_stubs_and_normalize() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let lower = eval_ret(&mut ctx, "\"TeSt\".toLocaleLowerCase()");
+        let upper = eval_ret(&mut ctx, "\"TeSt\".toLocaleUpperCase()");
+        let norm = eval_ret(&mut ctx, "\"e\\u0301\".normalize(\"NFC\")");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let ls = JS_ToString(&mut ctx, lower);
+        let l = JS_ToCString(&mut ctx, ls, &mut buf);
+        assert_eq!(l, "test");
+        let us = JS_ToString(&mut ctx, upper);
+        let u = JS_ToCString(&mut ctx, us, &mut buf);
+        assert_eq!(u, "TEST");
+        let ns = JS_ToString(&mut ctx, norm);
+        let n = JS_ToCString(&mut ctx, ns, &mut buf);
+        assert_eq!(n, "e\\u0301");
+    }
+
+    #[test]
     fn regexp_methods_test_exec() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
