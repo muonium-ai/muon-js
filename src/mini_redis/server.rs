@@ -687,6 +687,54 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             None => RespValue::Error("ERR wrong number of arguments for 'TYPE'".to_string()),
         },
+        "KEYS" => match args.get(0) {
+            Some(pattern) => {
+                if pattern.as_slice() != b"*" {
+                    return RespValue::Error("ERR only '*' pattern supported".to_string());
+                }
+                let db = &mut state.dbs[*db_index];
+                let keys = db.keys();
+                RespValue::Array(keys.into_iter().map(RespValue::Blob).collect())
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'KEYS'".to_string()),
+        },
+        "SCAN" => match args.get(0) {
+            Some(cursor) => {
+                if cursor.as_slice() != b"0" {
+                    return RespValue::Error("ERR only cursor 0 supported".to_string());
+                }
+                let db = &mut state.dbs[*db_index];
+                let keys = db.keys();
+                let mut out = Vec::with_capacity(2);
+                out.push(RespValue::Blob(b"0".to_vec()));
+                out.push(RespValue::Array(keys.into_iter().map(RespValue::Blob).collect()));
+                RespValue::Array(out)
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'SCAN'".to_string()),
+        },
+        "FLUSHDB" => {
+            if !args.is_empty() {
+                return RespValue::Error("ERR wrong number of arguments for 'FLUSHDB'".to_string());
+            }
+            let db = &mut state.dbs[*db_index];
+            db.flush();
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+            }
+            RespValue::Simple("OK".to_string())
+        }
+        "FLUSHALL" => {
+            if !args.is_empty() {
+                return RespValue::Error("ERR wrong number of arguments for 'FLUSHALL'".to_string());
+            }
+            for db in state.dbs.iter_mut() {
+                db.flush();
+            }
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(0, &build_cmd(cmd, args)).await;
+            }
+            RespValue::Simple("OK".to_string())
+        }
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec()),
         "EVAL" | "EVALSHA" | "SCRIPT" => RespValue::Error("ERR scripting not implemented".to_string()),
         "QUIT" => RespValue::Simple("OK".to_string()),

@@ -120,6 +120,18 @@ impl Db {
         self.data.len()
     }
 
+    pub fn keys(&mut self) -> Vec<Vec<u8>> {
+        self.purge_expired_all();
+        self.data.keys().cloned().collect()
+    }
+
+    pub fn flush(&mut self) -> usize {
+        let count = self.data.len();
+        self.data.clear();
+        self.expires.clear();
+        count
+    }
+
     pub fn value_type(&mut self, key: &[u8]) -> Option<&'static str> {
         if self.is_expired(key) {
             self.remove(key);

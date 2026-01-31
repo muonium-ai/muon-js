@@ -131,10 +131,8 @@ TESTS = [
     ("SET EX", ["SET", "b", "1", "EX", "1"], expect_simple("OK")),
     ("GET b", ["GET", "b"], expect_blob(b"1")),
     ("TYPE (expected fail for now)", ["TYPE", "b"], lambda r: r[0] in ("simple", "error")),
-    ("KEYS (expected fail for now)", ["KEYS", "*"], expect_error()),
-    ("SCAN (expected fail for now)", ["SCAN", "0"], expect_error()),
-    ("FLUSHDB (expected fail for now)", ["FLUSHDB"], expect_error()),
-    ("FLUSHALL (expected fail for now)", ["FLUSHALL"], expect_error()),
+    ("KEYS", ["KEYS", "*"], lambda r: r[0] == "array"),
+    ("SCAN", ["SCAN", "0"], lambda r: r[0] == "array" and len(r[1]) == 2),
     # Expire
     ("EXPIRE (expected fail for now)", ["EXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
     ("PEXPIRE (expected fail for now)", ["PEXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
@@ -206,6 +204,8 @@ TESTS = [
     ("SAVE (expected fail for now)", ["SAVE"], expect_error()),
     ("BGSAVE (expected fail for now)", ["BGSAVE"], expect_error()),
     ("REPLICAOF (expected fail for now)", ["REPLICAOF", "NO", "ONE"], expect_error()),
+    ("FLUSHDB", ["FLUSHDB"], expect_simple("OK")),
+    ("FLUSHALL", ["FLUSHALL"], expect_simple("OK")),
 ]
 
 
