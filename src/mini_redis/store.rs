@@ -299,6 +299,112 @@ impl Db {
         }
     }
 
+    pub fn set_add(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
+        match entry {
+            Value::Set(set) => {
+                let mut added = 0;
+                for member in members {
+                    if set.insert(member.clone()) {
+                        added += 1;
+                    }
+                }
+                Ok(added)
+            }
+            _ => Err(()),
+        }
+    }
+
+    pub fn set_remove(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::Set(set)) => {
+                let mut removed = 0;
+                for member in members {
+                    if set.remove(member) {
+                        removed += 1;
+                    }
+                }
+                if set.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(removed)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn set_members(&mut self, key: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Set(set)) => Ok(set.iter().cloned().collect()),
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn set_is_member(&mut self, key: &[u8], member: &[u8]) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Set(set)) => Ok(set.contains(member)),
+            Some(_) => Err(()),
+            None => Ok(false),
+        }
+    }
+
+    pub fn set_card(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Set(set)) => Ok(set.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn set_move(&mut self, source: &[u8], dest: &[u8], member: &[u8]) -> Result<bool, ()> {
+        if self.is_expired(source) {
+            self.remove(source);
+        }
+        if self.is_expired(dest) {
+            self.remove(dest);
+        }
+        let remove_result = match self.data.get_mut(source) {
+            Some(Value::Set(set)) => set.remove(member),
+            Some(_) => return Err(()),
+            None => return Ok(false),
+        };
+        if !remove_result {
+            return Ok(false);
+        }
+        if let Some(Value::Set(set)) = self.data.get(source) {
+            if set.is_empty() {
+                self.data.remove(source);
+                self.expires.remove(source);
+            }
+        }
+        let entry = self.data.entry(dest.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
+        match entry {
+            Value::Set(set) => {
+                set.insert(member.to_vec());
+                Ok(true)
+            }
+            _ => Err(()),
+        }
+    }
+
     fn is_expired(&self, key: &[u8]) -> bool {
         if let Some(&ts) = self.expires.get(key) {
             return ts <= now_ms();

@@ -267,6 +267,93 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             None => RespValue::Error("ERR wrong number of arguments for 'LLEN'".to_string()),
         },
+        "SADD" => {
+            if args.len() < 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'SADD'".to_string());
+            }
+            let key = &args[0];
+            let members = &args[1..];
+            let db = &mut state.dbs[*db_index];
+            match db.set_add(key, members) {
+                Ok(added) => {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Integer(added)
+                }
+                Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+            }
+        }
+        "SREM" => {
+            if args.len() < 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'SREM'".to_string());
+            }
+            let key = &args[0];
+            let members = &args[1..];
+            let db = &mut state.dbs[*db_index];
+            match db.set_remove(key, members) {
+                Ok(removed) => {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Integer(removed)
+                }
+                Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+            }
+        }
+        "SMEMBERS" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.set_members(key) {
+                    Ok(members) => {
+                        let mut out = Vec::with_capacity(members.len());
+                        for member in members {
+                            out.push(RespValue::Blob(member));
+                        }
+                        RespValue::Array(out)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'SMEMBERS'".to_string()),
+        },
+        "SISMEMBER" => match (args.get(0), args.get(1)) {
+            (Some(key), Some(member)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.set_is_member(key, member) {
+                    Ok(exists) => RespValue::Integer(if exists { 1 } else { 0 }),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'SISMEMBER'".to_string()),
+        },
+        "SCARD" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.set_card(key) {
+                    Ok(len) => RespValue::Integer(len),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'SCARD'".to_string()),
+        },
+        "SMOVE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(source), Some(dest), Some(member)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.set_move(source, dest, member) {
+                    Ok(moved) => {
+                        if moved {
+                            if let Some(p) = state.persist.as_ref() {
+                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                            }
+                        }
+                        RespValue::Integer(if moved { 1 } else { 0 })
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'SMOVE'".to_string()),
+        },
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
