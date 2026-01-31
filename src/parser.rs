@@ -7,6 +7,7 @@ use crate::api::*;
 use crate::types::*;
 use crate::value::*;
 use crate::evals::*;
+use std::collections::HashSet;
 
 /// LValue key type for property access
 pub enum LValueKey {
@@ -1203,6 +1204,142 @@ pub fn split_base_and_tail(src: &str) -> Option<(&str, &str)> {
     Some((s, ""))
 }
 
+fn collect_free_vars(body: &str, params: &[String]) -> Vec<String> {
+    let mut locals: HashSet<String> = params.iter().cloned().collect();
+    let mut used: HashSet<String> = HashSet::new();
+    let keywords: HashSet<&str> = [
+        "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return",
+        "throw", "try", "catch", "finally", "var", "let", "const", "function", "new", "this",
+        "null", "true", "false", "undefined", "typeof", "in", "of", "instanceof", "delete",
+        "void", "yield", "await",
+    ]
+    .into_iter()
+    .collect();
+    let mut decl_mode = false;
+    let mut expect_func_name = false;
+    let mut wait_func_paren = false;
+    let mut func_param_depth: i32 = 0;
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut prev_non_ws: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_string {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == string_delim {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+        }
+        if b == b'\'' || b == b'\"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        if func_param_depth > 0 {
+            if b == b'(' {
+                func_param_depth += 1;
+            } else if b == b')' {
+                func_param_depth -= 1;
+            }
+            i += 1;
+            continue;
+        }
+        if wait_func_paren && b == b'(' {
+            wait_func_paren = false;
+            func_param_depth = 1;
+            i += 1;
+            continue;
+        }
+        if is_ident_start(b) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                let c = bytes[i];
+                if is_ident_start(c) || (b'0'..=b'9').contains(&c) {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            let name = &body[start..i];
+            if keywords.contains(name) {
+                if name == "var" || name == "let" || name == "const" {
+                    decl_mode = true;
+                } else if name == "function" {
+                    expect_func_name = true;
+                    wait_func_paren = true;
+                    decl_mode = false;
+                }
+                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
+                continue;
+            }
+            if expect_func_name {
+                locals.insert(name.to_string());
+                expect_func_name = false;
+                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
+                continue;
+            }
+            if decl_mode {
+                locals.insert(name.to_string());
+                prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
+                continue;
+            }
+            if prev_non_ws != Some(b'.') {
+                used.insert(name.to_string());
+            }
+            prev_non_ws = Some(name.as_bytes()[name.len() - 1]);
+            continue;
+        }
+        if b == b';' || b == b'\n' {
+            decl_mode = false;
+        }
+        if !b.is_ascii_whitespace() {
+            prev_non_ws = Some(b);
+        }
+        i += 1;
+    }
+    used.retain(|name| !locals.contains(name));
+    used.into_iter().collect()
+}
+
 /// Create a function object with parameters and body
 pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
     let params_str = params.join(",");
@@ -1218,8 +1355,8 @@ pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -
 
     let env = js_new_object(ctx);
     let global = js_get_global_object(ctx);
-    if let Some(keys) = get_object_keys(ctx, global) {
-        for key in keys {
+    for key in collect_free_vars(body, params) {
+        if ctx.has_property_str(global, key.as_bytes()) {
             let val = js_get_property_str(ctx, global, &key);
             js_set_property_str(ctx, env, &key, val);
         }
