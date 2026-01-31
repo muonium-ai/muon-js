@@ -139,7 +139,8 @@ TESTS = [
     ("EXPIRE (expected fail for now)", ["EXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
     ("PEXPIRE (expected fail for now)", ["PEXPIRE", "b", "1"], lambda r: r[0] in ("int", "error")),
     ("PTTL (expected fail for now)", ["PTTL", "b"], lambda r: r[0] in ("int", "error")),
-    ("PERSIST (expected fail for now)", ["PERSIST", "b"], expect_error()),
+    ("PERSIST", ["PERSIST", "b"], expect_int(1)),
+    ("PTTL after PERSIST", ["PTTL", "b"], expect_int(-1)),
     # String ops
     ("SETNX", ["SETNX", "k", "v"], expect_int(1)),
     ("SETNX again", ["SETNX", "k", "v2"], expect_int(0)),

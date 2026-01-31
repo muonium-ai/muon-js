@@ -79,6 +79,20 @@ impl Db {
         true
     }
 
+    pub fn persist(&mut self, key: &[u8]) -> i64 {
+        if self.is_expired(key) {
+            self.remove(key);
+            return 0;
+        }
+        if self.data.contains_key(key) {
+            if self.expires.remove(key).is_some() {
+                return 1;
+            }
+            return 0;
+        }
+        0
+    }
+
     pub fn purge_expired_all(&mut self) {
         let now = now_ms();
         let expired: Vec<Vec<u8>> = self.expires

@@ -574,6 +574,19 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             _ => RespValue::Error("ERR wrong number of arguments for 'PEXPIRE'".to_string()),
         },
+        "PERSIST" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                let removed = db.persist(key);
+                if removed == 1 {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                }
+                RespValue::Integer(removed)
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'PERSIST'".to_string()),
+        },
         "TTL" => match args.get(0) {
             Some(key) => {
                 let db = &mut state.dbs[*db_index];
