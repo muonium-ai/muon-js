@@ -1,3 +1,6 @@
 [submodule "vendor/mquickjs"]
 	path = vendor/mquickjs
 	url = https://github.com/bellard/mquickjs
+[submodule "vendor/redis"]
+	path = vendor/redis
+	url = https://github.com/redis/redis.git
