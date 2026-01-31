@@ -234,8 +234,8 @@
 **Impact**: High - enables pattern matching
 
 #### Closures (Partial support)
-- ⚠️ Basic closures work (function expressions + snapshot capture)
-- ❌ Proper lexical scope capture needs improvement
+- ✅ Lexical environments (per-scope bindings + chained lookup)
+- ⚠️ TDZ and strict let/const semantics not complete
 - ❌ Complex nested closures
 
 **Estimated effort**: 20-25 hours  
@@ -423,7 +423,7 @@ Number.isFinite(100)            // OK (static method)
 2. **No GC** - Uses Rust heap, not fixed buffer
 3. **No bytecode** - Direct AST evaluation
 4. **Simplified object model** - No property descriptors, prototypes limited
-5. **No proper closures** - Snapshot capture only, no true lexical env
+5. **No proper closures** - TDZ/strict let-const semantics incomplete
 6. **String storage** - Not using WTF-8 like mquickjs
 
 **Decision**: Incremental approach - ship working features now, refactor architecture later (Phase 6)
