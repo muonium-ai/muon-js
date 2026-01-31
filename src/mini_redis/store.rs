@@ -119,6 +119,186 @@ impl Db {
         }
     }
 
+    pub fn list_push(&mut self, key: &[u8], values: &[Vec<u8>], left: bool) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::List(Vec::new()));
+        match entry {
+            Value::List(list) => {
+                if left {
+                    for value in values {
+                        list.insert(0, value.clone());
+                    }
+                } else {
+                    for value in values {
+                        list.push(value.clone());
+                    }
+                }
+                Ok(list.len() as i64)
+            }
+            _ => Err(()),
+        }
+    }
+
+    pub fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.get_mut(key);
+        match entry {
+            Some(Value::List(list)) => {
+                let out = if list.is_empty() {
+                    None
+                } else if left {
+                    Some(list.remove(0))
+                } else {
+                    list.pop()
+                };
+                if list.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(out)
+            }
+            Some(_) => Err(()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_range(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::List(list)) => {
+                let len = list.len() as i64;
+                if len == 0 {
+                    return Ok(Vec::new());
+                }
+                let mut s = if start < 0 { len + start } else { start };
+                let mut e = if stop < 0 { len + stop } else { stop };
+                if s < 0 {
+                    s = 0;
+                }
+                if e < 0 {
+                    return Ok(Vec::new());
+                }
+                if s >= len {
+                    return Ok(Vec::new());
+                }
+                if e >= len {
+                    e = len - 1;
+                }
+                if s > e {
+                    return Ok(Vec::new());
+                }
+                let mut out = Vec::with_capacity((e - s + 1) as usize);
+                for i in s..=e {
+                    out.push(list[i as usize].clone());
+                }
+                Ok(out)
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn list_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::List(list)) => Ok(list.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn hash_set(&mut self, key: &[u8], field: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
+        match entry {
+            Value::Hash(map) => Ok(map.insert(field, value).is_none()),
+            _ => Err(()),
+        }
+    }
+
+    pub fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Hash(map)) => Ok(map.get(field).cloned()),
+            Some(_) => Err(()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn hash_del(&mut self, key: &[u8], fields: &[Vec<u8>]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::Hash(map)) => {
+                let mut removed = 0;
+                for field in fields {
+                    if map.remove(field).is_some() {
+                        removed += 1;
+                    }
+                }
+                if map.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(removed)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn hash_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Hash(map)) => Ok(map.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn hash_exists(&mut self, key: &[u8], field: &[u8]) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Hash(map)) => Ok(map.contains_key(field)),
+            Some(_) => Err(()),
+            None => Ok(false),
+        }
+    }
+
+    pub fn hash_getall(&mut self, key: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Hash(map)) => {
+                let mut out = Vec::with_capacity(map.len() * 2);
+                for (field, value) in map.iter() {
+                    out.push((field.clone(), value.clone()));
+                }
+                Ok(out)
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
     fn is_expired(&self, key: &[u8]) -> bool {
         if let Some(&ts) = self.expires.get(key) {
             return ts <= now_ms();

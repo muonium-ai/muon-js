@@ -119,6 +119,154 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             None => RespValue::Error("ERR wrong number of arguments for 'GET'".to_string()),
         },
+        "HSET" => {
+            if args.len() < 3 || args.len() % 2 == 0 {
+                return RespValue::Error("ERR wrong number of arguments for 'HSET'".to_string());
+            }
+            let key = &args[0];
+            let mut added = 0;
+            let db = &mut state.dbs[*db_index];
+            let mut idx = 1;
+            while idx + 1 < args.len() {
+                let field = args[idx].clone();
+                let value = args[idx + 1].clone();
+                match db.hash_set(key, field, value) {
+                    Ok(is_new) => {
+                        if is_new {
+                            added += 1;
+                        }
+                    }
+                    Err(_) => {
+                        return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string());
+                    }
+                }
+                idx += 2;
+            }
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+            }
+            RespValue::Integer(added)
+        }
+        "HGET" => match (args.get(0), args.get(1)) {
+            (Some(key), Some(field)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.hash_get(key, field) {
+                    Ok(Some(v)) => RespValue::Blob(v),
+                    Ok(None) => RespValue::Null,
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'HGET'".to_string()),
+        },
+        "HDEL" => {
+            if args.len() < 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'HDEL'".to_string());
+            }
+            let key = &args[0];
+            let fields = &args[1..];
+            let db = &mut state.dbs[*db_index];
+            match db.hash_del(key, fields) {
+                Ok(removed) => {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Integer(removed)
+                }
+                Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+            }
+        }
+        "HGETALL" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.hash_getall(key) {
+                    Ok(items) => {
+                        let mut out = Vec::with_capacity(items.len() * 2);
+                        for (field, value) in items {
+                            out.push(RespValue::Blob(field));
+                            out.push(RespValue::Blob(value));
+                        }
+                        RespValue::Array(out)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'HGETALL'".to_string()),
+        },
+        "HLEN" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.hash_len(key) {
+                    Ok(len) => RespValue::Integer(len),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'HLEN'".to_string()),
+        },
+        "HEXISTS" => match (args.get(0), args.get(1)) {
+            (Some(key), Some(field)) => {
+                let db = &mut state.dbs[*db_index];
+                match db.hash_exists(key, field) {
+                    Ok(exists) => RespValue::Integer(if exists { 1 } else { 0 }),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'HEXISTS'".to_string()),
+        },
+        "LPUSH" | "RPUSH" => {
+            if args.len() < 2 {
+                return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
+            }
+            let key = &args[0];
+            let values = &args[1..];
+            let db = &mut state.dbs[*db_index];
+            match db.list_push(key, values, cmd == "LPUSH") {
+                Ok(len) => {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Integer(len)
+                }
+                Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+            }
+        }
+        "LPOP" | "RPOP" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.list_pop(key, cmd == "LPOP") {
+                    Ok(Some(v)) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Blob(v)
+                    }
+                    Ok(None) => RespValue::Null,
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd)),
+        },
+        "LRANGE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(start), Some(stop)) => {
+                let start = parse_i64(start).unwrap_or(0);
+                let stop = parse_i64(stop).unwrap_or(-1);
+                let db = &mut state.dbs[*db_index];
+                match db.list_range(key, start, stop) {
+                    Ok(items) => RespValue::Array(items.into_iter().map(RespValue::Blob).collect()),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'LRANGE'".to_string()),
+        },
+        "LLEN" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.list_len(key) {
+                    Ok(len) => RespValue::Integer(len),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'LLEN'".to_string()),
+        },
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
@@ -272,6 +420,10 @@ fn parse_usize(input: &[u8]) -> Option<usize> {
 
 fn parse_u64(input: &[u8]) -> Option<u64> {
     core::str::from_utf8(input).ok()?.parse::<u64>().ok()
+}
+
+fn parse_i64(input: &[u8]) -> Option<i64> {
+    core::str::from_utf8(input).ok()?.parse::<i64>().ok()
 }
 
 fn to_upper_ascii(input: &[u8]) -> String {

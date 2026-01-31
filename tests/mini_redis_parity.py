@@ -84,6 +84,35 @@ def expect_null():
 def expect_error():
     return lambda resp: resp[0] == "error"
 
+def expect_list(values):
+    def check(resp):
+        if resp[0] != "array":
+            return False
+        items = resp[1]
+        if len(items) != len(values):
+            return False
+        for item, expected in zip(items, values):
+            if item[0] != "blob" or item[1] != expected:
+                return False
+        return True
+    return check
+
+def expect_hash_pair(field, value):
+    def check(resp):
+        if resp[0] != "array":
+            return False
+        items = resp[1]
+        if len(items) != 2:
+            return False
+        pairs = [(items[0], items[1])]
+        for a, b in pairs:
+            if a[0] == "blob" and b[0] == "blob":
+                if a[1] == field and b[1] == value:
+                    return True
+                if a[1] == value and b[1] == field:
+                    return True
+        return False
+    return check
 
 TESTS = [
     # Connection / server
@@ -123,12 +152,14 @@ TESTS = [
     ("DECRBY (expected fail for now)", ["DECRBY", "counter", "5"], expect_error()),
     ("STRLEN (expected fail for now)", ["STRLEN", "k1"], expect_error()),
     # Lists
-    ("LPUSH (expected fail for now)", ["LPUSH", "l", "1"], expect_error()),
-    ("RPUSH (expected fail for now)", ["RPUSH", "l", "2"], expect_error()),
-    ("LPOP (expected fail for now)", ["LPOP", "l"], expect_error()),
-    ("RPOP (expected fail for now)", ["RPOP", "l"], expect_error()),
-    ("LRANGE (expected fail for now)", ["LRANGE", "l", "0", "-1"], expect_error()),
-    ("LLEN (expected fail for now)", ["LLEN", "l"], expect_error()),
+    ("LPUSH", ["LPUSH", "l", "1", "2"], expect_int(2)),
+    ("LPOP", ["LPOP", "l"], expect_blob(b"2")),
+    ("RPUSH", ["RPUSH", "l", "3"], expect_int(2)),
+    ("LRANGE", ["LRANGE", "l", "0", "-1"], expect_list([b"1", b"3"])),
+    ("LLEN", ["LLEN", "l"], expect_int(2)),
+    ("RPOP", ["RPOP", "l"], expect_blob(b"3")),
+    ("LPOP empty", ["LPOP", "l"], expect_blob(b"1")),
+    ("LLEN empty", ["LLEN", "l"], expect_int(0)),
     # Sets
     ("SADD (expected fail for now)", ["SADD", "s", "1"], expect_error()),
     ("SREM (expected fail for now)", ["SREM", "s", "1"], expect_error()),
@@ -137,12 +168,13 @@ TESTS = [
     ("SCARD (expected fail for now)", ["SCARD", "s"], expect_error()),
     ("SMOVE (expected fail for now)", ["SMOVE", "s", "s2", "1"], expect_error()),
     # Hashes
-    ("HSET (expected fail for now)", ["HSET", "h", "f", "v"], expect_error()),
-    ("HGET (expected fail for now)", ["HGET", "h", "f"], expect_error()),
-    ("HDEL (expected fail for now)", ["HDEL", "h", "f"], expect_error()),
-    ("HGETALL (expected fail for now)", ["HGETALL", "h"], expect_error()),
-    ("HLEN (expected fail for now)", ["HLEN", "h"], expect_error()),
-    ("HEXISTS (expected fail for now)", ["HEXISTS", "h", "f"], expect_error()),
+    ("HSET", ["HSET", "h", "f", "v"], expect_int(1)),
+    ("HGET", ["HGET", "h", "f"], expect_blob(b"v")),
+    ("HEXISTS", ["HEXISTS", "h", "f"], expect_int(1)),
+    ("HLEN", ["HLEN", "h"], expect_int(1)),
+    ("HGETALL", ["HGETALL", "h"], expect_hash_pair(b"f", b"v")),
+    ("HDEL", ["HDEL", "h", "f"], expect_int(1)),
+    ("HGET missing", ["HGET", "h", "f"], expect_null()),
     # Sorted sets
     ("ZADD (expected fail for now)", ["ZADD", "z", "1", "a"], expect_error()),
     ("ZRANGE (expected fail for now)", ["ZRANGE", "z", "0", "-1"], expect_error()),
