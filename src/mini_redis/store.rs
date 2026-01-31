@@ -1,10 +1,13 @@
 //! In-memory multi-DB store with TTL support.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Vec<u8>),
+    List(Vec<Vec<u8>>),
+    Set(HashSet<Vec<u8>>),
+    Hash(HashMap<Vec<u8>, Vec<u8>>),
 }
 
 #[derive(Default)]
@@ -109,6 +112,9 @@ impl Db {
         }
         match self.data.get(key) {
             Some(Value::String(_)) => Some("string"),
+            Some(Value::List(_)) => Some("list"),
+            Some(Value::Set(_)) => Some("set"),
+            Some(Value::Hash(_)) => Some("hash"),
             None => None,
         }
     }
