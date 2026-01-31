@@ -1937,6 +1937,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         };
         return Some(js_new_string(ctx, type_str));
     }
+    if s.starts_with("function") {
+        if let Some(val) = eval_value(ctx, s) {
+            return Some(val);
+        }
+    }
     let (base, tail) = split_base_and_tail(s)?;
     let mut val = eval_value(ctx, base)?;
     let mut this_val = Value::UNDEFINED;

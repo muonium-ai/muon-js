@@ -85,6 +85,28 @@ mod tests {
     }
 
     #[test]
+    fn chained_method_calls() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(&mut ctx, "\"test\".charAt(0).toUpperCase()");
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let s = JS_ToCString(&mut ctx, res, &mut buf);
+        assert_eq!(s, "T");
+    }
+
+    #[test]
+    fn closure_captures_param() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(x){ return function(){ return x; }; } var f = outer(7); f()",
+        );
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 7);
+    }
+
+    #[test]
     fn to_number_strings() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

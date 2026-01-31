@@ -7,6 +7,7 @@ use crate::api::*;
 use crate::types::*;
 use crate::value::*;
 use crate::helpers::*;
+use crate::parser::{create_function, extract_braces, extract_paren, parse_identifier};
 
 /// Evaluate a simple value expression (literals, identifiers, etc.)
 pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
@@ -28,6 +29,41 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     if s == "false" {
         return Some(Value::FALSE);
+    }
+    if s.starts_with("function") {
+        let rest = s[8..].trim_start();
+        let (name_opt, after_name) = if rest.starts_with('(') {
+            (None, rest)
+        } else {
+            let (name, after) = parse_identifier(rest)?;
+            (Some(name.to_string()), after.trim_start())
+        };
+        if !after_name.starts_with('(') {
+            return None;
+        }
+        let (params_str, after_params) = extract_paren(after_name)?;
+        let after_params = after_params.trim_start();
+        if !after_params.starts_with('{') {
+            return None;
+        }
+        let (body, tail) = extract_braces(after_params)?;
+        if !tail.trim().is_empty() {
+            return None;
+        }
+        let param_list = split_top_level(params_str)?;
+        let mut params = Vec::new();
+        for p in param_list {
+            let p = p.trim();
+            if !p.is_empty() {
+                params.push(p.to_string());
+            }
+        }
+        let func = create_function(ctx, &params, body)?;
+        if let Some(name) = name_opt {
+            let name_val = js_new_string(ctx, &name);
+            js_set_property_str(ctx, func, "name", name_val);
+        }
+        return Some(func);
     }
     let global = js_get_global_object(ctx);
     let mut builtin_or_global = |name: &str, marker: &str| -> JSValue {

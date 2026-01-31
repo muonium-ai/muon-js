@@ -1215,6 +1215,16 @@ pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -
     js_set_property_str(ctx, func, "__params__", params_val);
     js_set_property_str(ctx, func, "__body__", body_val);
     js_set_property_str(ctx, func, "__closure__", Value::TRUE);
+
+    let env = js_new_object(ctx);
+    let global = js_get_global_object(ctx);
+    if let Some(keys) = get_object_keys(ctx, global) {
+        for key in keys {
+            let val = js_get_property_str(ctx, global, &key);
+            js_set_property_str(ctx, env, &key, val);
+        }
+    }
+    js_set_property_str(ctx, func, "__env__", env);
     
     Some(func)
 }
@@ -1223,6 +1233,7 @@ pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -
 pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Option<JSValue> {
     let params_val = js_get_property_str(ctx, func, "__params__");
     let body_val = js_get_property_str(ctx, func, "__body__");
+    let env_val = js_get_property_str(ctx, func, "__env__");
     
     let params_bytes = ctx.string_bytes(params_val)?;
     let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
@@ -1236,6 +1247,21 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
     
     let saved_global = js_get_global_object(ctx);
+    let mut saved_env = Vec::new();
+    if let Some(keys) = get_object_keys(ctx, env_val) {
+        for key in keys {
+            let had = ctx.has_property_str(saved_global, key.as_bytes());
+            let old = if had {
+                js_get_property_str(ctx, saved_global, &key)
+            } else {
+                Value::UNDEFINED
+            };
+            saved_env.push((key.clone(), had, old));
+            let val = js_get_property_str(ctx, env_val, &key);
+            js_set_property_str(ctx, saved_global, &key, val);
+        }
+    }
+
     let mut saved = Vec::with_capacity(param_names.len());
     for (i, param_name) in param_names.iter().enumerate() {
         let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
@@ -1256,6 +1282,14 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     }
 
     for (name, had, old) in saved {
+        if had {
+            js_set_property_str(ctx, saved_global, &name, old);
+        } else {
+            js_set_property_str(ctx, saved_global, &name, Value::UNDEFINED);
+        }
+    }
+
+    for (name, had, old) in saved_env {
         if had {
             js_set_property_str(ctx, saved_global, &name, old);
         } else {
