@@ -19,7 +19,9 @@ impl VM {
         let func = &_module.functions[_module.main];
         let mut stack: Vec<JSValue> = Vec::new();
         let global = crate::api::js_get_global_object(ctx);
-        for ins in &func.code {
+        let mut pc = 0usize;
+        while pc < func.code.len() {
+            let ins = func.code[pc];
             match ins.op {
                 OpCode::Nop => {}
                 OpCode::Const => {
@@ -111,6 +113,20 @@ impl VM {
                     };
                     stack.push(result);
                 }
+                OpCode::Jump => {
+                    pc = ins.a as usize;
+                    continue;
+                }
+                OpCode::JumpIfFalse => {
+                    let v = match stack.pop() {
+                        Some(v) => v,
+                        None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
+                    };
+                    if !crate::evals::is_truthy(v) {
+                        pc = ins.a as usize;
+                        continue;
+                    }
+                }
                 OpCode::LoadGlobal => {
                     let idx = ins.a as usize;
                     let name_val = match func.constants.get(idx) {
@@ -152,10 +168,8 @@ impl VM {
                 OpCode::Return => {
                     return stack.pop().unwrap_or(JSValue::UNDEFINED);
                 }
-                OpCode::Jump | OpCode::JumpIfFalse => {
-                    return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode jump not implemented");
-                }
             }
+            pc += 1;
         }
         JSValue::UNDEFINED
     }

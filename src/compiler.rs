@@ -175,16 +175,35 @@ impl<'a> ExprCompiler<'a> {
     }
 
     fn parse_comma(&mut self) -> Result<(), CompileError> {
-        self.parse_logical_or()?;
+        self.parse_conditional()?;
         loop {
             self.skip_ws();
             if self.consume(b',') {
                 self.emit_op(OpCode::Drop);
-                self.parse_logical_or()?;
+                self.parse_conditional()?;
             } else {
                 break;
             }
         }
+        Ok(())
+    }
+
+    fn parse_conditional(&mut self) -> Result<(), CompileError> {
+        self.parse_logical_or()?;
+        self.skip_ws();
+        if !self.consume(b'?') {
+            return Ok(());
+        }
+        let jump_if_false = self.emit_jump(OpCode::JumpIfFalse);
+        self.parse_conditional()?;
+        let jump_end = self.emit_jump(OpCode::Jump);
+        self.patch_jump(jump_if_false);
+        self.skip_ws();
+        if !self.consume(b':') {
+            return Err(CompileError { message: "missing ':'".to_string() });
+        }
+        self.parse_conditional()?;
+        self.patch_jump(jump_end);
         Ok(())
     }
 
@@ -287,6 +306,19 @@ impl<'a> ExprCompiler<'a> {
         let idx = self.func.constants.len();
         self.func.constants.push(name_val);
         self.func.code.push(Instruction { op, a: idx as u32, b: 0, c: 0 });
+    }
+
+    fn emit_jump(&mut self, op: OpCode) -> usize {
+        let idx = self.func.code.len();
+        self.func.code.push(Instruction { op, a: 0, b: 0, c: 0 });
+        idx
+    }
+
+    fn patch_jump(&mut self, at: usize) {
+        let target = self.func.code.len() as u32;
+        if let Some(ins) = self.func.code.get_mut(at) {
+            ins.a = target;
+        }
     }
 
     fn skip_ws(&mut self) {

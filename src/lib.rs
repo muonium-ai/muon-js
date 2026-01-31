@@ -340,6 +340,22 @@ mod tests {
     }
 
     #[test]
+    fn bytecode_compiler_ternary() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut compiler = crate::compiler::Compiler::new();
+        let mut vm = crate::vm::VM::new();
+        let module = compiler.compile_program(&mut ctx, "1 ? 2 : 3").expect("compile");
+        let out = vm.run_module(&mut ctx, &module);
+        let n = JS_ToNumber(&mut ctx, out).unwrap();
+        assert_eq!(n, 2.0);
+        let module = compiler.compile_program(&mut ctx, "0 ? 2 : 3").expect("compile");
+        let out = vm.run_module(&mut ctx, &module);
+        let n = JS_ToNumber(&mut ctx, out).unwrap();
+        assert_eq!(n, 3.0);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
