@@ -8,6 +8,7 @@ pub enum Value {
     List(Vec<Vec<u8>>),
     Set(HashSet<Vec<u8>>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
+    ZSet(Vec<(Vec<u8>, f64)>),
 }
 
 #[derive(Default)]
@@ -129,6 +130,7 @@ impl Db {
             Some(Value::List(_)) => Some("list"),
             Some(Value::Set(_)) => Some("set"),
             Some(Value::Hash(_)) => Some("hash"),
+            Some(Value::ZSet(_)) => Some("zset"),
             None => None,
         }
     }
@@ -480,6 +482,97 @@ impl Db {
                 Ok(true)
             }
             _ => Err(()),
+        }
+    }
+
+    pub fn zadd(&mut self, key: &[u8], score: f64, member: Vec<u8>) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::ZSet(Vec::new()));
+        match entry {
+            Value::ZSet(items) => {
+                for item in items.iter_mut() {
+                    if item.0 == member {
+                        item.1 = score;
+                        return Ok(false);
+                    }
+                }
+                items.push((member, score));
+                Ok(true)
+            }
+            _ => Err(()),
+        }
+    }
+
+    pub fn zrem(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::ZSet(items)) => {
+                let before = items.len();
+                items.retain(|(m, _)| !members.iter().any(|x| x == m));
+                let removed = (before - items.len()) as i64;
+                if items.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(removed)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn zcard(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::ZSet(items)) => Ok(items.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn zrange(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::ZSet(items)) => {
+                if items.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let mut sorted = items.clone();
+                sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
+                let len = sorted.len() as i64;
+                let mut s = if start < 0 { len + start } else { start };
+                let mut e = if stop < 0 { len + stop } else { stop };
+                if s < 0 {
+                    s = 0;
+                }
+                if e < 0 {
+                    return Ok(Vec::new());
+                }
+                if s >= len {
+                    return Ok(Vec::new());
+                }
+                if e >= len {
+                    e = len - 1;
+                }
+                if s > e {
+                    return Ok(Vec::new());
+                }
+                let mut out = Vec::with_capacity((e - s + 1) as usize);
+                for i in s..=e {
+                    out.push(sorted[i as usize].0.clone());
+                }
+                Ok(out)
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
         }
     }
 

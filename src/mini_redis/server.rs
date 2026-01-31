@@ -511,6 +511,75 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             }
             _ => RespValue::Error("ERR wrong number of arguments for 'SMOVE'".to_string()),
         },
+        "ZADD" => {
+            if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+                return RespValue::Error("ERR wrong number of arguments for 'ZADD'".to_string());
+            }
+            let key = &args[0];
+            let db = &mut state.dbs[*db_index];
+            let mut added = 0;
+            let mut idx = 1;
+            while idx + 1 < args.len() {
+                let score = parse_f64(&args[idx]).unwrap_or(0.0);
+                let member = args[idx + 1].clone();
+                match db.zadd(key, score, member) {
+                    Ok(is_new) => {
+                        if is_new {
+                            added += 1;
+                        }
+                    }
+                    Err(_) => {
+                        return RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string());
+                    }
+                }
+                idx += 2;
+            }
+            if let Some(p) = state.persist.as_ref() {
+                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+            }
+            RespValue::Integer(added)
+        }
+        "ZRANGE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(start), Some(stop)) => {
+                let start = parse_i64(start).unwrap_or(0);
+                let stop = parse_i64(stop).unwrap_or(-1);
+                let db = &mut state.dbs[*db_index];
+                match db.zrange(key, start, stop) {
+                    Ok(items) => RespValue::Array(items.into_iter().map(RespValue::Blob).collect()),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'ZRANGE'".to_string()),
+        },
+        "ZREM" => {
+            if args.len() < 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'ZREM'".to_string());
+            }
+            let key = &args[0];
+            let members = &args[1..];
+            let db = &mut state.dbs[*db_index];
+            match db.zrem(key, members) {
+                Ok(removed) => {
+                    if removed > 0 {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                    }
+                    RespValue::Integer(removed)
+                }
+                Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+            }
+        }
+        "ZCARD" => match args.get(0) {
+            Some(key) => {
+                let db = &mut state.dbs[*db_index];
+                match db.zcard(key) {
+                    Ok(len) => RespValue::Integer(len),
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            None => RespValue::Error("ERR wrong number of arguments for 'ZCARD'".to_string()),
+        },
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let db = &mut state.dbs[*db_index];
@@ -681,6 +750,10 @@ fn parse_u64(input: &[u8]) -> Option<u64> {
 
 fn parse_i64(input: &[u8]) -> Option<i64> {
     core::str::from_utf8(input).ok()?.parse::<i64>().ok()
+}
+
+fn parse_f64(input: &[u8]) -> Option<f64> {
+    core::str::from_utf8(input).ok()?.parse::<f64>().ok()
 }
 
 fn to_upper_ascii(input: &[u8]) -> String {

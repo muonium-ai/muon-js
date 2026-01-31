@@ -179,10 +179,10 @@ TESTS = [
     ("HDEL", ["HDEL", "h", "f"], expect_int(1)),
     ("HGET missing", ["HGET", "h", "f"], expect_null()),
     # Sorted sets
-    ("ZADD (expected fail for now)", ["ZADD", "z", "1", "a"], expect_error()),
-    ("ZRANGE (expected fail for now)", ["ZRANGE", "z", "0", "-1"], expect_error()),
-    ("ZREM (expected fail for now)", ["ZREM", "z", "a"], expect_error()),
-    ("ZCARD (expected fail for now)", ["ZCARD", "z"], expect_error()),
+    ("ZADD", ["ZADD", "z", "2", "b", "1", "a"], expect_int(2)),
+    ("ZCARD", ["ZCARD", "z"], expect_int(2)),
+    ("ZRANGE", ["ZRANGE", "z", "0", "-1"], expect_list([b"a", b"b"])),
+    ("ZREM", ["ZREM", "z", "a"], expect_int(1)),
     # Streams
     ("XADD (expected fail for now)", ["XADD", "s", "*", "f", "v"], expect_error()),
     ("XRANGE (expected fail for now)", ["XRANGE", "s", "-", "+"], expect_error()),
