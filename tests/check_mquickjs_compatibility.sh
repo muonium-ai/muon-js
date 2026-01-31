@@ -53,8 +53,8 @@ extract_and_run_test() {
     
     # Copy helper functions and the test function, then call it
     {
-        # Extract everything before the test functions
-        sed -n '1,/^function test_/p' "$test_path" | head -n -1
+        # Extract everything before the test functions (portable: drop last line)
+        sed -n '1,/^function test_/p' "$test_path" | sed '$d'
         # Extract the specific test function
         sed -n "/^function ${test_name}(/,/^}/p" "$test_path"
         # Call the test function
