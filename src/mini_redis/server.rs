@@ -1037,6 +1037,25 @@ fn handle_script_command(state: &mut ServerState, args: &[Vec<u8>]) -> RespValue
             state.script_cache.insert(sha.clone(), script.to_string());
             RespValue::Blob(sha.into_bytes())
         }
+        "EXISTS" => {
+            if args.len() < 2 {
+                return RespValue::Error("ERR wrong number of arguments for 'SCRIPT EXISTS'".to_string());
+            }
+            let mut out = Vec::with_capacity(args.len() - 1);
+            for sha in &args[1..] {
+                let s = match std::str::from_utf8(sha) {
+                    Ok(v) => v,
+                    Err(_) => "",
+                };
+                let exists = state.script_cache.contains_key(s);
+                out.push(RespValue::Integer(if exists { 1 } else { 0 }));
+            }
+            RespValue::Array(out)
+        }
+        "FLUSH" => {
+            state.script_cache.clear();
+            RespValue::Simple("OK".to_string())
+        }
         _ => RespValue::Error("ERR unknown subcommand for SCRIPT".to_string()),
     }
 }

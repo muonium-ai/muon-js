@@ -198,7 +198,10 @@ TESTS = [
     ("EVAL redis.call", ["EVAL", "return redis.call('SET', KEYS[0], ARGV[0])", "1", "evalkey", "evalval"], lambda r: (r[0] in ("simple", "blob") and r[1] == b"OK") or (r[0] == "simple" and r[1] == "OK")),
     ("GET evalkey", ["GET", "evalkey"], expect_blob(b"evalval")),
     ("SCRIPT LOAD", ["SCRIPT", "LOAD", "return 2"], lambda r: r[0] == "blob"),
+    ("SCRIPT EXISTS", ["SCRIPT", "EXISTS", "__SCRIPT_SHA__", "deadbeef"], lambda r: r[0] == "array" and len(r[1]) == 2),
     ("EVALSHA", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_int(2)),
+    ("SCRIPT FLUSH", ["SCRIPT", "FLUSH"], expect_simple("OK")),
+    ("EVALSHA missing", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_error()),
     ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
     # Server / config
     ("CONFIG GET", ["CONFIG", "GET", "*"], lambda r: r[0] == "array"),
@@ -231,6 +234,8 @@ def main():
     failed = 0
     last_script_sha = None
     for name, cmd, check in TESTS:
+        if cmd:
+            cmd = [last_script_sha if (last_script_sha is not None and v == "__SCRIPT_SHA__") else v for v in cmd]
         if cmd and cmd[0] == "EVALSHA":
             if last_script_sha is None:
                 failed += 1
