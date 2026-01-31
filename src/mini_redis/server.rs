@@ -5,10 +5,21 @@ use async_std::net::{TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
 use async_std::channel::Sender;
+use std::ffi::c_void;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
 use crate::mini_redis::persist::Persist;
 use crate::mini_redis::store::Db;
+use crate::{
+    JSContextImpl, JS_EVAL_RETVAL, JS_GetException, JS_GetGlobalObject, JS_IsBool, JS_IsNull,
+    JS_IsNumber, JS_IsString, JS_IsUndefined, JS_NewArray, JS_NewCFunctionParams, JS_NewInt64,
+    JS_NewObject, JS_NewString, JS_NewStringLen, JS_RegisterStdlibMinimal, JS_SetCFunctionTable,
+    JS_SetContextOpaque, JS_SetPropertyStr, JS_SetPropertyUint32, JS_ToCString, JS_ToNumber,
+};
+use crate::{JSCFunctionDef, JSCFunctionDefEnum, JSCFunctionType, JSCStringBuf, JSValue};
+use crate::{JS_Eval, JS_ThrowInternalError};
+
+const SCRIPT_MEM_SIZE: usize = 256 * 1024;
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -63,6 +74,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
     let mut in_multi = false;
     let mut queued: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
     let (pub_tx, pub_rx) = async_std::channel::unbounded::<RespValue>();
+    let mut script_runtime: Option<ScriptRuntime> = None;
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -112,14 +124,14 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 let mut results = Vec::with_capacity(queued.len());
                 let mut guard = state.lock().await;
                 for (qcmd, qargs) in queued.drain(..) {
-                    let resp = handle_command(&mut guard, &mut current_db, &qcmd, &qargs).await;
+                    let resp = handle_command(&mut guard, &mut current_db, &mut script_runtime, &qcmd, &qargs).await;
                     results.push(resp);
                 }
                 RespValue::Array(results)
             }
         } else {
             let mut guard = state.lock().await;
-            handle_command(&mut guard, &mut current_db, &cmd, &args[1..]).await
+            handle_command(&mut guard, &mut current_db, &mut script_runtime, &cmd, &args[1..]).await
         };
         write_value(&mut &stream, &resp).await?;
         while let Ok(msg) = pub_rx.try_recv() {
@@ -185,7 +197,13 @@ async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Vec<u8>]) -> Re
     RespValue::Integer(delivered)
 }
 
-async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str, args: &[Vec<u8>]) -> RespValue {
+async fn handle_command(
+    state: &mut ServerState,
+    db_index: &mut usize,
+    script: &mut Option<ScriptRuntime>,
+    cmd: &str,
+    args: &[Vec<u8>],
+) -> RespValue {
     match cmd {
         "PING" => {
             if let Some(arg) = args.get(0) {
@@ -889,7 +907,13 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
             RespValue::Simple("OK".to_string())
         }
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec()),
-        "EVAL" | "EVALSHA" | "SCRIPT" => RespValue::Error("ERR scripting not implemented".to_string()),
+        "EVAL" => {
+            if script.is_none() {
+                *script = Some(ScriptRuntime::new());
+            }
+            eval_script(state, db_index, script.as_mut().unwrap(), args)
+        }
+        "EVALSHA" | "SCRIPT" => RespValue::Error("ERR scripting not implemented".to_string()),
         "CONFIG" => {
             if args.len() >= 1 && to_upper_ascii(&args[0]) == "GET" {
                 RespValue::Array(Vec::new())
@@ -917,6 +941,218 @@ async fn handle_command(state: &mut ServerState, db_index: &mut usize, cmd: &str
         "QUIT" => RespValue::Simple("OK".to_string()),
         _ => RespValue::Error(format!("ERR unknown command '{}'", cmd)),
     }
+}
+
+fn eval_script(
+    state: &mut ServerState,
+    db_index: &mut usize,
+    script_runtime: &mut ScriptRuntime,
+    args: &[Vec<u8>],
+) -> RespValue {
+    if args.len() < 2 {
+        return RespValue::Error("ERR wrong number of arguments for 'EVAL'".to_string());
+    }
+    let script = match std::str::from_utf8(&args[0]) {
+        Ok(s) => s,
+        Err(_) => return RespValue::Error("ERR invalid script".to_string()),
+    };
+    let numkeys = match parse_usize(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::Error("ERR invalid number of keys".to_string()),
+    };
+    if args.len() < 2 + numkeys {
+        return RespValue::Error("ERR invalid number of keys".to_string());
+    }
+    let keys = &args[2..2 + numkeys];
+    let argv = &args[2 + numkeys..];
+    script_runtime.set_keys_argv(keys, argv);
+    let mut exec = ScriptExec {
+        state: state as *mut ServerState,
+        db_index: db_index as *mut usize,
+    };
+    let ctx = &mut script_runtime.ctx;
+    JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
+    let wrapped = format!("function __redis_script__(){{\n{}\n}}\n__redis_script__()", script);
+    let result = JS_Eval(ctx, &wrapped, "<eval>", JS_EVAL_RETVAL);
+    JS_SetContextOpaque(ctx, std::ptr::null_mut());
+    if result.is_exception() {
+        let exc = JS_GetException(ctx);
+        let msg = js_value_to_string(ctx, exc);
+        return RespValue::Error(msg);
+    }
+    js_to_resp(ctx, result)
+}
+
+struct ScriptRuntime {
+    mem: Vec<u8>,
+    ctx: JSContextImpl,
+    cfuncs: Vec<JSCFunctionDef>,
+}
+
+unsafe impl Send for ScriptRuntime {}
+
+impl ScriptRuntime {
+    fn new() -> Self {
+        let mut mem = vec![0u8; SCRIPT_MEM_SIZE];
+        let mut ctx = crate::JS_NewContext(&mut mem);
+        let _ = JS_RegisterStdlibMinimal(&mut ctx);
+        let cfuncs = vec![
+            JSCFunctionDef {
+                func: JSCFunctionType { generic_magic: Some(redis_call) },
+                name: JSValue::UNDEFINED,
+                def_type: JSCFunctionDefEnum::GenericMagic as u8,
+                arg_count: 1,
+                magic: 0,
+            },
+            JSCFunctionDef {
+                func: JSCFunctionType { generic_magic: Some(redis_call) },
+                name: JSValue::UNDEFINED,
+                def_type: JSCFunctionDefEnum::GenericMagic as u8,
+                arg_count: 1,
+                magic: 1,
+            },
+        ];
+        JS_SetCFunctionTable(&mut ctx, &cfuncs);
+        let redis_obj = JS_NewObject(&mut ctx);
+        let call_fn = JS_NewCFunctionParams(&mut ctx, 0, JSValue::UNDEFINED);
+        let pcall_fn = JS_NewCFunctionParams(&mut ctx, 1, JSValue::UNDEFINED);
+        let _ = JS_SetPropertyStr(&mut ctx, redis_obj, "call", call_fn);
+        let _ = JS_SetPropertyStr(&mut ctx, redis_obj, "pcall", pcall_fn);
+        let global = JS_GetGlobalObject(&mut ctx);
+        let _ = JS_SetPropertyStr(&mut ctx, global, "redis", redis_obj);
+        Self { mem, ctx, cfuncs }
+    }
+
+    fn set_keys_argv(&mut self, keys: &[Vec<u8>], argv: &[Vec<u8>]) {
+        let global = JS_GetGlobalObject(&mut self.ctx);
+        let keys_arr = JS_NewArray(&mut self.ctx, keys.len() as i32);
+        for (idx, key) in keys.iter().enumerate() {
+            let v = JS_NewStringLen(&mut self.ctx, key);
+            let _ = JS_SetPropertyUint32(&mut self.ctx, keys_arr, idx as u32, v);
+        }
+        let argv_arr = JS_NewArray(&mut self.ctx, argv.len() as i32);
+        for (idx, arg) in argv.iter().enumerate() {
+            let v = JS_NewStringLen(&mut self.ctx, arg);
+            let _ = JS_SetPropertyUint32(&mut self.ctx, argv_arr, idx as u32, v);
+        }
+        let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
+        let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
+    }
+}
+
+struct ScriptExec {
+    state: *mut ServerState,
+    db_index: *mut usize,
+}
+
+fn redis_call(
+    ctx: *mut crate::JSContext,
+    _this_val: *mut JSValue,
+    argc: i32,
+    argv: *mut JSValue,
+    magic: i32,
+) -> JSValue {
+    if argc < 1 {
+        unsafe {
+            let ctx = &mut *(ctx as *mut JSContextImpl);
+            return JS_ThrowInternalError(ctx, "redis.call requires at least one argument");
+        }
+    }
+    unsafe {
+        let ctx = &mut *(ctx as *mut JSContextImpl);
+        let opaque = ctx.opaque() as *mut ScriptExec;
+        if opaque.is_null() {
+            return JS_ThrowInternalError(ctx, "redis.call missing context");
+        }
+        let exec = &mut *opaque;
+        let mut args = Vec::with_capacity(argc as usize);
+        for i in 0..argc {
+            let val = *argv.add(i as usize);
+            let s = js_value_to_string(ctx, val);
+            args.push(s.into_bytes());
+        }
+        let cmd = to_upper_ascii(&args[0]);
+        let state = &mut *exec.state;
+        let db_index = &mut *exec.db_index;
+        let mut script = None;
+        let resp = async_std::task::block_on(handle_command(state, db_index, &mut script, &cmd, &args[1..]));
+        resp_to_js(ctx, resp, magic == 1)
+    }
+}
+
+fn resp_to_js(ctx: &mut JSContextImpl, resp: RespValue, is_pcall: bool) -> JSValue {
+    match resp {
+        RespValue::Simple(s) => JS_NewString(ctx, &s),
+        RespValue::Blob(b) => JS_NewStringLen(ctx, &b),
+        RespValue::Integer(n) => JS_NewInt64(ctx, n),
+        RespValue::Null => JSValue::NULL,
+        RespValue::Array(items) => {
+            let arr = JS_NewArray(ctx, items.len() as i32);
+            for (idx, item) in items.into_iter().enumerate() {
+                let v = resp_to_js(ctx, item, is_pcall);
+                let _ = JS_SetPropertyUint32(ctx, arr, idx as u32, v);
+            }
+            arr
+        }
+        RespValue::Error(msg) => {
+            if is_pcall {
+                let obj = JS_NewObject(ctx);
+                let err_val = JS_NewString(ctx, &msg);
+                let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                obj
+            } else {
+                JS_ThrowInternalError(ctx, &msg)
+            }
+        }
+    }
+}
+
+fn js_to_resp(ctx: &mut JSContextImpl, val: JSValue) -> RespValue {
+    if JS_IsNull(ctx, val) != 0 || JS_IsUndefined(ctx, val) != 0 {
+        return RespValue::Null;
+    }
+    if JS_IsBool(ctx, val) != 0 {
+        let num = JS_ToNumber(ctx, val).unwrap_or(0.0);
+        return RespValue::Integer(if num != 0.0 { 1 } else { 0 });
+    }
+    if JS_IsNumber(ctx, val) != 0 {
+        let num = JS_ToNumber(ctx, val).unwrap_or(0.0);
+        if (num.fract() - 0.0).abs() < f64::EPSILON {
+            return RespValue::Integer(num as i64);
+        }
+        return RespValue::Blob(num.to_string().into_bytes());
+    }
+    if JS_IsString(ctx, val) != 0 {
+        let s = js_value_to_string(ctx, val);
+        return RespValue::Blob(s.into_bytes());
+    }
+    if ctx.object_class_id(val) == Some(crate::JSObjectClassEnum::Array as u32) {
+        let len_val = crate::JS_GetPropertyStr(ctx, val, "length");
+        let len = crate::JS_ToUint32(ctx, len_val).unwrap_or(0);
+        let mut out = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let item = crate::JS_GetPropertyUint32(ctx, val, i);
+            out.push(js_to_resp(ctx, item));
+        }
+        return RespValue::Array(out);
+    }
+    let err = crate::JS_GetPropertyStr(ctx, val, "err");
+    if JS_IsUndefined(ctx, err) == 0 && JS_IsNull(ctx, err) == 0 {
+        let msg = js_value_to_string(ctx, err);
+        return RespValue::Error(msg);
+    }
+    let ok = crate::JS_GetPropertyStr(ctx, val, "ok");
+    if JS_IsUndefined(ctx, ok) == 0 && JS_IsNull(ctx, ok) == 0 {
+        let msg = js_value_to_string(ctx, ok);
+        return RespValue::Simple(msg);
+    }
+    let s = js_value_to_string(ctx, val);
+    RespValue::Blob(s.into_bytes())
+}
+
+fn js_value_to_string(ctx: &mut JSContextImpl, val: JSValue) -> String {
+    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+    JS_ToCString(ctx, val, &mut buf).to_string()
 }
 
 fn value_to_args(val: RespValue) -> Result<Vec<Vec<u8>>, String> {

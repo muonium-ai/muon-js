@@ -194,7 +194,7 @@ TESTS = [
     ("MULTI again", ["MULTI"], expect_simple("OK")),
     ("DISCARD", ["DISCARD"], expect_simple("OK")),
     # Scripting
-    ("EVAL (expected fail for now)", ["EVAL", "return 1", "0"], expect_error()),
+    ("EVAL", ["EVAL", "return 1", "0"], expect_int(1)),
     ("EVALSHA (expected fail for now)", ["EVALSHA", "deadbeef", "0"], expect_error()),
     ("SCRIPT (expected fail for now)", ["SCRIPT", "LOAD", "return 1"], expect_error()),
     ("FUNCTION (expected fail for now)", ["FUNCTION", "LIST"], expect_error()),
