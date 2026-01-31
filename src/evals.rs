@@ -68,6 +68,13 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let global = js_get_global_object(ctx);
     if is_identifier(s) {
         if let Some((_, val)) = ctx.resolve_binding(s) {
+            if val == Value::UNINITIALIZED {
+                return Some(js_throw_error(
+                    ctx,
+                    JSObjectClassEnum::ReferenceError,
+                    "cannot access before initialization",
+                ));
+            }
             return Some(val);
         }
     }

@@ -23,6 +23,27 @@ use crate::json::parse_json;
 use crate::evals::{eval_value, split_top_level, split_statements, is_truthy};
 use crate::parser::*;
 
+pub(crate) fn mark_const_binding(ctx: &mut JSContextImpl, env: JSValue, name: &str) {
+    let map = js_get_property_str(ctx, env, "__const__");
+    let map = if map.is_undefined() && !ctx.has_property_str(env, b"__const__") {
+        let obj = js_new_object(ctx);
+        js_set_property_str(ctx, env, "__const__", obj);
+        obj
+    } else {
+        map
+    };
+    js_set_property_str(ctx, map, name, Value::TRUE);
+}
+
+fn is_const_binding(ctx: &mut JSContextImpl, env: JSValue, name: &str) -> bool {
+    let map = js_get_property_str(ctx, env, "__const__");
+    if map.is_undefined() && !ctx.has_property_str(env, b"__const__") {
+        return false;
+    }
+    let v = js_get_property_str(ctx, map, name);
+    v == Value::TRUE
+}
+
 /// Opaque handle to a VM instance.
 pub type JSContextImpl = Context;
 
@@ -1794,6 +1815,9 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     ctx.current_env()
                 };
                 js_set_property_str(ctx, env, var_name, val);
+                if kind == "const" {
+                    mark_const_binding(ctx, env, var_name);
+                }
                 return Some(Value::UNDEFINED);
             }
         } else {
@@ -1867,6 +1891,18 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if let Some((lhs, rhs)) = split_assignment(s) {
         let rhs_val = eval_expr(ctx, rhs)?;
         let (base, key) = parse_lvalue(ctx, lhs)?;
+        if let LValueKey::Name(name) = &key {
+            if is_const_binding(ctx, base, name) {
+                let current = js_get_property_str(ctx, base, name);
+                if current != Value::UNINITIALIZED {
+                    return Some(js_throw_error(
+                        ctx,
+                        JSObjectClassEnum::TypeError,
+                        "invalid assignment to const",
+                    ));
+                }
+            }
+        }
         let res = match key {
             LValueKey::Index(idx) => js_set_property_uint32(ctx, base, idx, rhs_val),
             LValueKey::Name(name) => js_set_property_str(ctx, base, &name, rhs_val),
@@ -5553,6 +5589,9 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         
         // Execute statement
         last = eval_expr(ctx, trimmed)?;
+        if last.is_exception() {
+            return Some(last);
+        }
         
         // Check if break/continue was set during statement execution
         if ctx.get_loop_control() != crate::context::LoopControl::None {
@@ -5686,6 +5725,9 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             return None;
         }
         last = eval_expr(ctx, trimmed)?;
+        if last.is_exception() {
+            return Some(last);
+        }
         any = true;
     }
     if any { Some(last) } else { None }

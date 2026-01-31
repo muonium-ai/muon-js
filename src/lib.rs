@@ -149,6 +149,22 @@ mod tests {
     }
 
     #[test]
+    fn tdz_access_before_let() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = JS_Eval(&mut ctx, "if (true) { x; let x = 1; }", "test.js", 0);
+        assert!(res.is_exception());
+    }
+
+    #[test]
+    fn const_reassign_throws() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = JS_Eval(&mut ctx, "const x = 1; x = 2;", "test.js", 0);
+        assert!(res.is_exception());
+    }
+
+    #[test]
     fn to_number_strings() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

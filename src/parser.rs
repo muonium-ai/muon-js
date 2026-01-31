@@ -20,9 +20,35 @@ fn eval_block(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
     js_set_property_str(ctx, env, "__parent__", parent);
     js_set_property_str(ctx, env, "__block__", Value::TRUE);
     ctx.push_env(env);
+    predeclare_block_bindings(ctx, body);
     let result = eval_function_body(ctx, body);
     ctx.pop_env();
     result
+}
+
+fn predeclare_block_bindings(ctx: &mut JSContextImpl, body: &str) {
+    let stmts = match split_statements(body) {
+        Some(s) => s,
+        None => return,
+    };
+    let env = ctx.current_env();
+    for stmt in stmts {
+        let trimmed = stmt.trim();
+        let (kind, rest) = if trimmed.starts_with("let ") {
+            ("let", trimmed[4..].trim())
+        } else if trimmed.starts_with("const ") {
+            ("const", trimmed[6..].trim())
+        } else {
+            continue;
+        };
+        let name = rest.split('=').next().unwrap_or("").trim();
+        if is_identifier(name) {
+            js_set_property_str(ctx, env, name, Value::UNINITIALIZED);
+            if kind == "const" {
+                mark_const_binding(ctx, env, name);
+            }
+        }
+    }
 }
 
 /// Parse function declaration: "function name(params) { body }"
@@ -1303,6 +1329,7 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     js_set_property_str(ctx, env, "__parent__", parent_env);
     js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
     ctx.push_env(env);
+    predeclare_block_bindings(ctx, &body_str);
 
     for (i, param_name) in param_names.iter().enumerate() {
         let arg_val = args.get(i).copied().unwrap_or(Value::UNDEFINED);
