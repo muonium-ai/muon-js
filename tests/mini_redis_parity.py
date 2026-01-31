@@ -160,6 +160,8 @@ TESTS = [
     ("RPOP", ["RPOP", "l"], expect_blob(b"3")),
     ("LPOP empty", ["LPOP", "l"], expect_blob(b"1")),
     ("LLEN empty", ["LLEN", "l"], expect_int(0)),
+    ("LPUSH count", ["LPUSH", "lc", "a", "b", "c"], expect_int(3)),
+    ("LPOP count", ["LPOP", "lc", "2"], expect_list([b"c", b"b"])),
     # Sets
     ("SADD", ["SADD", "s", "1", "2"], expect_int(2)),
     ("SCARD", ["SCARD", "s"], expect_int(2)),

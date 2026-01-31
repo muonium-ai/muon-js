@@ -507,9 +507,44 @@ async fn handle_command(
                 Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
             }
         }
-        "LPOP" | "RPOP" => match args.get(0) {
-            Some(key) => {
-                let db = &mut state.dbs[*db_index];
+        "LPOP" | "RPOP" => {
+            if args.is_empty() || args.len() > 2 {
+                return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
+            }
+            let key = &args[0];
+            let count = if args.len() == 2 {
+                let n = parse_i64(&args[1]).unwrap_or(0);
+                if n <= 0 {
+                    return RespValue::Error("ERR value is not an integer or out of range".to_string());
+                }
+                Some(n as usize)
+            } else {
+                None
+            };
+            let db = &mut state.dbs[*db_index];
+            if let Some(count) = count {
+                let mut out = Vec::new();
+                for _ in 0..count {
+                    match db.list_pop(key, cmd == "LPOP") {
+                        Ok(Some(v)) => out.push(RespValue::Blob(v)),
+                        Ok(None) => break,
+                        Err(_) => {
+                            return RespValue::Error(
+                                "WRONGTYPE Operation against a key holding the wrong kind of value"
+                                    .to_string(),
+                            )
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    RespValue::Null
+                } else {
+                    if let Some(p) = state.persist.as_ref() {
+                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                    }
+                    RespValue::Array(out)
+                }
+            } else {
                 match db.list_pop(key, cmd == "LPOP") {
                     Ok(Some(v)) => {
                         if let Some(p) = state.persist.as_ref() {
@@ -518,11 +553,12 @@ async fn handle_command(
                         RespValue::Blob(v)
                     }
                     Ok(None) => RespValue::Null,
-                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    Err(_) => RespValue::Error(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                    ),
                 }
             }
-            None => RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd)),
-        },
+        }
         "LRANGE" => match (args.get(0), args.get(1), args.get(2)) {
             (Some(key), Some(start), Some(stop)) => {
                 let start = parse_i64(start).unwrap_or(0);
