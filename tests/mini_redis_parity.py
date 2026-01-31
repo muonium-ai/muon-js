@@ -188,9 +188,13 @@ TESTS = [
     ("SUBSCRIBE (expected fail for now)", ["SUBSCRIBE", "c"], expect_error()),
     ("PUBLISH (expected fail for now)", ["PUBLISH", "c", "msg"], expect_error()),
     # Transactions
-    ("MULTI (expected fail for now)", ["MULTI"], expect_error()),
-    ("EXEC (expected fail for now)", ["EXEC"], expect_error()),
-    ("DISCARD (expected fail for now)", ["DISCARD"], expect_error()),
+    ("MULTI", ["MULTI"], expect_simple("OK")),
+    ("MULTI SET", ["SET", "tx", "1"], expect_simple("QUEUED")),
+    ("MULTI GET", ["GET", "tx"], expect_simple("QUEUED")),
+    ("EXEC", ["EXEC"], lambda r: r[0] == "array" and len(r[1]) == 2 and r[1][0][0] == "simple" and r[1][1][0] == "blob"),
+    ("GET tx", ["GET", "tx"], expect_blob(b"1")),
+    ("MULTI again", ["MULTI"], expect_simple("OK")),
+    ("DISCARD", ["DISCARD"], expect_simple("OK")),
     # Scripting
     ("EVAL (expected fail for now)", ["EVAL", "return 1", "0"], expect_error()),
     ("EVALSHA (expected fail for now)", ["EVALSHA", "deadbeef", "0"], expect_error()),

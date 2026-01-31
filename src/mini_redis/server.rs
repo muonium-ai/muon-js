@@ -54,6 +54,8 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
     let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.clone());
     let mut current_db: usize = 0;
+    let mut in_multi = false;
+    let mut queued: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -72,7 +74,39 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             continue;
         }
         let cmd = to_upper_ascii(&args[0]);
-        let resp = {
+        let resp = if in_multi && cmd != "EXEC" && cmd != "DISCARD" && cmd != "MULTI" {
+            queued.push((cmd.clone(), args[1..].to_vec()));
+            RespValue::Simple("QUEUED".to_string())
+        } else if cmd == "MULTI" {
+            if in_multi {
+                RespValue::Error("ERR MULTI calls can not be nested".to_string())
+            } else {
+                in_multi = true;
+                queued.clear();
+                RespValue::Simple("OK".to_string())
+            }
+        } else if cmd == "DISCARD" {
+            if !in_multi {
+                RespValue::Error("ERR DISCARD without MULTI".to_string())
+            } else {
+                in_multi = false;
+                queued.clear();
+                RespValue::Simple("OK".to_string())
+            }
+        } else if cmd == "EXEC" {
+            if !in_multi {
+                RespValue::Error("ERR EXEC without MULTI".to_string())
+            } else {
+                in_multi = false;
+                let mut results = Vec::with_capacity(queued.len());
+                let mut guard = state.lock().await;
+                for (qcmd, qargs) in queued.drain(..) {
+                    let resp = handle_command(&mut guard, &mut current_db, &qcmd, &qargs).await;
+                    results.push(resp);
+                }
+                RespValue::Array(results)
+            }
+        } else {
             let mut guard = state.lock().await;
             handle_command(&mut guard, &mut current_db, &cmd, &args[1..]).await
         };
