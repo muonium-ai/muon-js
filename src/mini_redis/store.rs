@@ -377,6 +377,111 @@ impl Db {
         }
     }
 
+    pub fn list_index(&mut self, key: &[u8], index: i64) -> Result<Option<Vec<u8>>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::List(list)) => {
+                let len = list.len() as i64;
+                let mut idx = if index < 0 { len + index } else { index };
+                if idx < 0 || idx >= len {
+                    return Ok(None);
+                }
+                Ok(Some(list[idx as usize].clone()))
+            }
+            Some(_) => Err(()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_set(&mut self, key: &[u8], index: i64, value: &[u8]) -> Result<(), ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                let len = list.len() as i64;
+                let mut idx = if index < 0 { len + index } else { index };
+                if idx < 0 || idx >= len {
+                    return Err(());
+                }
+                list[idx as usize] = value.to_vec();
+                Ok(())
+            }
+            Some(_) => Err(()),
+            None => Err(()),
+        }
+    }
+
+    pub fn list_insert(&mut self, key: &[u8], before: bool, pivot: &[u8], value: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                let pos = list.iter().position(|v| v.as_slice() == pivot);
+                match pos {
+                    Some(idx) => {
+                        let insert_at = if before { idx } else { idx + 1 };
+                        list.insert(insert_at, value.to_vec());
+                        Ok(list.len() as i64)
+                    }
+                    None => Ok(-1),
+                }
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    pub fn list_rem(&mut self, key: &[u8], count: i64, value: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                let mut removed = 0i64;
+                if count == 0 {
+                    list.retain(|v| {
+                        if v.as_slice() == value {
+                            removed += 1;
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                } else if count > 0 {
+                    let mut i = 0usize;
+                    while i < list.len() && removed < count {
+                        if list[i].as_slice() == value {
+                            list.remove(i);
+                            removed += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                } else {
+                    let mut i = list.len();
+                    while i > 0 && removed < (-count) {
+                        i -= 1;
+                        if list[i].as_slice() == value {
+                            list.remove(i);
+                            removed += 1;
+                        }
+                    }
+                }
+                if list.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(removed)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
     pub fn get_string(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
         if self.is_expired(key) {
             self.remove(key);

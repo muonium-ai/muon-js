@@ -162,6 +162,11 @@ TESTS = [
     ("LLEN empty", ["LLEN", "l"], expect_int(0)),
     ("LPUSH count", ["LPUSH", "lc", "a", "b", "c"], expect_int(3)),
     ("LPOP count", ["LPOP", "lc", "2"], expect_list([b"c", b"b"])),
+    ("LINDEX", ["LINDEX", "lc", "0"], expect_blob(b"a")),
+    ("LSET", ["LSET", "lc", "0", "z"], expect_simple("OK")),
+    ("LINDEX after LSET", ["LINDEX", "lc", "0"], expect_blob(b"z")),
+    ("LINSERT BEFORE", ["LINSERT", "lc", "BEFORE", "z", "y"], expect_int(2)),
+    ("LREM", ["LREM", "lc", "0", "z"], expect_int(1)),
     # Sets
     ("SADD", ["SADD", "s", "1", "2"], expect_int(2)),
     ("SCARD", ["SCARD", "s"], expect_int(2)),

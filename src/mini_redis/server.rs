@@ -581,6 +581,83 @@ async fn handle_command(
             }
             None => RespValue::Error("ERR wrong number of arguments for 'LLEN'".to_string()),
         },
+        "LINDEX" => match (args.get(0), args.get(1)) {
+            (Some(key), Some(index)) => {
+                let idx = match parse_i64(index) {
+                    Some(v) => v,
+                    None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                };
+                let db = &mut state.dbs[*db_index];
+                match db.list_index(key, idx) {
+                    Ok(Some(v)) => RespValue::Blob(v),
+                    Ok(None) => RespValue::Null,
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'LINDEX'".to_string()),
+        },
+        "LSET" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(index), Some(value)) => {
+                let idx = match parse_i64(index) {
+                    Some(v) => v,
+                    None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                };
+                let db = &mut state.dbs[*db_index];
+                match db.list_set(key, idx, value) {
+                    Ok(()) => {
+                        if let Some(p) = state.persist.as_ref() {
+                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                        }
+                        RespValue::Simple("OK".to_string())
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'LSET'".to_string()),
+        },
+        "LINSERT" => match (args.get(0), args.get(1), args.get(2), args.get(3)) {
+            (Some(key), Some(pos), Some(pivot), Some(value)) => {
+                let before = match pos.to_ascii_uppercase().as_slice() {
+                    b"BEFORE" => true,
+                    b"AFTER" => false,
+                    _ => return RespValue::Error("ERR syntax error".to_string()),
+                };
+                let db = &mut state.dbs[*db_index];
+                match db.list_insert(key, before, pivot, value) {
+                    Ok(len) => {
+                        if len > 0 {
+                            if let Some(p) = state.persist.as_ref() {
+                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                            }
+                        }
+                        RespValue::Integer(len)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'LINSERT'".to_string()),
+        },
+        "LREM" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(count), Some(value)) => {
+                let cnt = match parse_i64(count) {
+                    Some(v) => v,
+                    None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
+                };
+                let db = &mut state.dbs[*db_index];
+                match db.list_rem(key, cnt, value) {
+                    Ok(removed) => {
+                        if removed > 0 {
+                            if let Some(p) = state.persist.as_ref() {
+                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
+                            }
+                        }
+                        RespValue::Integer(removed)
+                    }
+                    Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+            _ => RespValue::Error("ERR wrong number of arguments for 'LREM'".to_string()),
+        },
         "SADD" => {
             if args.len() < 2 {
                 return RespValue::Error("ERR wrong number of arguments for 'SADD'".to_string());
