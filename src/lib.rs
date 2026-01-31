@@ -295,6 +295,20 @@ mod tests {
     }
 
     #[test]
+    fn bytecode_compiler_compare() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let mut compiler = crate::compiler::Compiler::new();
+        let module = compiler.compile_program(&mut ctx, "2 < 3").expect("compile");
+        let mut vm = crate::vm::VM::new();
+        let out = vm.run_module(&mut ctx, &module);
+        assert_eq!(out, JSValue::TRUE);
+        let module = compiler.compile_program(&mut ctx, "3 >= 5").expect("compile");
+        let out = vm.run_module(&mut ctx, &module);
+        assert_eq!(out, JSValue::FALSE);
+    }
+
+    #[test]
     fn c_function_object() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);

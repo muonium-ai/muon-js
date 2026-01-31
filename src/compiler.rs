@@ -30,7 +30,7 @@ impl Compiler {
         }
 
         let mut expr = ExprCompiler::new(ctx, s);
-        expr.parse_assignment()?;
+        expr.parse_comparison()?;
         expr.skip_ws();
         if expr.pos != expr.input.len() {
             return Err(CompileError {
@@ -122,6 +122,35 @@ impl<'a> ExprCompiler<'a> {
         }
         let num = self.parse_number()?;
         self.emit_const(num);
+        Ok(())
+    }
+
+    fn parse_comparison(&mut self) -> Result<(), CompileError> {
+        self.parse_assignment()?;
+        loop {
+            self.skip_ws();
+            if self.consume_seq(b"==") {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Eq);
+            } else if self.consume_seq(b"!=") {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Neq);
+            } else if self.consume_seq(b"<=") {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Le);
+            } else if self.consume_seq(b">=") {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Ge);
+            } else if self.consume(b'<') {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Lt);
+            } else if self.consume(b'>') {
+                self.parse_assignment()?;
+                self.emit_op(OpCode::Gt);
+            } else {
+                break;
+            }
+        }
         Ok(())
     }
 
@@ -222,6 +251,18 @@ impl<'a> ExprCompiler<'a> {
     fn consume(&mut self, b: u8) -> bool {
         if self.peek() == Some(b) {
             self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_seq(&mut self, seq: &[u8]) -> bool {
+        if self.input.len().saturating_sub(self.pos) < seq.len() {
+            return false;
+        }
+        if self.input[self.pos..self.pos + seq.len()] == *seq {
+            self.pos += seq.len();
             true
         } else {
             false

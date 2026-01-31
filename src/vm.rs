@@ -30,7 +30,8 @@ impl VM {
                         return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode const out of range");
                     }
                 }
-                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => {
+                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
+                | OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Gt | OpCode::Le | OpCode::Ge => {
                     let b = match stack.pop() {
                         Some(v) => v,
                         None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
@@ -39,22 +40,46 @@ impl VM {
                         Some(v) => v,
                         None => return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow"),
                     };
-                    let an = match js_to_number(ctx, a) {
-                        Ok(n) => n,
-                        Err(e) => return e,
-                    };
-                    let bn = match js_to_number(ctx, b) {
-                        Ok(n) => n,
-                        Err(e) => return e,
-                    };
-                    let out = match ins.op {
-                        OpCode::Add => an + bn,
-                        OpCode::Sub => an - bn,
-                        OpCode::Mul => an * bn,
-                        OpCode::Div => an / bn,
-                        _ => an,
-                    };
-                    stack.push(crate::helpers::number_to_value(ctx, out));
+                    match ins.op {
+                        OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Gt | OpCode::Le | OpCode::Ge => {
+                            let an = match js_to_number(ctx, a) {
+                                Ok(n) => n,
+                                Err(e) => return e,
+                            };
+                            let bn = match js_to_number(ctx, b) {
+                                Ok(n) => n,
+                                Err(e) => return e,
+                            };
+                            let result = match ins.op {
+                                OpCode::Eq => an == bn,
+                                OpCode::Neq => an != bn,
+                                OpCode::Lt => an < bn,
+                                OpCode::Gt => an > bn,
+                                OpCode::Le => an <= bn,
+                                OpCode::Ge => an >= bn,
+                                _ => false,
+                            };
+                            stack.push(JSValue::new_bool(result));
+                        }
+                        _ => {
+                            let an = match js_to_number(ctx, a) {
+                                Ok(n) => n,
+                                Err(e) => return e,
+                            };
+                            let bn = match js_to_number(ctx, b) {
+                                Ok(n) => n,
+                                Err(e) => return e,
+                            };
+                            let out = match ins.op {
+                                OpCode::Add => an + bn,
+                                OpCode::Sub => an - bn,
+                                OpCode::Mul => an * bn,
+                                OpCode::Div => an / bn,
+                                _ => an,
+                            };
+                            stack.push(crate::helpers::number_to_value(ctx, out));
+                        }
+                    }
                 }
                 OpCode::LoadGlobal => {
                     let idx = ins.a as usize;
