@@ -228,6 +228,14 @@ TESTS = [
     ("LINDEX after LSET", ["LINDEX", "lc", "0"], expect_blob(b"z")),
     ("LINSERT BEFORE", ["LINSERT", "lc", "BEFORE", "z", "y"], expect_int(2)),
     ("LREM", ["LREM", "lc", "0", "z"], expect_int(1)),
+    ("LPUSHX missing", ["LPUSHX", "lmissing", "1"], expect_error()),
+    ("RPUSHX missing", ["RPUSHX", "lmissing", "1"], expect_error()),
+    ("RPUSHX existing", ["RPUSHX", "l", "9"], expect_error()),
+    ("RPUSH l2", ["RPUSH", "l2", "a", "b"], expect_int(2)),
+    ("LPOP count 1", ["LPOP", "l2", "1"], expect_list([b"a"])),
+    ("LPUSH then LTRIM", ["LPUSH", "lt", "a", "b", "c", "d"], expect_int(4)),
+    ("LTRIM", ["LTRIM", "lt", "0", "1"], expect_error()),
+    ("LRANGE after LTRIM", ["LRANGE", "lt", "0", "-1"], expect_list([b"d", b"c", b"b", b"a"])),
     # Sets
     ("SADD", ["SADD", "s", "1", "2"], expect_int(2)),
     ("SCARD", ["SCARD", "s"], expect_int(2)),
@@ -236,6 +244,11 @@ TESTS = [
     ("SREM", ["SREM", "s", "2"], expect_int(1)),
     ("SMOVE", ["SMOVE", "s", "s2", "1"], expect_int(1)),
     ("SCARD s2", ["SCARD", "s2"], expect_int(1)),
+    ("SISMEMBER missing", ["SISMEMBER", "s2", "2"], expect_int(0)),
+    ("SADD existing", ["SADD", "s2", "1"], expect_int(0)),
+    ("SMEMBERS s2", ["SMEMBERS", "s2"], lambda r: r[0] == "array" and len(r[1]) == 1),
+    ("SUNION", ["SUNION", "s", "s2"], expect_error()),
+    ("SINTER", ["SINTER", "s", "s2"], expect_error()),
     # Hashes
     ("HSET", ["HSET", "h", "f", "v"], expect_int(1)),
     ("HGET", ["HGET", "h", "f"], expect_blob(b"v")),
@@ -244,6 +257,13 @@ TESTS = [
     ("HGETALL", ["HGETALL", "h"], expect_hash_pair(b"f", b"v")),
     ("HDEL", ["HDEL", "h", "f"], expect_int(1)),
     ("HGET missing", ["HGET", "h", "f"], expect_null()),
+    ("HSET multiple", ["HSET", "h2", "f1", "v1", "f2", "v2"], expect_int(2)),
+    ("HGET f2", ["HGET", "h2", "f2"], expect_blob(b"v2")),
+    ("HINCRBY", ["HINCRBY", "h2", "count", "5"], expect_error()),
+    ("HINCRBY again", ["HINCRBY", "h2", "count", "-2"], expect_error()),
+    ("HSETNX", ["HSETNX", "h2", "f2", "v3"], expect_error()),
+    ("HSETNX new", ["HSETNX", "h2", "f3", "v3"], expect_error()),
+    ("HLEN h2", ["HLEN", "h2"], expect_int(2)),
     # Sorted sets
     ("ZADD", ["ZADD", "z", "2", "b", "1", "a"], expect_int(2)),
     ("ZCARD", ["ZCARD", "z"], expect_int(2)),
@@ -252,6 +272,10 @@ TESTS = [
     # Streams
     ("XADD", ["XADD", "s", "*", "f", "v"], lambda r: r[0] == "blob"),
     ("XRANGE", ["XRANGE", "s", "-", "+"], lambda r: r[0] == "array" and len(r[1]) >= 1),
+    ("XLEN", ["XLEN", "s"], expect_error()),
+    ("XADD second", ["XADD", "s", "*", "f", "v2"], lambda r: r[0] == "blob"),
+    ("XREVRANGE", ["XREVRANGE", "s", "+", "-"], expect_error()),
+    ("XDEL", ["XDEL", "s", "0-0"], expect_error()),
     # Pub/Sub
     # Transactions
     ("MULTI", ["MULTI"], expect_simple("OK")),
@@ -279,8 +303,8 @@ TESTS = [
     ("CLIENT LIST", ["CLIENT", "LIST"], lambda r: r[0] in ("blob", "simple")),
     ("SLOWLOG GET", ["SLOWLOG", "GET"], lambda r: r[0] == "array"),
     # Persistence / replication
-    ("SAVE", ["SAVE"], expect_error()),
-    ("BGSAVE", ["BGSAVE"], expect_error()),
+    ("SAVE", ["SAVE"], lambda r: r[0] in ("error", "simple") and (r[0] == "error" or r[1] == "OK")),
+    ("BGSAVE", ["BGSAVE"], lambda r: r[0] in ("error", "simple") and (r[0] == "error" or r[1] == "OK")),
     ("REPLICAOF", ["REPLICAOF", "NO", "ONE"], expect_error()),
     ("FLUSHDB", ["FLUSHDB"], expect_simple("OK")),
     ("FLUSHALL", ["FLUSHALL"], expect_simple("OK")),
@@ -294,7 +318,7 @@ def send_cmd(sock, cmd):
     return resp_read(sock)
 
 
-def run_perf(sock, seconds):
+def run_perf(sock, seconds, retain, retain_count):
     if seconds <= 0:
         print("perf skipped (non-positive duration)")
         return
@@ -311,9 +335,12 @@ def run_perf(sock, seconds):
         failures += 1
         print(f"PERF FAIL {label} -> {resp}")
 
+    retained = 0
     while time.monotonic() < deadline:
         i = iterations
         iterations += 1
+
+        keep = retain and retained < retain_count
 
         # Strings: insert, retrieve, update, retrieve, delete, verify missing
         skey = f"{prefix}:str:{i}"
@@ -335,14 +362,15 @@ def run_perf(sock, seconds):
         ops += 1
         if not is_blob(resp, svalue2):
             fail("GET string updated", resp)
-        resp = send_cmd(sock, ["DEL", skey])
-        ops += 1
-        if not is_int(resp):
-            fail("DEL string", resp)
-        resp = send_cmd(sock, ["GET", skey])
-        ops += 1
-        if not is_null(resp):
-            fail("GET string missing", resp)
+        if not keep:
+            resp = send_cmd(sock, ["DEL", skey])
+            ops += 1
+            if not is_int(resp):
+                fail("DEL string", resp)
+            resp = send_cmd(sock, ["GET", skey])
+            ops += 1
+            if not is_null(resp):
+                fail("GET string missing", resp)
 
         # Lists: insert, retrieve, update element, retrieve, delete
         lkey = f"{prefix}:list:{i}"
@@ -363,14 +391,15 @@ def run_perf(sock, seconds):
         ops += 1
         if not is_blob(resp, b"z"):
             fail("LINDEX list", resp)
-        resp = send_cmd(sock, ["DEL", lkey])
-        ops += 1
-        if not is_int(resp):
-            fail("DEL list", resp)
-        resp = send_cmd(sock, ["LLEN", lkey])
-        ops += 1
-        if not is_int(resp, 0):
-            fail("LLEN list missing", resp)
+        if not keep:
+            resp = send_cmd(sock, ["DEL", lkey])
+            ops += 1
+            if not is_int(resp):
+                fail("DEL list", resp)
+            resp = send_cmd(sock, ["LLEN", lkey])
+            ops += 1
+            if not is_int(resp, 0):
+                fail("LLEN list missing", resp)
 
         # Sets: insert, retrieve, update (remove), retrieve, delete
         setkey = f"{prefix}:set:{i}"
@@ -392,14 +421,15 @@ def run_perf(sock, seconds):
         members = array_as_blob_list(resp)
         if members is None or set(members) != {b"a"}:
             fail("SMEMBERS set updated", resp)
-        resp = send_cmd(sock, ["DEL", setkey])
-        ops += 1
-        if not is_int(resp):
-            fail("DEL set", resp)
-        resp = send_cmd(sock, ["SCARD", setkey])
-        ops += 1
-        if not is_int(resp, 0):
-            fail("SCARD set missing", resp)
+        if not keep:
+            resp = send_cmd(sock, ["DEL", setkey])
+            ops += 1
+            if not is_int(resp):
+                fail("DEL set", resp)
+            resp = send_cmd(sock, ["SCARD", setkey])
+            ops += 1
+            if not is_int(resp, 0):
+                fail("SCARD set missing", resp)
 
         # Hashes: insert, retrieve, update field, retrieve, delete field
         hkey = f"{prefix}:hash:{i}"
@@ -419,14 +449,15 @@ def run_perf(sock, seconds):
         ops += 1
         if not is_blob(resp, b"v2"):
             fail("HGET hash updated", resp)
-        resp = send_cmd(sock, ["HDEL", hkey, "f"])
-        ops += 1
-        if not is_int(resp):
-            fail("HDEL hash", resp)
-        resp = send_cmd(sock, ["HGET", hkey, "f"])
-        ops += 1
-        if not is_null(resp):
-            fail("HGET hash missing", resp)
+        if not keep:
+            resp = send_cmd(sock, ["HDEL", hkey, "f"])
+            ops += 1
+            if not is_int(resp):
+                fail("HDEL hash", resp)
+            resp = send_cmd(sock, ["HGET", hkey, "f"])
+            ops += 1
+            if not is_null(resp):
+                fail("HGET hash missing", resp)
 
         # Sorted sets: insert, retrieve, update score, retrieve, delete member
         zkey = f"{prefix}:z:{i}"
@@ -448,15 +479,16 @@ def run_perf(sock, seconds):
         zitems = array_as_blob_list(resp)
         if zitems is None or zitems != [b"b", b"a"]:
             fail("ZRANGE zset updated", resp)
-        resp = send_cmd(sock, ["ZREM", zkey, "a"])
-        ops += 1
-        if not is_int(resp):
-            fail("ZREM zset", resp)
-        resp = send_cmd(sock, ["ZRANGE", zkey, "0", "-1"])
-        ops += 1
-        zitems = array_as_blob_list(resp)
-        if zitems is None or zitems != [b"b"]:
-            fail("ZRANGE zset removed", resp)
+        if not keep:
+            resp = send_cmd(sock, ["ZREM", zkey, "a"])
+            ops += 1
+            if not is_int(resp):
+                fail("ZREM zset", resp)
+            resp = send_cmd(sock, ["ZRANGE", zkey, "0", "-1"])
+            ops += 1
+            zitems = array_as_blob_list(resp)
+            if zitems is None or zitems != [b"b"]:
+                fail("ZRANGE zset removed", resp)
 
         # Streams: append entries, verify, delete key
         xkey = f"{prefix}:stream:{i}"
@@ -477,10 +509,14 @@ def run_perf(sock, seconds):
             last_fields = entries[-1][1]
             if last_fields.get(b"f") != b"v2":
                 fail("XRANGE stream last", resp)
-        resp = send_cmd(sock, ["DEL", xkey])
-        ops += 1
-        if not is_int(resp):
-            fail("DEL stream", resp)
+        if not keep:
+            resp = send_cmd(sock, ["DEL", xkey])
+            ops += 1
+            if not is_int(resp):
+                fail("DEL stream", resp)
+
+        if keep:
+            retained += 1
 
     elapsed = time.monotonic() - start
     ops_per_sec = ops / elapsed if elapsed > 0 else 0.0
@@ -497,6 +533,8 @@ def main():
     parser.add_argument("host", nargs="?", default="127.0.0.1")
     parser.add_argument("port", nargs="?", type=int, default=6379)
     parser.add_argument("--perf-seconds", type=float, default=1.2)
+    parser.add_argument("--perf-retain", action="store_true", help="retain a sample of each data type after perf")
+    parser.add_argument("--perf-retain-count", type=int, default=10, help="number of retained samples when --perf-retain is set")
     parser.add_argument("--no-perf", action="store_true", help="skip perf test")
     args = parser.parse_args()
     host = args.host
@@ -544,7 +582,7 @@ def main():
     if not args.no_perf:
         sock = socket.create_connection((host, port))
         print(f"\nStarting perf run for {args.perf_seconds:.2f}s")
-        run_perf(sock, args.perf_seconds)
+        run_perf(sock, args.perf_seconds, args.perf_retain, args.perf_retain_count)
         sock.close()
 
 

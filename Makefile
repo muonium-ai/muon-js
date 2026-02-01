@@ -10,6 +10,7 @@ MINI_REDIS_PERSIST ?= tmp/mini_redis_$(shell date +%Y%m%d_%H%M%S).db
 MINI_REDIS_PIDFILE ?= tmp/mini_redis.pid
 MINI_REDIS_PORTFILE ?= tmp/mini_redis.port
 MINI_REDIS_DBFILE ?= tmp/mini_redis.dbpath
+MINI_REDIS_AOF ?= 0
 
 sync-version:
 	./scripts/sync_version.sh
@@ -60,7 +61,9 @@ mini-redis-persist-release: sync-version
 		echo "Port $(MINI_REDIS_PORT) in use; using $$port"; \
 	fi; \
 	echo "Running mini-redis (release) with persistence at $(MINI_REDIS_PERSIST) on port $$port"; \
-	$(CARGO) run --release --features "mini-redis mini-redis-libsql" --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST)
+	aof_flag=""; \
+	if [ "$(MINI_REDIS_AOF)" = "1" ]; then aof_flag="--aof"; fi; \
+	$(CARGO) run --release --features "mini-redis mini-redis-libsql" --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST) $$aof_flag
 
 mini-redis-persist-release-bg: sync-version
 	@mkdir -p tmp
@@ -74,7 +77,9 @@ mini-redis-persist-release-bg: sync-version
 	echo $$port > $(MINI_REDIS_PORTFILE); \
 	echo $(MINI_REDIS_PERSIST) > $(MINI_REDIS_DBFILE); \
 	$(CARGO) build --release --features "mini-redis mini-redis-libsql"; \
-	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST) & \
+	aof_flag=""; \
+	if [ "$(MINI_REDIS_AOF)" = "1" ]; then aof_flag="--aof"; fi; \
+	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST) $$aof_flag & \
 	echo $$! > $(MINI_REDIS_PIDFILE)
 
 mini-redis-stop:
@@ -115,7 +120,7 @@ mini-redis-runloop: sync-version
 		exit 1; \
 	fi; \
 	echo "=== start mini-redis (release) ==="; \
-	MINI_REDIS_PERSIST=$(MINI_REDIS_PERSIST) $(MAKE) -s mini-redis-persist-release-bg; \
+	MINI_REDIS_PERSIST=$(MINI_REDIS_PERSIST) MINI_REDIS_AOF=1 $(MAKE) -s mini-redis-persist-release-bg; \
 	if [ ! -f "$(MINI_REDIS_PORTFILE)" ]; then \
 		echo "Port file missing: $(MINI_REDIS_PORTFILE)"; \
 		$(MAKE) -s mini-redis-stop || true; \
@@ -136,7 +141,7 @@ mini-redis-runloop: sync-version
 		exit 1; \
 	fi; \
 	echo "=== run python tests on $$port ==="; \
-	python3 tests/mini_redis_parity.py $(MINI_REDIS_HOST) $$port; \
+	python3 tests/mini_redis_parity.py $(MINI_REDIS_HOST) $$port --perf-retain; \
 	echo "=== stop mini-redis ==="; \
 	$(MAKE) -s mini-redis-stop; \
 	if [ ! -f "$(MINI_REDIS_DBFILE)" ]; then \
