@@ -528,6 +528,149 @@ def run_perf(sock, seconds, retain, retain_count):
     )
 
 
+def run_perf_matrix(sock, seconds):
+    if seconds <= 0:
+        return
+    phases = ["set", "read", "update", "delete"]
+    per_phase = max(0.05, seconds / (len(phases) * 6))
+    prefix = f"perfmat:{int(time.time())}"
+
+    def bench(label, setup_fn, cmd_fn, post_fn=None):
+        if setup_fn is not None:
+            setup_fn()
+        start = time.monotonic()
+        end = start + per_phase
+        ops = 0
+        errors = 0
+        while time.monotonic() < end:
+            resp = send_cmd(sock, cmd_fn())
+            ops += 1
+            if resp is None or resp[0] == "error":
+                errors += 1
+            if post_fn is not None:
+                post_fn()
+        ops_per_sec = ops / per_phase if per_phase > 0 else 0.0
+        print(f"{label}: {ops} ops, {errors} errors, {ops_per_sec:.1f} ops/s")
+
+    print("\nPerf matrix (per data type, set/read/update/delete)")
+
+    # Strings
+    skey = f"{prefix}:str"
+    sval = 0
+    def s_set():
+        nonlocal sval
+        sval += 1
+        return ["SET", skey, f"v{sval}"]
+    def s_read():
+        return ["GET", skey]
+    def s_update():
+        nonlocal sval
+        sval += 1
+        return ["SET", skey, f"v{sval}:u"]
+    def s_delete():
+        return ["DEL", skey]
+    def s_setup():
+        _ = send_cmd(sock, ["SET", skey, "v0"])
+    def s_recreate():
+        _ = send_cmd(sock, ["SET", skey, "v0"])
+
+    # Lists
+    lkey = f"{prefix}:list"
+    def l_setup():
+        _ = send_cmd(sock, ["DEL", lkey])
+        _ = send_cmd(sock, ["RPUSH", lkey, "a", "b", "c"])
+    def l_set():
+        return ["RPUSH", lkey, "d"]
+    def l_read():
+        return ["LRANGE", lkey, "0", "-1"]
+    def l_update():
+        return ["LSET", lkey, "0", "z"]
+    def l_delete():
+        return ["DEL", lkey]
+    def l_recreate():
+        _ = send_cmd(sock, ["RPUSH", lkey, "a", "b", "c"])
+
+    # Sets
+    setkey = f"{prefix}:set"
+    def set_setup():
+        _ = send_cmd(sock, ["DEL", setkey])
+        _ = send_cmd(sock, ["SADD", setkey, "a", "b"])
+    def set_set():
+        return ["SADD", setkey, "c"]
+    def set_read():
+        return ["SISMEMBER", setkey, "a"]
+    def set_update():
+        return ["SREM", setkey, "b"]
+    def set_delete():
+        return ["DEL", setkey]
+    def set_recreate():
+        _ = send_cmd(sock, ["SADD", setkey, "a", "b"])
+
+    # Hashes
+    hkey = f"{prefix}:hash"
+    hval = 0
+    def h_setup():
+        _ = send_cmd(sock, ["DEL", hkey])
+        _ = send_cmd(sock, ["HSET", hkey, "f", "v0"])
+    def h_set():
+        return ["HSET", hkey, "f", "v1"]
+    def h_read():
+        return ["HGET", hkey, "f"]
+    def h_update():
+        nonlocal hval
+        hval += 1
+        return ["HSET", hkey, "f", f"v{hval}"]
+    def h_delete():
+        return ["HDEL", hkey, "f"]
+    def h_recreate():
+        _ = send_cmd(sock, ["HSET", hkey, "f", "v0"])
+
+    # Sorted sets
+    zkey = f"{prefix}:zset"
+    def z_setup():
+        _ = send_cmd(sock, ["DEL", zkey])
+        _ = send_cmd(sock, ["ZADD", zkey, "1", "a", "2", "b"])
+    def z_set():
+        return ["ZADD", zkey, "3", "c"]
+    def z_read():
+        return ["ZRANGE", zkey, "0", "-1"]
+    def z_update():
+        return ["ZADD", zkey, "4", "a"]
+    def z_delete():
+        return ["ZREM", zkey, "a"]
+    def z_recreate():
+        _ = send_cmd(sock, ["ZADD", zkey, "1", "a", "2", "b"])
+
+    # Streams
+    xkey = f"{prefix}:stream"
+    def x_setup():
+        _ = send_cmd(sock, ["DEL", xkey])
+        _ = send_cmd(sock, ["XADD", xkey, "*", "f", "v0"])
+    def x_set():
+        return ["XADD", xkey, "*", "f", "v1"]
+    def x_read():
+        return ["XRANGE", xkey, "-", "+"]
+    def x_update():
+        return ["XADD", xkey, "*", "f", "v2"]
+    def x_delete():
+        return ["DEL", xkey]
+    def x_recreate():
+        _ = send_cmd(sock, ["XADD", xkey, "*", "f", "v0"])
+
+    for dtype, setup_fn, set_fn, read_fn, update_fn, delete_fn, recreate_fn in [
+        ("string", s_setup, s_set, s_read, s_update, s_delete, s_recreate),
+        ("list", l_setup, l_set, l_read, l_update, l_delete, l_recreate),
+        ("set", set_setup, set_set, set_read, set_update, set_delete, set_recreate),
+        ("hash", h_setup, h_set, h_read, h_update, h_delete, h_recreate),
+        ("zset", z_setup, z_set, z_read, z_update, z_delete, z_recreate),
+        ("stream", x_setup, x_set, x_read, x_update, x_delete, x_recreate),
+    ]:
+        bench(f"{dtype} set", setup_fn, set_fn)
+        bench(f"{dtype} read", setup_fn, read_fn)
+        bench(f"{dtype} update", setup_fn, update_fn)
+        bench(f"{dtype} delete", setup_fn, delete_fn, recreate_fn)
+
+
 def main():
     parser = argparse.ArgumentParser(description="mini_redis parity + perf runner")
     parser.add_argument("host", nargs="?", default="127.0.0.1")
@@ -583,6 +726,7 @@ def main():
         sock = socket.create_connection((host, port))
         print(f"\nStarting perf run for {args.perf_seconds:.2f}s")
         run_perf(sock, args.perf_seconds, args.perf_retain, args.perf_retain_count)
+        run_perf_matrix(sock, args.perf_seconds)
         sock.close()
 
 

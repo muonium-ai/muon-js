@@ -100,14 +100,24 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
 async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<String>) {
     let mut guard = state.lock().await;
     eprintln!("mini-redis: shutdown requested");
-    for (idx, db) in guard.dbs.iter_mut().enumerate() {
-        let keys = db.keys();
-        eprintln!("mini-redis: db{} keys={}:", idx, keys.len());
-        for key in keys {
-            let typ = db.value_type(&key).unwrap_or("unknown");
-            let name = String::from_utf8_lossy(&key);
-            eprintln!("  - {} ({})", name, typ);
+    if let Some(db) = guard.dbs.get_mut(0) {
+        let items = db.snapshot_items();
+        let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        for (_, value, _) in items.iter() {
+            match value {
+                crate::mini_redis::store::Value::String(_) => counts.0 += 1,
+                crate::mini_redis::store::Value::List(_) => counts.1 += 1,
+                crate::mini_redis::store::Value::Set(_) => counts.2 += 1,
+                crate::mini_redis::store::Value::Hash(_) => counts.3 += 1,
+                crate::mini_redis::store::Value::ZSet(_) => counts.4 += 1,
+                crate::mini_redis::store::Value::Stream(_) => counts.5 += 1,
+            }
         }
+        eprintln!("mini-redis: db0 keys={}", items.len());
+        eprintln!(
+            "mini-redis: db0 counts: string={} list={} set={} hash={} zset={} stream={}",
+            counts.0, counts.1, counts.2, counts.3, counts.4, counts.5
+        );
     }
     let path_msg = persist_path.as_deref().unwrap_or("<unknown>");
     if guard.persist.is_none() {
@@ -115,13 +125,8 @@ async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<
         return;
     }
     let persist = guard.persist.take().unwrap();
-    match persist.snapshot(&mut guard.dbs).await {
-        Ok(()) => {
-            eprintln!("mini-redis: persisted snapshot to {}", path_msg);
-        }
-        Err(err) => {
-            eprintln!("mini-redis: persistence failed: {}", err);
-        }
+    if let Err(err) = persist.snapshot(&mut guard.dbs).await {
+        eprintln!("mini-redis: persistence failed: {}", err);
     }
     guard.persist = Some(persist);
 }

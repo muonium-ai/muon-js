@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop redis-run redis-benchmark redis-stop
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -11,6 +11,10 @@ MINI_REDIS_PIDFILE ?= tmp/mini_redis.pid
 MINI_REDIS_PORTFILE ?= tmp/mini_redis.port
 MINI_REDIS_DBFILE ?= tmp/mini_redis.dbpath
 MINI_REDIS_AOF ?= 0
+REDIS_PORT ?= 6379
+REDIS_PIDFILE ?= tmp/redis.pid
+REDIS_LOG ?= tmp/redis.log
+REDIS_BENCH_LOG ?= tmp/redis_benchmark_$(shell date +%Y%m%d_%H%M%S).log
 
 sync-version:
 	./scripts/sync_version.sh
@@ -152,6 +156,33 @@ mini-redis-runloop: sync-version
 	echo "=== persisted db: $$path ==="; \
 	python3 scripts/read_mini_redis_db.py $$path; \
 	echo "=== perf summary above ==="
+
+redis-run:
+	@mkdir -p tmp
+	@echo "Starting redis-server on port $(REDIS_PORT)"
+	@redis-server --port $(REDIS_PORT) --daemonize yes --pidfile $(REDIS_PIDFILE) --logfile $(REDIS_LOG)
+
+redis-benchmark:
+	@mkdir -p tmp
+	@echo "Running redis-benchmark on port $(REDIS_PORT)"
+	@echo "Benchmark log: $(REDIS_BENCH_LOG)"
+	@redis-benchmark -p $(REDIS_PORT) | tee $(REDIS_BENCH_LOG)
+
+redis-stop:
+	@if [ ! -f "$(REDIS_PIDFILE)" ]; then echo "No PID file at $(REDIS_PIDFILE)"; exit 1; fi; \
+	pid=$$(cat $(REDIS_PIDFILE)); \
+	if [ -z "$$pid" ]; then echo "Empty PID file"; exit 1; fi; \
+	echo "Stopping redis pid=$$pid"; \
+	kill -TERM $$pid 2>/dev/null || true; \
+	for i in 1 2 3 4 5; do \
+		if ! kill -0 $$pid 2>/dev/null; then break; fi; \
+		sleep 0.2; \
+	done; \
+	if kill -0 $$pid 2>/dev/null; then \
+		echo "Force stopping redis pid=$$pid"; \
+		kill -KILL $$pid 2>/dev/null || true; \
+	fi; \
+	rm -f $(REDIS_PIDFILE)
 
 mini-redis-parity: sync-version
 	@port=$$(python3 scripts/pick_port.py); \
