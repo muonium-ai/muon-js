@@ -6,6 +6,8 @@ use async_std::sync::{Arc, Mutex};
 use async_std::task;
 use async_std::channel::Sender;
 use std::ffi::c_void;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use crate::mini_redis::resp::{read_value, write_value, RespValue};
 use crate::mini_redis::persist::Persist;
@@ -46,6 +48,19 @@ impl ServerState {
             script_cache: std::collections::HashMap::new(),
         }
     }
+}
+
+fn timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MINI_REDIS_TIMINGS")
+            .ok()
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                v == "1" || v == "true" || v == "yes" || v == "on"
+            })
+            .unwrap_or(false)
+    })
 }
 
 pub async fn run(config: ServerConfig) -> io::Result<()> {
@@ -95,6 +110,11 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             continue;
         }
         let cmd = to_upper_ascii(&args[0]);
+        let timing = if timing_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let resp = if cmd == "SUBSCRIBE" {
             handle_subscribe(&state, &pub_tx, &args[1..]).await
         } else if cmd == "PUBLISH" {
@@ -135,6 +155,11 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             let mut guard = state.lock().await;
             handle_command(&mut guard, &mut current_db, &mut script_runtime, &cmd, &args[1..]).await
         };
+        if let Some(start) = timing {
+            let elapsed_us = start.elapsed().as_micros();
+            let arg_count = args.len().saturating_sub(1);
+            eprintln!("mini-redis: cmd={} args={} elapsed_us={}", cmd, arg_count, elapsed_us);
+        }
         write_value(&mut &stream, &resp).await?;
         while let Ok(msg) = pub_rx.try_recv() {
             let _ = write_value(&mut &stream, &msg).await;
