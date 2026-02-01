@@ -1227,9 +1227,16 @@ fn js_to_primitive(ctx: &mut JSContextImpl, val: JSValue, prefer_number: bool) -
             } else if ctx.get_exception() != Value::UNDEFINED {
                 return Some(Value::EXCEPTION);
             }
+        } else if let Some(bytes) = ctx.string_bytes(method) {
+            if bytes == b"__builtin_Object_toString__" {
+                let res = object_to_string_value(ctx, val);
+                if ctx.object_class_id(res).is_none() {
+                    return Some(res);
+                }
+            }
         }
     }
-    None
+    Some(object_to_string_value(ctx, val))
 }
 
 pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSValue> {
