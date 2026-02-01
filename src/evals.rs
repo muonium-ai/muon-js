@@ -68,6 +68,14 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "false" {
         return Some(Value::FALSE);
     }
+    // Handle `this` keyword - look it up in the current environment
+    if s == "this" {
+        if let Some((_, val)) = ctx.resolve_binding("this") {
+            return Some(val);
+        }
+        // If not bound, `this` is undefined in strict mode or global in sloppy mode
+        return Some(js_get_global_object(ctx));
+    }
     if let Some(pos) = find_arrow_top_level(s) {
         let (left, right) = s.split_at(pos);
         let params_src = left.trim();

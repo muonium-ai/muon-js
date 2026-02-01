@@ -1593,30 +1593,96 @@ pub fn split_instanceof(src: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// Split expression on top-level ` in ` (property existence check).
+pub fn split_in_operator(src: &str) -> Option<(&str, &str)> {
+    let s = src.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    // Match " in " with surrounding spaces to distinguish from "for...in" and identifiers like "index"
+    let token = b" in ";
+    let mut i = 0usize;
+    while i + token.len() <= bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' {
+                i += 1; // skip escaped
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            b']' | b'}' | b')' => {
+                depth -= 1;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if depth == 0 && bytes[i..].starts_with(token) {
+            let lhs = s[..i].trim();
+            let rhs = s[i + token.len()..].trim();
+            if !lhs.is_empty() && !rhs.is_empty() {
+                return Some((lhs, rhs));
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Create a function object with parameters and body
 pub fn create_function(ctx: &mut JSContextImpl, params: &[String], body: &str) -> Option<JSValue> {
     let params_str = params.join(",");
     let params_val = js_new_string(ctx, &params_str);
-    
+
     let body_val = js_new_string(ctx, body);
-    
+
     let func = js_new_object(ctx);
-    
+
     js_set_property_str(ctx, func, "__params__", params_val);
     js_set_property_str(ctx, func, "__body__", body_val);
     js_set_property_str(ctx, func, "__closure__", Value::TRUE);
 
     let env = ctx.current_env();
     js_set_property_str(ctx, func, "__env__", env);
-    
+
+    // Create prototype property with constructor pointing back to the function
+    let prototype = js_new_object(ctx);
+    js_set_property_str(ctx, prototype, "constructor", func);
+    js_set_property_str(ctx, func, "prototype", prototype);
+
     Some(func)
 }
 
 /// Call a closure with arguments
 pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) -> Option<JSValue> {
+    call_closure_with_this(ctx, func, Value::UNDEFINED, args)
+}
+
+/// Call a closure with a specific `this` binding and arguments
+pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: JSValue, args: &[JSValue]) -> Option<JSValue> {
     let params_val = js_get_property_str(ctx, func, "__params__");
     let body_val = js_get_property_str(ctx, func, "__body__");
-    
+
     let params_bytes = ctx.string_bytes(params_val)?;
     let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
     #[derive(Clone)]
@@ -1646,10 +1712,10 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
             }
         }
     }
-    
+
     let body_bytes = ctx.string_bytes(body_val)?;
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
-    
+
     // Check if function has a name (for recursive named function expressions)
     let func_name_val = js_get_property_str(ctx, func, "name");
     let func_name: Option<String> = if !func_name_val.is_undefined() {
@@ -1659,14 +1725,18 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     } else {
         None
     };
-    
+
     let parent_env = js_get_property_str(ctx, func, "__env__");
     let env = js_new_object(ctx);
     js_set_property_str(ctx, env, "__parent__", parent_env);
     js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
+
+    // Bind `this` in the function scope
+    js_set_property_str(ctx, env, "this", this_val);
+
     ctx.push_env(env);
     predeclare_block_bindings(ctx, &body_str);
-    
+
     // Bind function name in local scope for recursive calls
     if let Some(name) = func_name {
         js_set_property_str(ctx, env, &name, func);
@@ -1701,15 +1771,15 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
         js_set_property_str(ctx, env, &spec.name, arg_val);
         arg_index += 1;
     }
-    
+
     let result = eval_function_body(ctx, &body_str);
-    
+
     if *ctx.get_loop_control() == crate::context::LoopControl::Return {
         ctx.set_loop_control(crate::context::LoopControl::None);
     }
 
     ctx.pop_env();
-    
+
     result
 }
 

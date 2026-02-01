@@ -1042,6 +1042,58 @@ impl Context {
         true
     }
 
+    unsafe fn delete_prop_value(&mut self, obj: *mut HeapObject, kind: u32, key: u32) -> bool {
+        let mut prev: *mut Property = core::ptr::null_mut();
+        let mut cur = (*obj).prop_head;
+        while !cur.is_null() {
+            if (*cur).key_kind == kind && (*cur).key == key {
+                // Found it - unlink from list
+                if prev.is_null() {
+                    (*obj).prop_head = (*cur).next;
+                } else {
+                    (*prev).next = (*cur).next;
+                }
+                (*obj).prop_count = (*obj).prop_count.saturating_sub(1);
+                return true;
+            }
+            prev = cur;
+            cur = (*cur).next;
+        }
+        false
+    }
+
+    pub fn delete_property_str(&mut self, val: Value, name: &[u8]) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
+            None => return false,
+        };
+        if let Some(idx) = parse_index(name) {
+            return self.delete_property_index(val, idx);
+        }
+        let atom = match self.intern_string(name) {
+            Some(atom) => atom,
+            None => return false,
+        };
+        unsafe { self.delete_prop_value(obj, PROP_KEY_ATOM, atom) }
+    }
+
+    pub fn delete_property_index(&mut self, val: Value, idx: u32) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
+            None => return false,
+        };
+        unsafe {
+            // For arrays, we can't truly delete indexed elements, but we can undefine them
+            if (*obj).tag == HEAP_TAG_ARRAY && idx < (*obj).array_len {
+                if !(*obj).elements.is_null() {
+                    *(*obj).elements.add(idx as usize) = Value::UNDEFINED;
+                }
+                return true;
+            }
+            self.delete_prop_value(obj, PROP_KEY_INDEX, idx)
+        }
+    }
+
     fn alloc_property(&mut self, kind: u32, key: u32, value: Value) -> *mut Property {
         let raw = match self.mem.alloc(core::mem::size_of::<Property>(), core::mem::align_of::<usize>()) {
             Some(ptr) => ptr,

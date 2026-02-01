@@ -1923,6 +1923,48 @@ fn value_to_string(ctx: &mut JSContextImpl, val: JSValue) -> String {
 //
 // Future refactoring: Extract built-ins to separate handlers (Phase 2)
 
+/// Parse a simple member access expression: obj.prop
+/// Returns (object_expression, property_name) if successful
+fn parse_member_access(src: &str) -> Option<(&str, String)> {
+    let s = src.trim();
+    // Find the last dot that's not inside brackets or parens
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut last_dot = None;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                continue; // skip next char
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            b'.' if depth == 0 => last_dot = Some(i),
+            _ => {}
+        }
+    }
+    if let Some(dot_pos) = last_dot {
+        let obj_part = s[..dot_pos].trim();
+        let prop_part = s[dot_pos + 1..].trim();
+        if !obj_part.is_empty() && is_identifier(prop_part) {
+            return Some((obj_part, prop_part.to_string()));
+        }
+    }
+    None
+}
+
 pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
     if s.is_empty() {
@@ -2106,6 +2148,29 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         
         return Some(Value::FALSE);
     }
+    // Check for `in` operator (property existence check)
+    if let Some((lhs, rhs)) = split_in_operator(s) {
+        // Left side is the property name (as string), right side is the object
+        let prop_val = eval_expr(ctx, lhs)?;
+        let obj_val = eval_expr(ctx, rhs)?;
+
+        // Get property name as string
+        let prop_name = if let Some(bytes) = ctx.string_bytes(prop_val) {
+            core::str::from_utf8(bytes).ok().map(|s| s.to_string())
+        } else if let Some(n) = prop_val.int32() {
+            Some(n.to_string())
+        } else {
+            None
+        };
+
+        if let Some(name) = prop_name {
+            // Check if object has the property (including prototype chain)
+            let has_prop = ctx.has_property_str(obj_val, name.as_bytes()) ||
+                js_get_property_str(ctx, obj_val, &name) != Value::UNDEFINED;
+            return Some(Value::new_bool(has_prop));
+        }
+        return Some(Value::FALSE);
+    }
     // Check for arithmetic operators before splitting on base/tail
     if contains_arith_op(s) {
         if let Ok(val) = parse_arith_expr(ctx, s) {
@@ -2182,6 +2247,153 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             "undefined"
         };
         return Some(js_new_string(ctx, type_str));
+    }
+    // Handle `delete` operator
+    if s.starts_with("delete ") {
+        let operand = s[7..].trim();
+        // Parse the property access: delete obj.prop or delete obj[idx]
+        if let Some((obj_expr, prop_name)) = parse_member_access(operand) {
+            let obj = eval_expr(ctx, obj_expr)?;
+            let deleted = ctx.delete_property_str(obj, prop_name.as_bytes());
+            return Some(Value::new_bool(deleted));
+        }
+        // Try parsing as obj["prop"] or obj[idx]
+        if let Some(bracket_start) = operand.rfind('[') {
+            if operand.ends_with(']') {
+                let obj_expr = &operand[..bracket_start];
+                let idx_expr = &operand[bracket_start + 1..operand.len() - 1];
+                let obj = eval_expr(ctx, obj_expr)?;
+                let idx_val = eval_expr(ctx, idx_expr)?;
+                // Extract string to avoid borrow issues
+                let name_str: Option<String> = ctx.string_bytes(idx_val)
+                    .and_then(|bytes| core::str::from_utf8(bytes).ok())
+                    .map(|s| s.to_string());
+                if let Some(name) = name_str {
+                    let deleted = ctx.delete_property_str(obj, name.as_bytes());
+                    return Some(Value::new_bool(deleted));
+                }
+                if let Some(n) = idx_val.int32() {
+                    let deleted = ctx.delete_property_index(obj, n as u32);
+                    return Some(Value::new_bool(deleted));
+                }
+            }
+        }
+        // Deleting a variable returns true but does nothing
+        return Some(Value::TRUE);
+    }
+    // Handle `new` keyword for constructor calls
+    if s.starts_with("new ") {
+        let ctor_expr = s[4..].trim();
+        // Parse the constructor call: "new Foo(args)" or "new Foo"
+        // Find where arguments start (if any)
+        let (ctor_name, args_str) = if let Some(paren_start) = ctor_expr.find('(') {
+            let (name_part, rest) = ctor_expr.split_at(paren_start);
+            let (inside, _) = extract_paren(rest)?;
+            (name_part.trim(), Some(inside))
+        } else {
+            (ctor_expr, None)
+        };
+
+        // Evaluate the constructor
+        let ctor_val = eval_expr(ctx, ctor_name)?;
+
+        // Parse arguments
+        let mut args = Vec::new();
+        if let Some(args_src) = args_str {
+            let arg_list = split_top_level(args_src)?;
+            for arg in arg_list {
+                let arg_trim = arg.trim();
+                if arg_trim.is_empty() {
+                    continue;
+                }
+                args.push(eval_expr(ctx, arg_trim)?);
+            }
+        }
+
+        // Check if it's a closure (user-defined function)
+        let closure_marker = js_get_property_str(ctx, ctor_val, "__closure__");
+        if closure_marker == Value::TRUE {
+            // Create a new object instance
+            let new_obj = js_new_object(ctx);
+
+            // Set up the prototype chain
+            let ctor_proto = js_get_property_str(ctx, ctor_val, "prototype");
+            if !ctor_proto.is_undefined() && !ctor_proto.is_null() {
+                js_set_property_str(ctx, new_obj, "__proto__", ctor_proto);
+            }
+
+            // Call the constructor with `this` bound to the new object
+            let result = call_closure_with_this(ctx, ctor_val, new_obj, &args);
+
+            // If the constructor explicitly returns an object, return that; otherwise return new_obj
+            if let Some(ret_val) = result {
+                if ret_val.is_ptr() && !ret_val.is_null() && !ret_val.is_undefined() {
+                    return Some(ret_val);
+                }
+            }
+            return Some(new_obj);
+        }
+
+        // Check if it's a builtin marker
+        if let Some(bytes) = ctx.string_bytes(ctor_val) {
+            if let Ok(marker) = core::str::from_utf8(bytes) {
+                match marker {
+                    "__builtin_Object__" => {
+                        return Some(js_new_object(ctx));
+                    }
+                    "__builtin_Array__" => {
+                        if args.len() == 1 {
+                            if let Some(len) = args[0].int32() {
+                                return Some(js_new_array(ctx, len));
+                            }
+                        }
+                        // Create array with elements
+                        let arr = js_new_array(ctx, args.len() as i32);
+                        for (i, arg) in args.iter().enumerate() {
+                            js_set_property_uint32(ctx, arr, i as u32, *arg);
+                        }
+                        return Some(arr);
+                    }
+                    "__builtin_Error__" => {
+                        let msg = if !args.is_empty() {
+                            if let Some(bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(bytes).unwrap_or("").to_string()
+                            } else {
+                                "".to_string()
+                            }
+                        } else {
+                            "".to_string()
+                        };
+                        return Some(js_throw_error(ctx, JSObjectClassEnum::Error, &msg));
+                    }
+                    "__builtin_Function__" => {
+                        // new Function(params..., body)
+                        if !args.is_empty() {
+                            // Extract body string first to avoid borrow issues
+                            let body = {
+                                let body_bytes = ctx.string_bytes(args[args.len() - 1]);
+                                body_bytes.and_then(|b| core::str::from_utf8(b).ok()).unwrap_or("").to_string()
+                            };
+                            // Extract parameter strings
+                            let mut params = Vec::new();
+                            for i in 0..args.len() - 1 {
+                                if let Some(bytes) = ctx.string_bytes(args[i]) {
+                                    if let Ok(s) = core::str::from_utf8(bytes) {
+                                        params.push(s.to_string());
+                                    }
+                                }
+                            }
+                            return create_function(ctx, &params, &body);
+                        }
+                        return create_function(ctx, &[], "");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // For unrecognized constructors, return undefined
+        return Some(Value::UNDEFINED);
     }
     if s.starts_with("function") {
         if let Some(val) = eval_value(ctx, s) {
