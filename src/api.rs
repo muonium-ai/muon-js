@@ -7653,16 +7653,37 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             // Function.prototype.call, apply, bind
             if js_is_function(ctx, val) != 0 {
                 if name == "call" {
+                    if let Some(existing) = ctx.get_property_str(val, b"call") {
+                        if existing != Value::UNDEFINED {
+                            val = existing;
+                            rest = next;
+                            continue;
+                        }
+                    }
                     val = js_new_string(ctx, "__builtin_Function_call__");
                     rest = next;
                     continue;
                 }
                 if name == "apply" {
+                    if let Some(existing) = ctx.get_property_str(val, b"apply") {
+                        if existing != Value::UNDEFINED {
+                            val = existing;
+                            rest = next;
+                            continue;
+                        }
+                    }
                     val = js_new_string(ctx, "__builtin_Function_apply__");
                     rest = next;
                     continue;
                 }
                 if name == "bind" {
+                    if let Some(existing) = ctx.get_property_str(val, b"bind") {
+                        if existing != Value::UNDEFINED {
+                            val = existing;
+                            rest = next;
+                            continue;
+                        }
+                    }
                     val = js_new_string(ctx, "__builtin_Function_bind__");
                     rest = next;
                     continue;
