@@ -17,7 +17,7 @@ fn main() {
     let filename = &args[1];
     let source = fs::read_to_string(filename).expect("Failed to read file");
     
-    let mut mem = vec![0u8; 65536];
+    let mut mem = vec![0u8; 1024 * 1024];
     let mut ctx = JS_NewContext(&mut mem);
     JS_SetLogFunc(&mut ctx, Some(log_func));
     

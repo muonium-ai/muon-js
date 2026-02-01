@@ -109,23 +109,33 @@ function test()
 {
     var r, a, b, c, err;
 
+    console.log("test: Error");
     r = Error("hello");
     assert(r.message, "hello", "Error");
 
+    console.log("test: Object ctor");
     a = new Object();
     a.x = 1;
     assert(a.x, 1, "Object");
 
+    console.log("test: Object prototype/defineProperty");
+    console.log("test: typeof assert", typeof assert);
+    console.log("test: Object.prototype", Object.prototype);
     assert(Object.prototype.constructor, Object, "constructor");
+    console.log("test: constructor ok");
     assert(Object.getPrototypeOf(a), Object.prototype, "getPrototypeOf");
+    console.log("test: getPrototypeOf ok");
     Object.defineProperty(a, "y", { value: 3, writable: true, configurable: true, enumerable: true });
+    console.log("test: defineProperty ok");
     assert(a.y, 3, "defineProperty");
 
+    console.log("test: defineProperty accessors");
     Object.defineProperty(a, "z", { get: function () { return 4; }, set: function(val) { this.z_val = val; }, configurable: true, enumerable: true });
     assert(a.z, 4, "get");
     a.z = 5;
     assert(a.z_val, 5, "set");
 
+    console.log("test: defineProperty defaults");
     Object.defineProperty(a, "w", {});
     assert("w" in a, true);
     a.w = 1;
@@ -133,11 +143,13 @@ function test()
     Object.defineProperty(a, "w", {});
     assert(a.w, 1);
     
+    console.log("test: literal accessors");
     a = { get z() { return 4; }, set z(val) { this.z_val = val; } };
     assert(a.z, 4, "get");
     a.z = 5;
     assert(a.z_val, 5, "set");
 
+    console.log("test: Object.create/setPrototypeOf");
     a = {};
     b = Object.create(a);
     assert(Object.getPrototypeOf(b), a, "create");
@@ -145,6 +157,7 @@ function test()
     Object.setPrototypeOf(a, c);
     assert(Object.getPrototypeOf(a), c, "setPrototypeOf");
     
+    console.log("test: toString call");
     a={};
     assert(a.toString(), "[object Object]", "toString");
     assert(Object.prototype.toString.call(1), "[object Number]", "toString");
@@ -164,6 +177,7 @@ function test()
     assert(err);
 */
 
+    console.log("test: hasOwnProperty");
     a = {x: 1};
     assert(a.hasOwnProperty("x"), true);
     assert(a.hasOwnProperty("y"), false);
@@ -858,18 +872,24 @@ function test_line_column_numbers()
     eval_error('var a;\n 1 + (a @+= poisoned_number);', Error, 1);
 }
 
-test();
-test_string();
-test_string2();
-test_array();
-test_array_ext();
-test_enum();
-test_function();
-test_number();
-test_math();
-test_typed_array();
-test_global_eval();
-test_json();
-test_regexp();
-test_line_column_numbers();
-test_large_eval_parse_stack();
+function run_test(name, fn) {
+    console.log("start " + name);
+    fn();
+    console.log("done " + name);
+}
+
+run_test("test", test);
+run_test("test_string", test_string);
+run_test("test_string2", test_string2);
+run_test("test_array", test_array);
+run_test("test_array_ext", test_array_ext);
+run_test("test_enum", test_enum);
+run_test("test_function", test_function);
+run_test("test_number", test_number);
+run_test("test_math", test_math);
+run_test("test_typed_array", test_typed_array);
+run_test("test_global_eval", test_global_eval);
+run_test("test_json", test_json);
+run_test("test_regexp", test_regexp);
+run_test("test_line_column_numbers", test_line_column_numbers);
+run_test("test_large_eval_parse_stack", test_large_eval_parse_stack);

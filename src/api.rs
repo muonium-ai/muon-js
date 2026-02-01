@@ -13,7 +13,7 @@
 //! built-in method implementations due to architectural constraints.
 
 use crate::context::Context;
-use regex::RegexBuilder;
+use fancy_regex::Regex;
 use crate::types::*;
 use crate::value::Value;
 
@@ -37,7 +37,319 @@ fn string_utf16_units(ctx: &mut JSContextImpl, val: JSValue) -> Option<Vec<u16>>
 }
 
 fn string_utf16_len(ctx: &mut JSContextImpl, val: JSValue) -> Option<usize> {
-    Some(string_utf16_units(ctx, val)?.len())
+    string_utf16_units(ctx, val).map(|units| units.len())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypedArrayKind {
+    Uint8,
+    Uint8Clamped,
+    Int8,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    Float32,
+    Float64,
+}
+
+impl TypedArrayKind {
+    fn elem_size(self) -> usize {
+        match self {
+            TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped | TypedArrayKind::Int8 => 1,
+            TypedArrayKind::Int16 | TypedArrayKind::Uint16 => 2,
+            TypedArrayKind::Int32 | TypedArrayKind::Uint32 | TypedArrayKind::Float32 => 4,
+            TypedArrayKind::Float64 => 8,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ArrayBufferData {
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct TypedArrayData {
+    buffer: JSValue,
+    offset: usize,
+    length: usize,
+    kind: TypedArrayKind,
+}
+
+fn typed_array_kind_from_class_id(class_id: u32) -> Option<TypedArrayKind> {
+    match class_id {
+        x if x == JSObjectClassEnum::Uint8Array as u32 => Some(TypedArrayKind::Uint8),
+        x if x == JSObjectClassEnum::Uint8cArray as u32 => Some(TypedArrayKind::Uint8Clamped),
+        x if x == JSObjectClassEnum::Int8Array as u32 => Some(TypedArrayKind::Int8),
+        x if x == JSObjectClassEnum::Int16Array as u32 => Some(TypedArrayKind::Int16),
+        x if x == JSObjectClassEnum::Uint16Array as u32 => Some(TypedArrayKind::Uint16),
+        x if x == JSObjectClassEnum::Int32Array as u32 => Some(TypedArrayKind::Int32),
+        x if x == JSObjectClassEnum::Uint32Array as u32 => Some(TypedArrayKind::Uint32),
+        x if x == JSObjectClassEnum::Float32Array as u32 => Some(TypedArrayKind::Float32),
+        x if x == JSObjectClassEnum::Float64Array as u32 => Some(TypedArrayKind::Float64),
+        _ => None,
+    }
+}
+
+fn typed_array_class_enum_from_id(class_id: u32) -> Option<JSObjectClassEnum> {
+    match class_id {
+        x if x == JSObjectClassEnum::Uint8Array as u32 => Some(JSObjectClassEnum::Uint8Array),
+        x if x == JSObjectClassEnum::Uint8cArray as u32 => Some(JSObjectClassEnum::Uint8cArray),
+        x if x == JSObjectClassEnum::Int8Array as u32 => Some(JSObjectClassEnum::Int8Array),
+        x if x == JSObjectClassEnum::Int16Array as u32 => Some(JSObjectClassEnum::Int16Array),
+        x if x == JSObjectClassEnum::Uint16Array as u32 => Some(JSObjectClassEnum::Uint16Array),
+        x if x == JSObjectClassEnum::Int32Array as u32 => Some(JSObjectClassEnum::Int32Array),
+        x if x == JSObjectClassEnum::Uint32Array as u32 => Some(JSObjectClassEnum::Uint32Array),
+        x if x == JSObjectClassEnum::Float32Array as u32 => Some(JSObjectClassEnum::Float32Array),
+        x if x == JSObjectClassEnum::Float64Array as u32 => Some(JSObjectClassEnum::Float64Array),
+        _ => None,
+    }
+}
+
+fn get_arraybuffer_data(ctx: &mut JSContextImpl, val: JSValue) -> Option<*mut ArrayBufferData> {
+    if ctx.object_class_id(val)? != JSObjectClassEnum::ArrayBuffer as u32 {
+        return None;
+    }
+    let ptr = ctx.get_object_opaque(val) as *mut ArrayBufferData;
+    if ptr.is_null() { None } else { Some(ptr) }
+}
+
+fn get_typedarray_data(ctx: &mut JSContextImpl, val: JSValue) -> Option<*mut TypedArrayData> {
+    let class_id = ctx.object_class_id(val)?;
+    if typed_array_kind_from_class_id(class_id).is_none() {
+        return None;
+    }
+    let ptr = ctx.get_object_opaque(val) as *mut TypedArrayData;
+    if ptr.is_null() { None } else { Some(ptr) }
+}
+
+fn clamp_u8_clamped(n: f64) -> u8 {
+    if !n.is_finite() || n <= 0.0 {
+        return 0;
+    }
+    if n >= 255.0 {
+        return 255;
+    }
+    let floor = n.floor();
+    let frac = n - floor;
+    let mut rounded = if frac > 0.5 {
+        floor + 1.0
+    } else if frac < 0.5 {
+        floor
+    } else {
+        if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }
+    };
+    if rounded < 0.0 { rounded = 0.0; }
+    if rounded > 255.0 { rounded = 255.0; }
+    rounded as u8
+}
+
+fn typed_array_get_element(ctx: &mut JSContextImpl, obj: JSValue, idx: u32) -> JSValue {
+    let data_ptr = match get_typedarray_data(ctx, obj) {
+        Some(p) => p,
+        None => return Value::UNDEFINED,
+    };
+    unsafe {
+        let data = &*data_ptr;
+        if idx as usize >= data.length {
+            return Value::UNDEFINED;
+        }
+        let buf_ptr = match get_arraybuffer_data(ctx, data.buffer) {
+            Some(p) => p,
+            None => return Value::UNDEFINED,
+        };
+        let buf = &*buf_ptr;
+        let size = data.kind.elem_size();
+        let start = data.offset + (idx as usize) * size;
+        if start + size > buf.bytes.len() {
+            return Value::UNDEFINED;
+        }
+        let bytes = &buf.bytes[start..start + size];
+        match data.kind {
+            TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => Value::from_int32(bytes[0] as i32),
+            TypedArrayKind::Int8 => Value::from_int32((bytes[0] as i8) as i32),
+            TypedArrayKind::Int16 => {
+                let v = i16::from_le_bytes([bytes[0], bytes[1]]);
+                Value::from_int32(v as i32)
+            }
+            TypedArrayKind::Uint16 => {
+                let v = u16::from_le_bytes([bytes[0], bytes[1]]);
+                Value::from_int32(v as i32)
+            }
+            TypedArrayKind::Int32 => {
+                let v = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                Value::from_int32(v)
+            }
+            TypedArrayKind::Uint32 => {
+                let v = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                if v <= i32::MAX as u32 { Value::from_int32(v as i32) } else { number_to_value(ctx, v as f64) }
+            }
+            TypedArrayKind::Float32 => {
+                let v = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                number_to_value(ctx, v as f64)
+            }
+            TypedArrayKind::Float64 => {
+                let v = f64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
+                number_to_value(ctx, v)
+            }
+        }
+    }
+}
+
+fn typed_array_set_element(ctx: &mut JSContextImpl, obj: JSValue, idx: u32, val: JSValue) -> bool {
+    let data_ptr = match get_typedarray_data(ctx, obj) {
+        Some(p) => p,
+        None => return false,
+    };
+    unsafe {
+        let data = &*data_ptr;
+        if idx as usize >= data.length {
+            return false;
+        }
+        let buf_ptr = match get_arraybuffer_data(ctx, data.buffer) {
+            Some(p) => p,
+            None => return false,
+        };
+        let buf = &mut *buf_ptr;
+        let size = data.kind.elem_size();
+        let start = data.offset + (idx as usize) * size;
+        if start + size > buf.bytes.len() {
+            return false;
+        }
+        let n = js_to_number(ctx, val).unwrap_or(0.0);
+        match data.kind {
+            TypedArrayKind::Uint8 => {
+                let mut v = n.trunc() as i64;
+                v = v.rem_euclid(256);
+                buf.bytes[start] = v as u8;
+            }
+            TypedArrayKind::Uint8Clamped => {
+                buf.bytes[start] = clamp_u8_clamped(n);
+            }
+            TypedArrayKind::Int8 => {
+                let mut v = n.trunc() as i64;
+                v = v.rem_euclid(256);
+                if v >= 128 { v -= 256; }
+                buf.bytes[start] = (v as i8) as u8;
+            }
+            TypedArrayKind::Int16 => {
+                let mut v = n.trunc() as i64;
+                v = v.rem_euclid(1 << 16);
+                if v >= (1 << 15) { v -= 1 << 16; }
+                let bytes = (v as i16).to_le_bytes();
+                buf.bytes[start..start + 2].copy_from_slice(&bytes);
+            }
+            TypedArrayKind::Uint16 => {
+                let mut v = n.trunc() as i64;
+                v = v.rem_euclid(1 << 16);
+                let bytes = (v as u16).to_le_bytes();
+                buf.bytes[start..start + 2].copy_from_slice(&bytes);
+            }
+            TypedArrayKind::Int32 => {
+                let v = js_to_int32(ctx, val).unwrap_or(0);
+                let bytes = v.to_le_bytes();
+                buf.bytes[start..start + 4].copy_from_slice(&bytes);
+            }
+            TypedArrayKind::Uint32 => {
+                let v = js_to_uint32(ctx, val).unwrap_or(0);
+                let bytes = v.to_le_bytes();
+                buf.bytes[start..start + 4].copy_from_slice(&bytes);
+            }
+            TypedArrayKind::Float32 => {
+                let v = n as f32;
+                let bytes = v.to_le_bytes();
+                buf.bytes[start..start + 4].copy_from_slice(&bytes);
+            }
+            TypedArrayKind::Float64 => {
+                let bytes = n.to_le_bytes();
+                buf.bytes[start..start + 8].copy_from_slice(&bytes);
+            }
+        }
+    }
+    true
+}
+
+fn create_arraybuffer(ctx: &mut JSContextImpl, byte_len: usize) -> JSValue {
+    let obj = js_new_object_class_user(ctx, JSObjectClassEnum::ArrayBuffer as i32);
+    if obj.is_exception() {
+        return obj;
+    }
+    let data = Box::new(ArrayBufferData { bytes: vec![0u8; byte_len] });
+    ctx.set_object_opaque(obj, Box::into_raw(data) as *mut core::ffi::c_void);
+    let _ = js_set_property_str(ctx, obj, "byteLength", Value::from_int32(byte_len as i32));
+    obj
+}
+
+fn create_typed_array(ctx: &mut JSContextImpl, class_id: JSObjectClassEnum, buffer: JSValue, offset: usize, length: usize) -> JSValue {
+    let obj = js_new_object_class_user(ctx, class_id as i32);
+    if obj.is_exception() {
+        return obj;
+    }
+    let kind = typed_array_kind_from_class_id(class_id as u32).unwrap();
+    let data = Box::new(TypedArrayData { buffer, offset, length, kind });
+    ctx.set_object_opaque(obj, Box::into_raw(data) as *mut core::ffi::c_void);
+    let _ = js_set_property_str(ctx, obj, "length", Value::from_int32(length as i32));
+    let _ = js_set_property_str(ctx, obj, "byteLength", Value::from_int32((length * kind.elem_size()) as i32));
+    let _ = js_set_property_str(ctx, obj, "byteOffset", Value::from_int32(offset as i32));
+    let _ = js_set_property_str(ctx, obj, "buffer", buffer);
+    let _ = js_set_property_str(ctx, obj, "BYTES_PER_ELEMENT", Value::from_int32(kind.elem_size() as i32));
+    obj
+}
+
+fn build_typed_array_from_args(ctx: &mut JSContextImpl, class_id: JSObjectClassEnum, args: &[JSValue]) -> JSValue {
+    let kind = typed_array_kind_from_class_id(class_id as u32).unwrap();
+    let elem_size = kind.elem_size();
+    if args.is_empty() {
+        let buffer = create_arraybuffer(ctx, 0);
+        return create_typed_array(ctx, class_id, buffer, 0, 0);
+    }
+    // ArrayBuffer overload
+    if let Some(class_id0) = ctx.object_class_id(args[0]) {
+        if class_id0 == JSObjectClassEnum::ArrayBuffer as u32 {
+            let buffer = args[0];
+            let buf_ptr = match get_arraybuffer_data(ctx, buffer) {
+                Some(p) => p,
+                None => return Value::UNDEFINED,
+            };
+            let byte_len = unsafe { (*buf_ptr).bytes.len() };
+            let offset = if args.len() >= 2 { js_to_int32(ctx, args[1]).unwrap_or(0).max(0) as usize } else { 0 };
+            let mut length = if args.len() >= 3 {
+                js_to_int32(ctx, args[2]).unwrap_or(0).max(0) as usize
+            } else {
+                (byte_len.saturating_sub(offset)) / elem_size
+            };
+            if offset > byte_len {
+                length = 0;
+            }
+            return create_typed_array(ctx, class_id, buffer, offset, length);
+        }
+        if typed_array_kind_from_class_id(class_id0).is_some() {
+            // TypedArray from another TypedArray
+            let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+            let buffer = create_arraybuffer(ctx, src_len * elem_size);
+            let out = create_typed_array(ctx, class_id, buffer, 0, src_len);
+            for i in 0..src_len {
+                let v = typed_array_get_element(ctx, args[0], i as u32);
+                typed_array_set_element(ctx, out, i as u32, v);
+            }
+            return out;
+        }
+        if class_id0 == JSObjectClassEnum::Array as u32 {
+            let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+            let buffer = create_arraybuffer(ctx, src_len * elem_size);
+            let out = create_typed_array(ctx, class_id, buffer, 0, src_len);
+            for i in 0..src_len {
+                let v = js_get_property_uint32(ctx, args[0], i as u32);
+                typed_array_set_element(ctx, out, i as u32, v);
+            }
+            return out;
+        }
+    }
+    // length overload
+    let length = js_to_int32(ctx, args[0]).unwrap_or(0).max(0) as usize;
+    let buffer = create_arraybuffer(ctx, length * elem_size);
+    create_typed_array(ctx, class_id, buffer, 0, length)
 }
 
 pub(crate) fn mark_const_binding(ctx: &mut JSContextImpl, env: JSValue, name: &str) {
@@ -355,6 +667,11 @@ pub fn js_get_property_uint32(_ctx: &mut JSContextImpl, _obj: JSValue, _idx: u32
         }
         return Value::UNDEFINED;
     }
+    if let Some(class_id) = _ctx.object_class_id(_obj) {
+        if typed_array_kind_from_class_id(class_id).is_some() {
+            return typed_array_get_element(_ctx, _obj, _idx);
+        }
+    }
     _ctx.get_property_index(_obj, _idx).unwrap_or(Value::UNDEFINED)
 }
 
@@ -390,6 +707,14 @@ pub fn js_set_property_uint32(
     _idx: u32,
     _val: JSValue,
 ) -> JSValue {
+    if let Some(class_id) = _ctx.object_class_id(_this_obj) {
+        if typed_array_kind_from_class_id(class_id).is_some() {
+            if typed_array_set_element(_ctx, _this_obj, _idx, _val) {
+                return _val;
+            }
+            return Value::UNDEFINED;
+        }
+    }
     match _ctx.set_property_index(_this_obj, _idx, _val) {
         Ok(()) => _val,
         Err(()) => js_throw_error(_ctx, JSObjectClassEnum::TypeError, "array index out of bounds"),
@@ -1912,7 +2237,7 @@ fn compile_regex(
     ctx: &mut JSContextImpl,
     pattern: &str,
     flags: &str,
-) -> Result<(regex::Regex, bool), JSValue> {
+) -> Result<(Regex, bool), JSValue> {
     let mut global = false;
     let mut case_insensitive = false;
     let mut multi_line = false;
@@ -1981,11 +2306,22 @@ fn compile_regex(
         }
     }
 
-    let mut builder = RegexBuilder::new(pattern);
-    builder.case_insensitive(case_insensitive);
-    builder.multi_line(multi_line);
-    builder.dot_matches_new_line(dot_matches_new_line);
-    let re = builder.build().map_err(|_| {
+    let mut inline_flags = String::new();
+    if case_insensitive {
+        inline_flags.push_str("(?i)");
+    }
+    if multi_line {
+        inline_flags.push_str("(?m)");
+    }
+    if dot_matches_new_line {
+        inline_flags.push_str("(?s)");
+    }
+    let full_pattern = if inline_flags.is_empty() {
+        pattern.to_string()
+    } else {
+        format!("{}{}", inline_flags, pattern)
+    };
+    let re = Regex::new(&full_pattern).map_err(|_| {
         js_throw_error(
             ctx,
             JSObjectClassEnum::SyntaxError,
@@ -2530,6 +2866,41 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     "__builtin_Object__" => {
                         return Some(js_new_object(ctx));
                     }
+                    "__builtin_ArrayBuffer__" => {
+                        let len = if !args.is_empty() {
+                            js_to_int32(ctx, args[0]).unwrap_or(0).max(0) as usize
+                        } else {
+                            0
+                        };
+                        return Some(create_arraybuffer(ctx, len));
+                    }
+                    "__builtin_Uint8Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Uint8Array, &args));
+                    }
+                    "__builtin_Uint8ClampedArray__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Uint8cArray, &args));
+                    }
+                    "__builtin_Int8Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Int8Array, &args));
+                    }
+                    "__builtin_Int16Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Int16Array, &args));
+                    }
+                    "__builtin_Uint16Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Uint16Array, &args));
+                    }
+                    "__builtin_Int32Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Int32Array, &args));
+                    }
+                    "__builtin_Uint32Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Uint32Array, &args));
+                    }
+                    "__builtin_Float32Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Float32Array, &args));
+                    }
+                    "__builtin_Float64Array__" => {
+                        return Some(build_typed_array_from_args(ctx, JSObjectClassEnum::Float64Array, &args));
+                    }
                     "__builtin_Array__" => {
                         if args.len() == 1 {
                             if let Some(len) = args[0].int32() {
@@ -2932,6 +3303,89 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         }
                         
                         val = js_new_string(ctx, &result);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_typedarray_toString__" {
+                        let data_ptr = get_typedarray_data(ctx, this_val);
+                        if let Some(ptr) = data_ptr {
+                            let data = unsafe { &*ptr };
+                            let mut out = String::new();
+                            for i in 0..data.length {
+                                if i > 0 {
+                                    out.push(',');
+                                }
+                                let v = typed_array_get_element(ctx, this_val, i as u32);
+                                let s_val = js_to_string(ctx, v);
+                                if let Some(bytes) = ctx.string_bytes(s_val) {
+                                    out.push_str(core::str::from_utf8(bytes).unwrap_or(""));
+                                }
+                            }
+                            val = js_new_string(ctx, &out);
+                        } else {
+                            val = js_new_string(ctx, "");
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_typedarray_set__" {
+                        if args.len() >= 1 {
+                            let offset = if args.len() >= 2 {
+                                js_to_int32(ctx, args[1]).unwrap_or(0).max(0) as usize
+                            } else {
+                                0
+                            };
+                            let data_ptr = get_typedarray_data(ctx, this_val);
+                            if let Some(ptr) = data_ptr {
+                                let data = unsafe { &*ptr };
+                                let len = data.length;
+                                let mut idx = 0usize;
+                                if let Some(src_class) = ctx.object_class_id(args[0]) {
+                                    if typed_array_kind_from_class_id(src_class).is_some() {
+                                        let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+                                        while idx < src_len && offset + idx < len {
+                                            let v = typed_array_get_element(ctx, args[0], idx as u32);
+                                            typed_array_set_element(ctx, this_val, (offset + idx) as u32, v);
+                                            idx += 1;
+                                        }
+                                    } else if src_class == JSObjectClassEnum::Array as u32 {
+                                        let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+                                        while idx < src_len && offset + idx < len {
+                                            let v = js_get_property_uint32(ctx, args[0], idx as u32);
+                                            typed_array_set_element(ctx, this_val, (offset + idx) as u32, v);
+                                            idx += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        val = Value::UNDEFINED;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_typedarray_subarray__" {
+                        let data_ptr = get_typedarray_data(ctx, this_val);
+                        if let Some(ptr) = data_ptr {
+                            let data = unsafe { &*ptr };
+                            let len = data.length as i32;
+                            let mut begin = if args.len() >= 1 { js_to_int32(ctx, args[0]).unwrap_or(0) } else { 0 };
+                            let mut end = if args.len() >= 2 { js_to_int32(ctx, args[1]).unwrap_or(len) } else { len };
+                            if begin < 0 { begin = (len + begin).max(0); }
+                            if end < 0 { end = (len + end).max(0); }
+                            if begin > len { begin = len; }
+                            if end > len { end = len; }
+                            if end < begin { end = begin; }
+                            let new_len = (end - begin) as usize;
+                            let class_id = ctx.object_class_id(this_val).unwrap_or(JSObjectClassEnum::TypedArray as u32);
+                            let offset = data.offset + (begin as usize) * data.kind.elem_size();
+                            if let Some(class_enum) = typed_array_class_enum_from_id(class_id) {
+                                val = create_typed_array(ctx, class_enum, data.buffer, offset, new_len);
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -3374,7 +3828,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         if global {
                             let mut matches = Vec::new();
                             for m in re.find_iter(&s) {
-                                matches.push(m.as_str().to_string());
+                                match m {
+                                    Ok(mm) => matches.push(mm.as_str().to_string()),
+                                    Err(_) => return None,
+                                }
                             }
                             if matches.is_empty() {
                                 val = Value::NULL;
@@ -3386,7 +3843,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 }
                                 val = arr;
                             }
-                        } else if let Some(caps) = re.captures(&s) {
+                        } else if let Ok(Some(caps)) = re.captures(&s) {
                             let arr = js_new_array(ctx, caps.len() as i32);
                             for i in 0..caps.len() {
                                 if let Some(m) = caps.get(i) {
@@ -3426,7 +3883,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         }
                         let mut matches = Vec::new();
                         for m in re.find_iter(&s) {
-                            matches.push(m.as_str().to_string());
+                            match m {
+                                Ok(mm) => matches.push(mm.as_str().to_string()),
+                                Err(_) => return None,
+                            }
                         }
                         let arr = js_new_array(ctx, matches.len() as i32);
                         for (i, m) in matches.iter().enumerate() {
@@ -3454,10 +3914,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             Ok(v) => v,
                             Err(_) => return None,
                         };
-                        if let Some(m) = re.find(&s) {
-                            val = Value::from_int32(m.start() as i32);
-                        } else {
-                            val = Value::from_int32(-1);
+                        match re.find(&s) {
+                            Ok(Some(m)) => val = Value::from_int32(m.start() as i32),
+                            Ok(None) => val = Value::from_int32(-1),
+                            Err(_) => return None,
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -3473,7 +3933,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             Ok(v) => v,
                             Err(_) => return None,
                         };
-                        val = Value::new_bool(re.is_match(&input));
+                        val = Value::new_bool(re.is_match(&input).unwrap_or(false));
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -3489,7 +3949,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             Ok(v) => v,
                             Err(_) => return None,
                         };
-                        if let Some(caps) = re.captures(&input) {
+                        if let Ok(Some(caps)) = re.captures(&input) {
                             let arr = js_new_array(ctx, caps.len() as i32);
                             for i in 0..caps.len() {
                                 if let Some(m) = caps.get(i) {
@@ -5642,6 +6102,27 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     }
                 }
             }
+
+            // TypedArray methods
+            if let Some(class_id) = ctx.object_class_id(val) {
+                if typed_array_kind_from_class_id(class_id).is_some() {
+                    if name == "set" {
+                        val = js_new_string(ctx, "__builtin_typedarray_set__");
+                        rest = next;
+                        continue;
+                    }
+                    if name == "subarray" {
+                        val = js_new_string(ctx, "__builtin_typedarray_subarray__");
+                        rest = next;
+                        continue;
+                    }
+                    if name == "toString" {
+                        val = js_new_string(ctx, "__builtin_typedarray_toString__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
             
             // Array.reverse
             if name == "reverse" {
@@ -7509,6 +7990,13 @@ impl<'a> ArithParser<'a> {
                                 "length" => js_get_property_str(ctx, value, "length"),
                                 _ => js_get_property_str(ctx, value, prop),
                             };
+                        } else if typed_array_kind_from_class_id(class_id).is_some() {
+                            value = match prop {
+                                "set" => js_new_string(ctx, "__builtin_typedarray_set__"),
+                                "subarray" => js_new_string(ctx, "__builtin_typedarray_subarray__"),
+                                "toString" => js_new_string(ctx, "__builtin_typedarray_toString__"),
+                                _ => js_get_property_str(ctx, value, prop),
+                            };
                         } else {
                             value = js_get_property_str(ctx, value, prop);
                         }
@@ -7897,7 +8385,10 @@ impl<'a> ArithParser<'a> {
                     if global {
                         let mut matches = Vec::new();
                         for m in re.find_iter(&s) {
-                            matches.push(m.as_str().to_string());
+                            match m {
+                                Ok(mm) => matches.push(mm.as_str().to_string()),
+                                Err(_) => return Err(()),
+                            }
                         }
                         if matches.is_empty() {
                             return Ok(Value::NULL);
@@ -7909,7 +8400,7 @@ impl<'a> ArithParser<'a> {
                         }
                         return Ok(arr);
                     }
-                    if let Some(caps) = re.captures(&s) {
+                    if let Ok(Some(caps)) = re.captures(&s) {
                         let arr = js_new_array(ctx, caps.len() as i32);
                         for i in 0..caps.len() {
                             if let Some(m) = caps.get(i) {
@@ -7942,7 +8433,10 @@ impl<'a> ArithParser<'a> {
                     }
                     let mut matches = Vec::new();
                     for m in re.find_iter(&s) {
-                        matches.push(m.as_str().to_string());
+                        match m {
+                            Ok(mm) => matches.push(mm.as_str().to_string()),
+                            Err(_) => return Err(()),
+                        }
                     }
                     let arr = js_new_array(ctx, matches.len() as i32);
                     for (i, m) in matches.iter().enumerate() {
@@ -7961,8 +8455,10 @@ impl<'a> ArithParser<'a> {
                         (value_to_string(ctx, args[0]), String::new())
                     };
                     let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
-                    if let Some(m) = re.find(&s) {
-                        return Ok(Value::from_int32(m.start() as i32));
+                    match re.find(&s) {
+                        Ok(Some(m)) => return Ok(Value::from_int32(m.start() as i32)),
+                        Ok(None) => return Ok(Value::from_int32(-1)),
+                        Err(_) => return Err(()),
                     }
                     return Ok(Value::from_int32(-1));
                 } else if marker == "__builtin_string_replace__" {
@@ -8131,7 +8627,7 @@ impl<'a> ArithParser<'a> {
                     };
                     let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
                     let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
-                    return Ok(Value::new_bool(re.is_match(&input)));
+                    return Ok(Value::new_bool(re.is_match(&input).unwrap_or(false)));
                 } else if marker == "__builtin_regexp_exec__" {
                     let input_val = if args.is_empty() {
                         js_new_string(ctx, "")
@@ -8141,7 +8637,7 @@ impl<'a> ArithParser<'a> {
                     let input = value_to_string(ctx, input_val);
                     let (pattern, flags) = regexp_parts(ctx, this_val).unwrap_or_default();
                     let (re, _) = compile_regex(ctx, &pattern, &flags).map_err(|_| ())?;
-                    if let Some(caps) = re.captures(&input) {
+                    if let Ok(Some(caps)) = re.captures(&input) {
                         let arr = js_new_array(ctx, caps.len() as i32);
                         for i in 0..caps.len() {
                             if let Some(m) = caps.get(i) {
@@ -8425,6 +8921,72 @@ impl<'a> ArithParser<'a> {
                         }
                     }
                     return Ok(js_new_string(ctx, &result));
+                } else if marker == "__builtin_typedarray_toString__" {
+                    if let Some(ptr) = get_typedarray_data(ctx, this_val) {
+                        let data = unsafe { &*ptr };
+                        let mut out = String::new();
+                        for i in 0..data.length {
+                            if i > 0 {
+                                out.push(',');
+                            }
+                            let v = typed_array_get_element(ctx, this_val, i as u32);
+                            let s_val = js_to_string(ctx, v);
+                            if let Some(bytes) = ctx.string_bytes(s_val) {
+                                out.push_str(core::str::from_utf8(bytes).unwrap_or(""));
+                            }
+                        }
+                        return Ok(js_new_string(ctx, &out));
+                    }
+                    return Ok(js_new_string(ctx, ""));
+                } else if marker == "__builtin_typedarray_set__" {
+                    if args.len() >= 1 {
+                        let offset = if args.len() >= 2 {
+                            js_to_int32(ctx, args[1]).unwrap_or(0).max(0) as usize
+                        } else {
+                            0
+                        };
+                        if let Some(ptr) = get_typedarray_data(ctx, this_val) {
+                            let data = unsafe { &*ptr };
+                            let len = data.length;
+                            let mut idx = 0usize;
+                            if let Some(src_class) = ctx.object_class_id(args[0]) {
+                                if typed_array_kind_from_class_id(src_class).is_some() {
+                                    let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+                                    while idx < src_len && offset + idx < len {
+                                        let v = typed_array_get_element(ctx, args[0], idx as u32);
+                                        typed_array_set_element(ctx, this_val, (offset + idx) as u32, v);
+                                        idx += 1;
+                                    }
+                                } else if src_class == JSObjectClassEnum::Array as u32 {
+                                    let src_len = js_get_property_str(ctx, args[0], "length").int32().unwrap_or(0).max(0) as usize;
+                                    while idx < src_len && offset + idx < len {
+                                        let v = js_get_property_uint32(ctx, args[0], idx as u32);
+                                        typed_array_set_element(ctx, this_val, (offset + idx) as u32, v);
+                                        idx += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_typedarray_subarray__" {
+                    if let Some(ptr) = get_typedarray_data(ctx, this_val) {
+                        let data = unsafe { &*ptr };
+                        let len = data.length as i32;
+                        let mut begin = if args.len() >= 1 { js_to_int32(ctx, args[0]).unwrap_or(0) } else { 0 };
+                        let mut end = if args.len() >= 2 { js_to_int32(ctx, args[1]).unwrap_or(len) } else { len };
+                        if begin < 0 { begin = (len + begin).max(0); }
+                        if end < 0 { end = (len + end).max(0); }
+                        if begin > len { begin = len; }
+                        if end > len { end = len; }
+                        if end < begin { end = begin; }
+                        let new_len = (end - begin) as usize;
+                        let offset = data.offset + (begin as usize) * data.kind.elem_size();
+                        if let Some(class_enum) = typed_array_class_enum_from_id(ctx.object_class_id(this_val).unwrap_or(0)) {
+                            return Ok(create_typed_array(ctx, class_enum, data.buffer, offset, new_len));
+                        }
+                    }
+                    return Ok(Value::UNDEFINED);
                 } else if marker == "__builtin_array_slice__" {
                     let len_val = js_get_property_str(ctx, this_val, "length");
                     let len = len_val.int32().unwrap_or(0);

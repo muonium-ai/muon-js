@@ -187,6 +187,36 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "String" {
         return Some(builtin_or_global("String", "__builtin_String__"));
     }
+    if s == "ArrayBuffer" {
+        return Some(builtin_or_global("ArrayBuffer", "__builtin_ArrayBuffer__"));
+    }
+    if s == "Uint8Array" {
+        return Some(builtin_or_global("Uint8Array", "__builtin_Uint8Array__"));
+    }
+    if s == "Uint8ClampedArray" {
+        return Some(builtin_or_global("Uint8ClampedArray", "__builtin_Uint8ClampedArray__"));
+    }
+    if s == "Int8Array" {
+        return Some(builtin_or_global("Int8Array", "__builtin_Int8Array__"));
+    }
+    if s == "Int16Array" {
+        return Some(builtin_or_global("Int16Array", "__builtin_Int16Array__"));
+    }
+    if s == "Uint16Array" {
+        return Some(builtin_or_global("Uint16Array", "__builtin_Uint16Array__"));
+    }
+    if s == "Int32Array" {
+        return Some(builtin_or_global("Int32Array", "__builtin_Int32Array__"));
+    }
+    if s == "Uint32Array" {
+        return Some(builtin_or_global("Uint32Array", "__builtin_Uint32Array__"));
+    }
+    if s == "Float32Array" {
+        return Some(builtin_or_global("Float32Array", "__builtin_Float32Array__"));
+    }
+    if s == "Float64Array" {
+        return Some(builtin_or_global("Float64Array", "__builtin_Float64Array__"));
+    }
     if s == "RegExp" {
         return Some(builtin_or_global("RegExp", "__builtin_RegExp__"));
     }
