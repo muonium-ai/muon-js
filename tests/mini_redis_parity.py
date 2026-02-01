@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import socket
 import sys
 import time
@@ -114,6 +115,66 @@ def expect_hash_pair(field, value):
         return False
     return check
 
+
+def is_simple(resp, val):
+    return resp[0] == "simple" and resp[1] == val
+
+
+def is_int(resp, val=None):
+    return resp[0] == "int" and (val is None or resp[1] == val)
+
+
+def is_blob(resp, val):
+    return resp[0] == "blob" and resp[1] == val
+
+
+def is_null(resp):
+    return resp[0] == "null"
+
+
+def array_as_blob_list(resp):
+    if resp[0] != "array":
+        return None
+    out = []
+    for item in resp[1]:
+        if item[0] != "blob":
+            return None
+        out.append(item[1])
+    return out
+
+
+def array_as_kv_dict(resp):
+    if resp[0] != "array":
+        return None
+    items = resp[1]
+    if len(items) % 2 != 0:
+        return None
+    out = {}
+    for idx in range(0, len(items), 2):
+        k = items[idx]
+        v = items[idx + 1]
+        if k[0] != "blob" or v[0] != "blob":
+            return None
+        out[k[1]] = v[1]
+    return out
+
+
+def parse_stream_entries(resp):
+    if resp[0] != "array":
+        return None
+    entries = []
+    for entry in resp[1]:
+        if entry[0] != "array" or len(entry[1]) != 2:
+            return None
+        entry_id, fields = entry[1]
+        if entry_id[0] != "blob" or fields[0] != "array":
+            return None
+        field_map = array_as_kv_dict(fields)
+        if field_map is None:
+            return None
+        entries.append((entry_id[1], field_map))
+    return entries
+
 TESTS = [
     # Connection / server
     ("PING", ["PING"], expect_simple("PONG")),
@@ -228,13 +289,218 @@ TESTS = [
 ]
 
 
+def send_cmd(sock, cmd):
+    sock.sendall(resp_encode(cmd))
+    return resp_read(sock)
+
+
+def run_perf(sock, seconds):
+    if seconds <= 0:
+        print("perf skipped (non-positive duration)")
+        return
+
+    start = time.monotonic()
+    deadline = start + seconds
+    prefix = f"perf:{int(time.time())}"
+    ops = 0
+    failures = 0
+    iterations = 0
+
+    def fail(label, resp):
+        nonlocal failures
+        failures += 1
+        print(f"PERF FAIL {label} -> {resp}")
+
+    while time.monotonic() < deadline:
+        i = iterations
+        iterations += 1
+
+        # Strings: insert, retrieve, update, retrieve, delete, verify missing
+        skey = f"{prefix}:str:{i}"
+        svalue1 = f"v{i}".encode()
+        svalue2 = f"v{i}:u".encode()
+        resp = send_cmd(sock, ["SET", skey, svalue1])
+        ops += 1
+        if not is_simple(resp, "OK"):
+            fail("SET string", resp)
+        resp = send_cmd(sock, ["GET", skey])
+        ops += 1
+        if not is_blob(resp, svalue1):
+            fail("GET string", resp)
+        resp = send_cmd(sock, ["SET", skey, svalue2])
+        ops += 1
+        if not is_simple(resp, "OK"):
+            fail("SET string update", resp)
+        resp = send_cmd(sock, ["GET", skey])
+        ops += 1
+        if not is_blob(resp, svalue2):
+            fail("GET string updated", resp)
+        resp = send_cmd(sock, ["DEL", skey])
+        ops += 1
+        if not is_int(resp):
+            fail("DEL string", resp)
+        resp = send_cmd(sock, ["GET", skey])
+        ops += 1
+        if not is_null(resp):
+            fail("GET string missing", resp)
+
+        # Lists: insert, retrieve, update element, retrieve, delete
+        lkey = f"{prefix}:list:{i}"
+        resp = send_cmd(sock, ["RPUSH", lkey, "a", "b"]) 
+        ops += 1
+        if not is_int(resp):
+            fail("RPUSH list", resp)
+        resp = send_cmd(sock, ["LRANGE", lkey, "0", "-1"])
+        ops += 1
+        items = array_as_blob_list(resp)
+        if items is None or items != [b"a", b"b"]:
+            fail("LRANGE list", resp)
+        resp = send_cmd(sock, ["LSET", lkey, "0", "z"])
+        ops += 1
+        if not is_simple(resp, "OK"):
+            fail("LSET list", resp)
+        resp = send_cmd(sock, ["LINDEX", lkey, "0"])
+        ops += 1
+        if not is_blob(resp, b"z"):
+            fail("LINDEX list", resp)
+        resp = send_cmd(sock, ["DEL", lkey])
+        ops += 1
+        if not is_int(resp):
+            fail("DEL list", resp)
+        resp = send_cmd(sock, ["LLEN", lkey])
+        ops += 1
+        if not is_int(resp, 0):
+            fail("LLEN list missing", resp)
+
+        # Sets: insert, retrieve, update (remove), retrieve, delete
+        setkey = f"{prefix}:set:{i}"
+        resp = send_cmd(sock, ["SADD", setkey, "a", "b"])
+        ops += 1
+        if not is_int(resp):
+            fail("SADD set", resp)
+        resp = send_cmd(sock, ["SMEMBERS", setkey])
+        ops += 1
+        members = array_as_blob_list(resp)
+        if members is None or set(members) != {b"a", b"b"}:
+            fail("SMEMBERS set", resp)
+        resp = send_cmd(sock, ["SREM", setkey, "b"])
+        ops += 1
+        if not is_int(resp):
+            fail("SREM set", resp)
+        resp = send_cmd(sock, ["SMEMBERS", setkey])
+        ops += 1
+        members = array_as_blob_list(resp)
+        if members is None or set(members) != {b"a"}:
+            fail("SMEMBERS set updated", resp)
+        resp = send_cmd(sock, ["DEL", setkey])
+        ops += 1
+        if not is_int(resp):
+            fail("DEL set", resp)
+        resp = send_cmd(sock, ["SCARD", setkey])
+        ops += 1
+        if not is_int(resp, 0):
+            fail("SCARD set missing", resp)
+
+        # Hashes: insert, retrieve, update field, retrieve, delete field
+        hkey = f"{prefix}:hash:{i}"
+        resp = send_cmd(sock, ["HSET", hkey, "f", "v1"])
+        ops += 1
+        if not is_int(resp):
+            fail("HSET hash", resp)
+        resp = send_cmd(sock, ["HGET", hkey, "f"])
+        ops += 1
+        if not is_blob(resp, b"v1"):
+            fail("HGET hash", resp)
+        resp = send_cmd(sock, ["HSET", hkey, "f", "v2"])
+        ops += 1
+        if not is_int(resp):
+            fail("HSET hash update", resp)
+        resp = send_cmd(sock, ["HGET", hkey, "f"])
+        ops += 1
+        if not is_blob(resp, b"v2"):
+            fail("HGET hash updated", resp)
+        resp = send_cmd(sock, ["HDEL", hkey, "f"])
+        ops += 1
+        if not is_int(resp):
+            fail("HDEL hash", resp)
+        resp = send_cmd(sock, ["HGET", hkey, "f"])
+        ops += 1
+        if not is_null(resp):
+            fail("HGET hash missing", resp)
+
+        # Sorted sets: insert, retrieve, update score, retrieve, delete member
+        zkey = f"{prefix}:z:{i}"
+        resp = send_cmd(sock, ["ZADD", zkey, "1", "a", "2", "b"])
+        ops += 1
+        if not is_int(resp):
+            fail("ZADD zset", resp)
+        resp = send_cmd(sock, ["ZRANGE", zkey, "0", "-1"])
+        ops += 1
+        zitems = array_as_blob_list(resp)
+        if zitems is None or zitems != [b"a", b"b"]:
+            fail("ZRANGE zset", resp)
+        resp = send_cmd(sock, ["ZADD", zkey, "3", "a"])
+        ops += 1
+        if not is_int(resp):
+            fail("ZADD zset update", resp)
+        resp = send_cmd(sock, ["ZRANGE", zkey, "0", "-1"])
+        ops += 1
+        zitems = array_as_blob_list(resp)
+        if zitems is None or zitems != [b"b", b"a"]:
+            fail("ZRANGE zset updated", resp)
+        resp = send_cmd(sock, ["ZREM", zkey, "a"])
+        ops += 1
+        if not is_int(resp):
+            fail("ZREM zset", resp)
+        resp = send_cmd(sock, ["ZRANGE", zkey, "0", "-1"])
+        ops += 1
+        zitems = array_as_blob_list(resp)
+        if zitems is None or zitems != [b"b"]:
+            fail("ZRANGE zset removed", resp)
+
+        # Streams: append entries, verify, delete key
+        xkey = f"{prefix}:stream:{i}"
+        resp = send_cmd(sock, ["XADD", xkey, "*", "f", "v1"])
+        ops += 1
+        if resp[0] != "blob":
+            fail("XADD stream", resp)
+        resp = send_cmd(sock, ["XADD", xkey, "*", "f", "v2"])
+        ops += 1
+        if resp[0] != "blob":
+            fail("XADD stream second", resp)
+        resp = send_cmd(sock, ["XRANGE", xkey, "-", "+"])
+        ops += 1
+        entries = parse_stream_entries(resp)
+        if entries is None or len(entries) < 2:
+            fail("XRANGE stream", resp)
+        else:
+            last_fields = entries[-1][1]
+            if last_fields.get(b"f") != b"v2":
+                fail("XRANGE stream last", resp)
+        resp = send_cmd(sock, ["DEL", xkey])
+        ops += 1
+        if not is_int(resp):
+            fail("DEL stream", resp)
+
+    elapsed = time.monotonic() - start
+    ops_per_sec = ops / elapsed if elapsed > 0 else 0.0
+    print(
+        "\nPerf summary: "
+        f"{iterations} iterations, {ops} ops, "
+        f"{failures} failures, {elapsed:.2f}s elapsed, "
+        f"{ops_per_sec:.1f} ops/s"
+    )
+
+
 def main():
-    host = "127.0.0.1"
-    port = 6379
-    if len(sys.argv) >= 2:
-        host = sys.argv[1]
-    if len(sys.argv) >= 3:
-        port = int(sys.argv[2])
+    parser = argparse.ArgumentParser(description="mini_redis parity + perf runner")
+    parser.add_argument("host", nargs="?", default="127.0.0.1")
+    parser.add_argument("port", nargs="?", type=int, default=6379)
+    parser.add_argument("--perf-seconds", type=float, default=1.2)
+    parser.add_argument("--no-perf", action="store_true", help="skip perf test")
+    args = parser.parse_args()
+    host = args.host
+    port = args.port
 
     print(f"mini_redis parity run @ commit {git_commit()}")
     print(f"connecting to {host}:{port}")
@@ -274,6 +540,12 @@ def main():
 
     print(f"\nSummary: {passed} passed, {failed} failed, total {passed+failed}")
     sock.close()
+
+    if not args.no_perf:
+        sock = socket.create_connection((host, port))
+        print(f"\nStarting perf run for {args.perf_seconds:.2f}s")
+        run_perf(sock, args.perf_seconds)
+        sock.close()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ use async_std::io::{self, BufReader};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
-use async_std::channel::Sender;
+use async_std::channel::{Sender, bounded};
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -75,6 +75,19 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         let _ = p.load(&mut dbs).await;
     }
     let state = Arc::new(Mutex::new(ServerState::new(dbs, persist)));
+    let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
+    let shutdown_state = state.clone();
+    let shutdown_path = config.persist_path.clone();
+    if let Err(err) = ctrlc::set_handler(move || {
+        let _ = shutdown_tx.try_send(());
+    }) {
+        eprintln!("mini-redis: failed to install ctrl+c handler: {}", err);
+    }
+    task::spawn(async move {
+        let _ = shutdown_rx.recv().await;
+        graceful_shutdown(shutdown_state, shutdown_path).await;
+        std::process::exit(0);
+    });
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
@@ -82,6 +95,35 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
             let _ = handle_client(stream, state).await;
         });
     }
+}
+
+async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<String>) {
+    let mut guard = state.lock().await;
+    eprintln!("mini-redis: shutdown requested");
+    for (idx, db) in guard.dbs.iter_mut().enumerate() {
+        let keys = db.keys();
+        eprintln!("mini-redis: db{} keys={}:", idx, keys.len());
+        for key in keys {
+            let typ = db.value_type(&key).unwrap_or("unknown");
+            let name = String::from_utf8_lossy(&key);
+            eprintln!("  - {} ({})", name, typ);
+        }
+    }
+    let path_msg = persist_path.as_deref().unwrap_or("<unknown>");
+    if guard.persist.is_none() {
+        eprintln!("mini-redis: persistence not configured; skipping snapshot");
+        return;
+    }
+    let persist = guard.persist.take().unwrap();
+    match persist.snapshot(&mut guard.dbs).await {
+        Ok(()) => {
+            eprintln!("mini-redis: persisted snapshot to {}", path_msg);
+        }
+        Err(err) => {
+            eprintln!("mini-redis: persistence failed: {}", err);
+        }
+    }
+    guard.persist = Some(persist);
 }
 
 async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Result<()> {
@@ -1145,8 +1187,26 @@ async fn handle_command(
                 RespValue::Error("ERR syntax error".to_string())
             }
         }
-        "SAVE" => RespValue::Error("ERR persistence not implemented".to_string()),
-        "BGSAVE" => RespValue::Error("ERR persistence not implemented".to_string()),
+        "SAVE" => {
+            if let Some(p) = state.persist.as_ref() {
+                match p.snapshot(&mut state.dbs).await {
+                    Ok(()) => RespValue::Simple("OK".to_string()),
+                    Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+                }
+            } else {
+                RespValue::Error("ERR persistence not configured".to_string())
+            }
+        }
+        "BGSAVE" => {
+            if let Some(p) = state.persist.as_ref() {
+                match p.snapshot(&mut state.dbs).await {
+                    Ok(()) => RespValue::Simple("OK".to_string()),
+                    Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+                }
+            } else {
+                RespValue::Error("ERR persistence not configured".to_string())
+            }
+        }
         "REPLICAOF" => RespValue::Error("ERR replication not implemented".to_string()),
         "QUIT" => RespValue::Simple("OK".to_string()),
         _ => RespValue::Error(format!("ERR unknown command '{}'", cmd)),

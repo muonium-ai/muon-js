@@ -15,7 +15,7 @@ pub enum Persist {
 }
 
 impl Persist {
-    pub async fn load(&self, _dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn load(&self, dbs: &mut [Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
@@ -23,7 +23,7 @@ impl Persist {
         }
     }
 
-    pub async fn log_command(&self, _db: usize, _cmd: &[Vec<u8>]) -> io::Result<()> {
+    pub async fn log_command(&self, db: usize, cmd: &[Vec<u8>]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
@@ -31,7 +31,7 @@ impl Persist {
         }
     }
 
-    pub async fn snapshot(&self, _dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
@@ -77,6 +77,14 @@ impl LibsqlPersist {
             "CREATE TABLE IF NOT EXISTS aof_log (id INTEGER PRIMARY KEY AUTOINCREMENT, db INTEGER, cmd BLOB)",
             (),
         ).await.map_err(to_io)?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS zset_items (db INTEGER, key BLOB, member BLOB, score REAL, PRIMARY KEY(db, key, member))",
+            (),
+        ).await.map_err(to_io)?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS stream_entries (db INTEGER, key BLOB, entry_id BLOB, field_idx INTEGER, field BLOB, value BLOB, PRIMARY KEY(db, key, entry_id, field_idx))",
+            (),
+        ).await.map_err(to_io)?;
         Ok(())
     }
 }
@@ -108,6 +116,14 @@ impl LibsqlPersist {
                         let hash = load_hash(&self.conn, db_idx as usize, &key).await?;
                         db.set_with_expire_at(key, Value::Hash(hash), exp.map(|v| v as u64));
                     }
+                    4 => {
+                        let zset = load_zset(&self.conn, db_idx as usize, &key).await?;
+                        db.set_with_expire_at(key, Value::ZSet(zset), exp.map(|v| v as u64));
+                    }
+                    5 => {
+                        let stream = load_stream(&self.conn, db_idx as usize, &key).await?;
+                        db.set_with_expire_at(key, Value::Stream(stream), exp.map(|v| v as u64));
+                    }
                     _ => {}
                 }
             }
@@ -129,6 +145,8 @@ impl LibsqlPersist {
         self.conn.execute("DELETE FROM list_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM set_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM hash_items", ()).await.map_err(to_io)?;
+        self.conn.execute("DELETE FROM zset_items", ()).await.map_err(to_io)?;
+        self.conn.execute("DELETE FROM stream_entries", ()).await.map_err(to_io)?;
         for (idx, db) in dbs.iter_mut().enumerate() {
             for (key, value, exp) in db.snapshot_items() {
                 let exp_val = exp.map(|v| v as i64);
@@ -173,6 +191,32 @@ impl LibsqlPersist {
                                 "INSERT INTO hash_items (db, key, field, value) VALUES (?, ?, ?, ?)",
                                 (idx as i64, key.clone(), field.clone(), val.clone()),
                             ).await.map_err(to_io)?;
+                        }
+                    }
+                    Value::ZSet(items) => {
+                        self.conn.execute(
+                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (idx as i64, key.clone(), 4i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        for (member, score) in items.iter() {
+                            self.conn.execute(
+                                "INSERT INTO zset_items (db, key, member, score) VALUES (?, ?, ?, ?)",
+                                (idx as i64, key.clone(), member.clone(), *score),
+                            ).await.map_err(to_io)?;
+                        }
+                    }
+                    Value::Stream(items) => {
+                        self.conn.execute(
+                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (idx as i64, key.clone(), 5i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        for (entry_id, fields) in items.iter() {
+                            for (field_idx, (field, val)) in fields.iter().enumerate() {
+                                self.conn.execute(
+                                    "INSERT INTO stream_entries (db, key, entry_id, field_idx, field, value) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (idx as i64, key.clone(), entry_id.as_bytes().to_vec(), field_idx as i64, field.clone(), val.clone()),
+                                ).await.map_err(to_io)?;
+                            }
                         }
                     }
                 }
@@ -242,6 +286,53 @@ async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
         let field: Vec<u8> = row.get(0).map_err(to_io)?;
         let value: Vec<u8> = row.get(1).map_err(to_io)?;
         out.insert(field, value);
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "mini-redis-libsql")]
+async fn load_zset(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<Vec<(Vec<u8>, f64)>> {
+    let mut rows = conn
+        .query("SELECT member, score FROM zset_items WHERE db = ? AND key = ? ORDER BY score ASC", (db as i64, key.to_vec()))
+        .await
+        .map_err(to_io)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(to_io)? {
+        let member: Vec<u8> = row.get(0).map_err(to_io)?;
+        let score: f64 = row.get(1).map_err(to_io)?;
+        out.push((member, score));
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "mini-redis-libsql")]
+async fn load_stream(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
+    let mut rows = conn
+        .query(
+            "SELECT entry_id, field_idx, field, value FROM stream_entries WHERE db = ? AND key = ? ORDER BY entry_id ASC, field_idx ASC",
+            (db as i64, key.to_vec()),
+        )
+        .await
+        .map_err(to_io)?;
+    let mut out: Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)> = Vec::new();
+    let mut current_id: Option<String> = None;
+    let mut current_fields: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    while let Some(row) = rows.next().await.map_err(to_io)? {
+        let entry_id_bytes: Vec<u8> = row.get(0).map_err(to_io)?;
+        let field: Vec<u8> = row.get(2).map_err(to_io)?;
+        let value: Vec<u8> = row.get(3).map_err(to_io)?;
+        let entry_id = String::from_utf8(entry_id_bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string());
+        if current_id.as_deref() != Some(entry_id.as_str()) {
+            if let Some(prev_id) = current_id.take() {
+                out.push((prev_id, current_fields));
+                current_fields = Vec::new();
+            }
+            current_id = Some(entry_id);
+        }
+        current_fields.push((field, value));
+    }
+    if let Some(prev_id) = current_id.take() {
+        out.push((prev_id, current_fields));
     }
     Ok(out)
 }

@@ -105,3 +105,13 @@ Likely fixes:
 3. Repair eval/comma operator result handling.
 4. Implement or align missing array methods (sort/flatMap) and number formatting.
 5. Decide on integration test strictness; adjust scripts or evaluator accordingly.
+
+---
+
+## Mini-redis persistence + shutdown
+
+- [x] Default mini-redis port to 6379.
+- [x] Add release targets for persistence and background run.
+- [x] Add stop task to send SIGINT and wait for graceful shutdown.
+- [x] On shutdown, dump DB keys/types and snapshot to persistence store.
+- [x] Ensure persisted file loads on startup via `--persist`.

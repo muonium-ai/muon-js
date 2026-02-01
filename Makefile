@@ -2,10 +2,14 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-parity mini-redis-parity-verbose
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop
 
 MINI_REDIS_HOST ?= 127.0.0.1
-MINI_REDIS_PORT ?= 6380
+MINI_REDIS_PORT ?= 6379
+MINI_REDIS_PERSIST ?= tmp/mini_redis_$(shell date +%Y%m%d_%H%M%S).db
+MINI_REDIS_PIDFILE ?= tmp/mini_redis.pid
+MINI_REDIS_PORTFILE ?= tmp/mini_redis.port
+MINI_REDIS_DBFILE ?= tmp/mini_redis.dbpath
 
 sync-version:
 	./scripts/sync_version.sh
@@ -36,6 +40,113 @@ release: sync-version
 mini-redis: sync-version
 	@echo "Running mini-redis on $(MINI_REDIS_HOST):$(MINI_REDIS_PORT)"
 	$(CARGO) run --features mini-redis --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $(MINI_REDIS_PORT)
+
+mini-redis-release: sync-version
+	@echo "Running mini-redis (release) on $(MINI_REDIS_HOST):$(MINI_REDIS_PORT)"
+	$(CARGO) run --release --features mini-redis --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $(MINI_REDIS_PORT)
+
+mini-redis-persist: sync-version
+	@mkdir -p tmp
+	@echo "Persist log file: $(MINI_REDIS_PERSIST)"
+	@echo "Running mini-redis with persistence at $(MINI_REDIS_PERSIST)"
+	$(CARGO) run --features "mini-redis mini-redis-libsql" --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $(MINI_REDIS_PORT) --persist $(MINI_REDIS_PERSIST)
+
+mini-redis-persist-release: sync-version
+	@mkdir -p tmp
+	@echo "Persist log file: $(MINI_REDIS_PERSIST)"
+	@port="$(MINI_REDIS_PORT)"; \
+	if HOST="$(MINI_REDIS_HOST)" PORT="$$port" python3 -c 'import os,socket,sys; host=os.environ["HOST"]; port=int(os.environ["PORT"]); s=socket.socket(); s.settimeout(0.1); rc=s.connect_ex((host, port)); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+		port=$$(python3 scripts/pick_port.py); \
+		echo "Port $(MINI_REDIS_PORT) in use; using $$port"; \
+	fi; \
+	echo "Running mini-redis (release) with persistence at $(MINI_REDIS_PERSIST) on port $$port"; \
+	$(CARGO) run --release --features "mini-redis mini-redis-libsql" --bin mini_redis -- --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST)
+
+mini-redis-persist-release-bg: sync-version
+	@mkdir -p tmp
+	@echo "Persist log file: $(MINI_REDIS_PERSIST)"
+	@port="$(MINI_REDIS_PORT)"; \
+	if HOST="$(MINI_REDIS_HOST)" PORT="$$port" python3 -c 'import os,socket,sys; host=os.environ["HOST"]; port=int(os.environ["PORT"]); s=socket.socket(); s.settimeout(0.1); rc=s.connect_ex((host, port)); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+		port=$$(python3 scripts/pick_port.py); \
+		echo "Port $(MINI_REDIS_PORT) in use; using $$port"; \
+	fi; \
+	echo "Running mini-redis (release, background) with persistence at $(MINI_REDIS_PERSIST) on port $$port"; \
+	echo $$port > $(MINI_REDIS_PORTFILE); \
+	echo $(MINI_REDIS_PERSIST) > $(MINI_REDIS_DBFILE); \
+	$(CARGO) build --release --features "mini-redis mini-redis-libsql"; \
+	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port --persist $(MINI_REDIS_PERSIST) & \
+	echo $$! > $(MINI_REDIS_PIDFILE)
+
+mini-redis-stop:
+	@if [ ! -f "$(MINI_REDIS_PIDFILE)" ]; then echo "No PID file at $(MINI_REDIS_PIDFILE)"; exit 1; fi; \
+	pid=$$(cat $(MINI_REDIS_PIDFILE)); \
+	if [ -z "$$pid" ]; then echo "Empty PID file"; exit 1; fi; \
+	echo "Stopping mini-redis pid=$$pid"; \
+	kill -INT $$pid 2>/dev/null || true; \
+	for i in 1 2 3 4 5; do \
+		if ! kill -0 $$pid 2>/dev/null; then break; fi; \
+		sleep 0.2; \
+	done; \
+	if kill -0 $$pid 2>/dev/null; then \
+		echo "Force stopping mini-redis pid=$$pid"; \
+		kill -KILL $$pid 2>/dev/null || true; \
+	fi; \
+	rm -f $(MINI_REDIS_PIDFILE)
+
+mini-redis-runloop: sync-version
+	@set -e; \
+	mkdir -p tmp; \
+	if [ -f "$(MINI_REDIS_PIDFILE)" ]; then \
+		pid=$$(cat $(MINI_REDIS_PIDFILE) 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 $$pid 2>/dev/null; then \
+			echo "Existing mini-redis pid=$$pid detected; stopping first"; \
+			$(MAKE) -s mini-redis-stop || true; \
+		else \
+			rm -f $(MINI_REDIS_PIDFILE); \
+		fi; \
+	fi; \
+	if [ -e "$(MINI_REDIS_PERSIST)" ]; then \
+		echo "Warning: persist file exists: $(MINI_REDIS_PERSIST)"; \
+	fi; \
+	touch "$(MINI_REDIS_PERSIST)" 2>/dev/null || { echo "Persist file not writable: $(MINI_REDIS_PERSIST)"; exit 1; }; \
+	avail_kb=$$(df -Pk "$(MINI_REDIS_PERSIST)" | awk 'NR==2 {print $$4}'); \
+	if [ -z "$$avail_kb" ] || [ "$$avail_kb" -lt 10240 ]; then \
+		echo "Insufficient disk space for persistence (need >=10MB)"; \
+		exit 1; \
+	fi; \
+	echo "=== start mini-redis (release) ==="; \
+	MINI_REDIS_PERSIST=$(MINI_REDIS_PERSIST) $(MAKE) -s mini-redis-persist-release-bg; \
+	if [ ! -f "$(MINI_REDIS_PORTFILE)" ]; then \
+		echo "Port file missing: $(MINI_REDIS_PORTFILE)"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	port=$$(cat $(MINI_REDIS_PORTFILE)); \
+	retries=20; \
+	while [ $$retries -gt 0 ]; do \
+		if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("127.0.0.1", int("'"$$port"'"))); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+			break; \
+		fi; \
+		retries=$$((retries-1)); \
+		sleep 0.2; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	echo "=== run python tests on $$port ==="; \
+	python3 tests/mini_redis_parity.py $(MINI_REDIS_HOST) $$port; \
+	echo "=== stop mini-redis ==="; \
+	$(MAKE) -s mini-redis-stop; \
+	if [ ! -f "$(MINI_REDIS_DBFILE)" ]; then \
+		echo "DB path file missing: $(MINI_REDIS_DBFILE)"; \
+		exit 1; \
+	fi; \
+	path=$$(cat $(MINI_REDIS_DBFILE)); \
+	echo "=== persisted db: $$path ==="; \
+	python3 scripts/read_mini_redis_db.py $$path; \
+	echo "=== perf summary above ==="
 
 mini-redis-parity: sync-version
 	@port=$$(python3 scripts/pick_port.py); \
