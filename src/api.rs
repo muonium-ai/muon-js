@@ -259,14 +259,16 @@ pub fn js_is_error(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
 }
 
 pub fn js_is_function(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
-    match _ctx.object_class_id(_val) {
-        Some(id) => {
-            let func = JSObjectClassEnum::CFunction as u32;
-            let closure = JSObjectClassEnum::Closure as u32;
-            if id == func || id == closure { 1 } else { 0 }
+    if let Some(id) = _ctx.object_class_id(_val) {
+        let func = JSObjectClassEnum::CFunction as u32;
+        let closure = JSObjectClassEnum::Closure as u32;
+        if id == func || id == closure {
+            return 1;
         }
-        None => 0,
     }
+    // Treat custom closures (created via create_function) as functions.
+    let marker = js_get_property_str(_ctx, _val, "__closure__");
+    if marker == Value::TRUE { 1 } else { 0 }
 }
 
 pub fn js_get_class_id(_ctx: &mut JSContextImpl, _val: JSValue) -> i32 {
@@ -738,6 +740,13 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
         args.push(arg);
     }
     _ctx.call_stack_truncate(stack_len - need);
+    let closure_marker = js_get_property_str(_ctx, func_val, "__closure__");
+    if closure_marker == Value::TRUE {
+        if let Some(val) = call_closure(_ctx, func_val, &args) {
+            return val;
+        }
+        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not a function");
+    }
     if let Some((idx, params)) = _ctx.c_function_info(func_val) {
         return call_c_function(_ctx, idx, params, _this_val, &args);
     }
@@ -5771,6 +5780,26 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
             continue;
         }
         
+        // Check for do...while loop
+        if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
+            last = parse_do_while_loop(ctx, trimmed)?;
+            // Check if break/continue was set during statement execution
+            if ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
+        // Check for switch statement
+        if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
+            last = parse_switch_statement(ctx, trimmed)?;
+            // Check if break/continue was set during statement execution
+            if ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
         // Execute statement
         last = eval_expr(ctx, trimmed)?;
         if last.is_exception() {
@@ -8136,8 +8165,11 @@ impl<'a> ArithParser<'a> {
                     }
                 }
                 (b'=', b'=') => {
-                    // Simplified equality - in real JS, == does type coercion
-                    if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
+                    // Loose equality - JS == does type coercion
+                    // null == undefined is true in JS
+                    if (left.is_null() && right.is_undefined()) || (left.is_undefined() && right.is_null()) {
+                        true
+                    } else if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
                         lb == rb
                     } else
                     if left.0 == right.0 {
@@ -8153,8 +8185,11 @@ impl<'a> ArithParser<'a> {
                     }
                 }
                 (b'!', b'=') => {
-                    // Simplified inequality
-                    if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
+                    // Loose inequality
+                    // null != undefined is false in JS
+                    if (left.is_null() && right.is_undefined()) || (left.is_undefined() && right.is_null()) {
+                        false
+                    } else if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
                         lb != rb
                     } else
                     if left.0 == right.0 {
@@ -8332,7 +8367,7 @@ impl<'a> ArithParser<'a> {
         let ctx = unsafe { &mut *self.ctx };
         let type_str = if val.is_bool() {
             "boolean"
-        } else if val.is_number() {
+        } else if js_is_number(ctx, val) != 0 {
             "number"
         } else if js_is_string(ctx, val) != 0 {
             "string"

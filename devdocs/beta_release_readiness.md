@@ -1,6 +1,6 @@
 # Beta Release Readiness (mquickjs Compatibility)
 
-**Date**: January 31, 2026
+**Date**: February 1, 2026
 **Scope**: muon-js compatibility with mquickjs (feature parity + semantics), plus test signal and code review highlights.
 
 ---
@@ -18,8 +18,17 @@
 
 ### mquickjs Compatibility
 - `make test-mquickjs-detailed`
-  - ❌ **0/42 passing**
-  - All suites (`test_language.js`, `test_builtin.js`, `test_loop.js`, `test_closure.js`, mandelbrot, test_rect) currently throw `Exception`
+  - ✅ **18/44 passing (40%)**
+  - Passing tests by category:
+    - **test_language.js**: test_op1, test_eq, test_arguments
+    - **test_builtin.js**: test_math
+    - **test_loop.js**: test_while, test_while_break, test_do_while, test_for, test_switch1, test_switch2, test_try_catch1-7
+    - **test_closure.js**: test_closure1
+  - Key fixes applied:
+    - Added `null == undefined` loose equality handling
+    - Fixed `do...while` and `switch` in function bodies
+    - Added log function to eval example for console.log support
+    - Fixed test script to use correct test function names
 
 ### mini-redis parity
 - `make mini-redis-parity`
@@ -29,6 +38,15 @@
 ---
 
 ## Deduplicated Open Issues (Combined from PROGRESS/PORTING_STATUS)
+
+### Known Failing Test Categories
+
+1. **Property increment/decrement** (`a.x++`, `++a.x`) - not yet implemented
+2. **Labeled statements** (`L1: for(...) { break L1; }`) - not yet implemented  
+3. **Object key ordering** - returns in reverse insertion order
+4. **32-bit integer overflow** in bitwise operations - edge case with large numbers
+5. **Recursive named function expressions** - function name not bound inside body
+6. **Various builtins** - many builtin methods still return undefined or fail
 
 ### Core Architecture (mquickjs Parity Blockers)
 - **Bytecode compiler + VM**: scaffolding only; no codegen or execution path
@@ -47,6 +65,7 @@
 ### Parser & Expression Handling
 - **Method chaining in complex expressions** still fails in some contexts
 - **Operator precedence** and **nested call** handling still inconsistent in edge cases
+
 
 ### Standard Library Gaps
 - **RegExp**: only subset (no lookaround/backreferences, limited flags)

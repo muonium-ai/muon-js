@@ -1,5 +1,11 @@
-use muon_js::{JSCStringBuf, JS_EVAL_RETVAL, JS_Eval, JS_GetException, JS_NewContext, JS_ToCString, JS_ToString};
+use muon_js::{JSCStringBuf, JS_EVAL_RETVAL, JS_Eval, JS_GetException, JS_NewContext, JS_SetLogFunc, JS_ToCString, JS_ToString};
 use std::fs;
+use std::io::Write;
+
+fn log_func(_opaque: *mut core::ffi::c_void, data: *const u8, len: usize) {
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    let _ = std::io::stdout().write_all(bytes);
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -13,6 +19,7 @@ fn main() {
     
     let mut mem = vec![0u8; 65536];
     let mut ctx = JS_NewContext(&mut mem);
+    JS_SetLogFunc(&mut ctx, Some(log_func));
     
     let val = JS_Eval(&mut ctx, &source, filename, JS_EVAL_RETVAL);
     

@@ -112,8 +112,8 @@ PASSED=0
 
 # Test language features
 echo -e "${CYAN}=== test_language.js ===${NC}"
-for test in test_op1 test_cvt test_eq test_op2 test_string_cmp test_var test_side_effect \
-            test_member_get_nothrow test_call_nothrow; do
+for test in test_op1 test_cvt test_eq test_inc_dec test_op2 test_prototype \
+            test_arguments test_to_primitive test_labels test_labels2; do
     TOTAL=$((TOTAL + 1))
     if extract_and_run_test "test_language.js" "$test" 2>/dev/null; then
         PASSED=$((PASSED + 1))
@@ -134,8 +134,8 @@ echo ""
 
 # Test loops and control flow
 echo -e "${CYAN}=== test_loop.js ===${NC}"
-for test in test_while test_while_break test_do_while test_for test_for_in test_for_break \
-            test_switch1 test_switch2 test_try_catch1 test_try_catch2 test_try_catch3 \
+for test in test_while test_while_break test_do_while test_for test_for_in test_for_in2 \
+            test_for_break test_switch1 test_switch2 test_try_catch1 test_try_catch2 test_try_catch3 \
             test_try_catch4 test_try_catch5 test_try_catch6 test_try_catch7 test_try_catch8; do
     TOTAL=$((TOTAL + 1))
     if extract_and_run_test "test_loop.js" "$test" 2>/dev/null; then
