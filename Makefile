@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop redis-run redis-benchmark redis-stop
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -11,6 +11,7 @@ MINI_REDIS_PIDFILE ?= tmp/mini_redis.pid
 MINI_REDIS_PORTFILE ?= tmp/mini_redis.port
 MINI_REDIS_DBFILE ?= tmp/mini_redis.dbpath
 MINI_REDIS_AOF ?= 0
+MINI_REDIS_BENCH_LOG ?= tmp/mini_redis_benchmark_$(shell date +%Y%m%d_%H%M%S).log
 REDIS_PORT ?= 6379
 REDIS_PIDFILE ?= tmp/redis.pid
 REDIS_LOG ?= tmp/redis.log
@@ -206,6 +207,33 @@ mini-redis-parity-verbose: sync-version
 	sleep 0.5; \
 	python3 tests/mini_redis_parity.py $(MINI_REDIS_HOST) $$port; \
 	kill $$server_pid 2>/dev/null || true
+
+mini-redis-benchmark: sync-version
+	@mkdir -p tmp
+	@echo "=== start mini-redis (persist + release) ==="; \
+	MINI_REDIS_PERSIST=$(MINI_REDIS_PERSIST) MINI_REDIS_AOF=1 $(MAKE) -s mini-redis-persist-release-bg; \
+	if [ ! -f "$(MINI_REDIS_PORTFILE)" ]; then \
+		echo "Port file missing: $(MINI_REDIS_PORTFILE)"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	port=$$(cat $(MINI_REDIS_PORTFILE)); \
+	retries=80; \
+	while [ $$retries -gt 0 ]; do \
+		python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("127.0.0.1", int(sys.argv[1]))); s.close(); sys.exit(0 if rc==0 else 1)' $$port && break; \
+		retries=$$((retries-1)); \
+		sleep 0.25; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	echo "=== running benchmark on $$port ==="; \
+	echo "Benchmark log: $(MINI_REDIS_BENCH_LOG)"; \
+	python3 scripts/mini_redis_benchmark.py --host $(MINI_REDIS_HOST) --port $$port 2>&1 | tee $(MINI_REDIS_BENCH_LOG); \
+	echo "=== stop mini-redis ==="; \
+	$(MAKE) -s mini-redis-stop || true
 
 clean:
 	$(CARGO) clean
