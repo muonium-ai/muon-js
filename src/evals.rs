@@ -297,7 +297,7 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     None
 }
 
-fn unescape_string_literal(src: &str) -> String {
+pub(crate) fn unescape_string_literal(src: &str) -> String {
     let mut units: Vec<u16> = Vec::new();
     let mut chars = src.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -365,7 +365,22 @@ fn unescape_string_literal(src: &str) -> String {
             None => break,
         }
     }
-    String::from_utf16_lossy(&units)
+    utf16_units_to_string_preserve_surrogates(&units)
+}
+
+pub(crate) fn utf16_units_to_string_preserve_surrogates(units: &[u16]) -> String {
+    let mut out = String::new();
+    for &u in units {
+        if (0xD800..=0xDFFF).contains(&u) {
+            let mapped = (u as u32) + 0x800;
+            if let Some(ch) = char::from_u32(mapped) {
+                out.push(ch);
+            }
+        } else if let Some(ch) = char::from_u32(u as u32) {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Evaluate an expression (handles assignments, operators, method calls, etc.)

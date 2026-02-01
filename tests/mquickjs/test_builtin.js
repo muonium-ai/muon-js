@@ -198,24 +198,30 @@ function test_array()
 {
     var a, err, i, log;
 
+    console.log("test_array: start");
     a = [1, 2, 3];
     assert(a.length, 3, "array");
     assert(a[2], 3, "array1");
+    console.log("test_array: basic literals ok");
 
     a = new Array(10);
     assert(a.length, 10, "array2");
+    console.log("test_array: new Array length ok");
 
     a = new Array(1, 2);
     assert(a[0] === 1 && a[1] === 2);
+    console.log("test_array: new Array args ok");
 
     a = [1, 2, 3];
     a.length = 2;
     assert(a[0] === 1 && a[1] === 2 && a.length === 2);
+    console.log("test_array: length shrink ok");
 
     a = [];
     a[0] = 10;
     a[1] = 3;
     assert(a.length, 2);
+    console.log("test_array: length grow ok");
     
 /*
     a = [];
@@ -229,17 +235,21 @@ function test_array()
     a[4] = 1;
     a.length = 4;
     assert(a[4] !== 1);
+    console.log("test_array: length truncate ok");
 
     a = [1,2,3];
     assert(a.join("-"), "1-2-3");
+    console.log("test_array: join ok");
     
     a = [1,2];
     assert(a.push(3, 4), 4);
     assert(a.toString(), "1,2,3,4");
+    console.log("test_array: push ok");
 
     a = [1,2,3];
     assert(a.pop(), 3);
     assert(a.toString(), "1,2");
+    console.log("test_array: pop ok");
     
     /*
     a=[1,2,3,4,5];
@@ -254,21 +264,26 @@ function test_array()
     */
     assert(Array.isArray([]), true);
     assert(Array.isArray({}), false);
+    console.log("test_array: isArray ok");
 
     a = [1, 2, 3];
     assert(a.reverse().toString(), "3,2,1");
+    console.log("test_array: reverse ok");
 
     a = [1, 2, 3];
     a = a.concat(4, [5, 6], 7);
     assert(a.toString(), "1,2,3,4,5,6,7");
+    console.log("test_array: concat ok");
 
     a = [1, 2, 3];
     assert(a.shift(), 1);
     assert(a.toString(), "2,3");
+    console.log("test_array: shift ok");
 
     a = [3,4];
     assert(a.unshift(1,2), 4);
     assert(a.toString(), "1,2,3,4");
+    console.log("test_array: unshift ok");
 
     a = [10, 11, 10, 11]
     assert(a.indexOf(11), 1);
@@ -276,57 +291,71 @@ function test_array()
     assert(a.indexOf(11, 2), 3);
     assert(a.lastIndexOf(11), 3);
     assert(a.lastIndexOf(11, 2), 1);
+    console.log("test_array: indexOf ok");
 
     assert([1, 2, 3, 4].slice(1, 3).toString(), "2,3");
     assert([1, 2, 3, 4].slice(1).toString(), "2,3,4");
+    console.log("test_array: slice ok");
 
     log="";
     assert([1, 2, 3, 4].every(function(val, k) { log += val; assert(k, (val - 1)); return val != 5 }), true);
     assert(log, "1234");
+    console.log("test_array: every ok");
 
     log = "";
     assert([1, 2, 3, 4].some(function(val, k) { log += val; assert(k, (val - 1)); return val == 5 }), false);
     assert(log, "1234");
+    console.log("test_array: some ok");
 
     log = "";
     assert([1, 2, 3, 4].forEach(function(val, k) { log += val; assert(k, (val - 1)); }), void 0);
     assert(log, "1234");
+    console.log("test_array: forEach ok");
 
     log = "";
     a = [1, 2, 3, 4].map(function(val, k) { assert(k, (val - 1)); return val + 1; });
     assert(a.toString(), "2,3,4,5");
+    console.log("test_array: map ok");
 
     log = "";
     a = [1, 2, 3, 4].filter(function(val, k) { assert(k, (val - 1)); return val == 2 || val == 3; });
     assert(a.toString(), "2,3");
+    console.log("test_array: filter ok");
     
     assert(["1", 2, 3, 4].reduce(function(acc, val, k) { assert(k, (val - 1)); return acc + val; }), "1234");
     assert([1, 2, 3, 4].reduce(function(acc, val, k) { assert(k, (val - 1)); return acc + val; }, "0"), "01234");
+    console.log("test_array: reduce ok");
 
     assert([1, 2, 3, "4"].reduceRight(function(acc, val, k) { assert(k, (val - 1)); return acc + val; }), "4321");
     assert([1, 2, 3, 4].reduceRight(function(acc, val, k) { assert(k, (val - 1)); return acc + val; }, "5"), "54321");
+    console.log("test_array: reduceRight ok");
 
     a = [1, 2, 3, 4];
     assert(a.splice(1, 2, 10, 11, 12).toString(), "2,3");
     assert(a.toString(), "1,10,11,12,4");
+    console.log("test_array: splice 1 ok");
 
     a = [1, 2, 3, 4];
     assert(a.splice(1, 2, 10).toString(), "2,3");
     assert(a.toString(), "1,10,4");
+    console.log("test_array: splice 2 ok");
 
     a = [5, 4, 3, 2, 1];
     a.sort();
     assert(a[0], 1);
     assert(a.toString(), "1,2,3,4,5");
+    console.log("test_array: sort default ok");
 
     a = [1, 2, 3, 4, 5];
     a.sort(function(a, b) { return (a < b) - (a > b) } );
     assert(a.toString(), "5,4,3,2,1");
+    console.log("test_array: sort compare ok");
 
     /* verify that the sort is stable and that 'undefined' is correctly handled */
     a = [ "b0", "z0", undefined, "b1", "a0", undefined, "z1", "a1", "a2"];
     a.sort(function(a, b) { return (a[0] > b[0]) - (a[0] < b[0]) } );
     assert(a.toString(), "a0,a1,a2,b0,b1,z0,z1,,");
+    console.log("test_array: sort stable ok");
 }
 
 /* non standard array behaviors */
@@ -359,6 +388,8 @@ function test_string()
     assert(a.charAt(-1), "");
     assert(a.charAt(3), "");
 
+    console.log("test_string: basics ok");
+
     a = "abcd";
     assert(a.substring(1, 3), "bc", "substring");
     a = String.fromCharCode(0x20ac);
@@ -367,6 +398,8 @@ function test_string()
     assert(a, "\u20ac", "unicode");
     assert(a, "\u{20ac}", "unicode");
     assert("a", "\x61", "unicode");
+
+    console.log("test_string: unicode ok");
         
     a = "\u{10ffff}";
     assert(a.length, 2, "unicode");
@@ -375,12 +408,16 @@ function test_string()
     assert(a.codePointAt(1), 0xdfff);
     assert(String.fromCodePoint(0x10ffff), a);
 
+    console.log("test_string: codePoint ok");
+
     assert("a".concat("b", "c", 123), "abc123");
 
     assert("abcabc".indexOf("cab"), 2);
     assert("abcabc".indexOf("cab2"), -1);
     assert("abc".indexOf("c"), 2);
     assert("abcabc".lastIndexOf("ab"), 3);
+
+    console.log("test_string: indexOf ok");
 
     assert("a,b,c".split(","), ["a","b","c"]);
     assert(",b,c".split(","), ["","b","c"]);
@@ -404,6 +441,8 @@ function test_string()
     assert("aaaa".split("aaaaa", 0), [  ]);
     assert("aaaa".split("aaaaa", 1), [ "aaaa" ]);
 
+    console.log("test_string: split ok");
+
     //    assert((1,eval)('"\0"'), "\0");
     assert("123AbCd€".toLowerCase(), "123abcd€");
     assert("123AbCd€".toUpperCase(), "123ABCD€");
@@ -413,13 +452,19 @@ function test_string()
     assert("abcabc".replace("b", "a$$b$&"), "aa$bbcabc");
     assert("abcabc".replaceAll("b", "a$$b$&"),"aa$bbcaa$bbc");
 
+    console.log("test_string: replace ok");
+
     a = "";
     assert("bab".replace("a", function(a0, a1, a2) { a += a0 + "," + a1 + "," + a2; return "hi"; }), "bhib");
     assert(a, "a,1,bab");
 
+    console.log("test_string: replace fn ok");
+
     assert("abc".repeat(3), "abcabcabc");
     assert("abc".repeat(0), "");
     assert("".repeat(1000000000), "");
+
+    console.log("test_string: repeat ok");
 }
 
 /* specific tests for internal UTF-8 storage */
@@ -427,14 +472,25 @@ function test_string2()
 {
     var str = "hé€\u{101234}o";
     assert(str, "h\xe9\u20ac\udbc4\u{de34}o", "parse");
+    console.log("test_string2: parse ok");
     assert(str.length, 6, "length");
+    console.log("test_string2: length ok");
     assert(str.slice(1, 2), "é", "slice");
+    console.log("test_string2: slice 1 ok");
     assert(str.slice(1, 3), "é€", "slice");
+    console.log("test_string2: slice 2 ok");
     assert(str.slice(2, 5), "€\u{101234}", "slice");
+    console.log("test_string2: slice 3 ok");
     assert(str.slice(2, 4), "€\u{dbc4}", "slice");
+    console.log("test_string2: slice 4 ok");
     assert(str.slice(4, 6), "\u{de34}o", "slice");
+    console.log("test_string2: slice 5 ok");
     assert("hé€" + "\u{101234}o", str, "concat 1");
+    console.log("test_string2: concat 1 ok");
     assert("h\xe9\u20ac\udbc4" + "\u{de34}o", str, "concat 2");
+    console.log("test_string2: concat 2 ok");
+
+    console.log("test_string2: slice/concat ok");
 
     var ch = "\udbc4\u{de34}";
     assert(ch.slice(0, 2), "\udbc4\u{de34}", "slice 1");
@@ -443,6 +499,8 @@ function test_string2()
 
     assert("\udbc4" + "\u{de34}", "\u{101234}", "concat 3");
     assert("\udbc4" + "o\u{de34}", "\udbc4o\u{de34}", "concat 4");
+
+    console.log("test_string2: surrogate slice ok");
 
     assert(str[0], "h", "char 1");
     assert(str[1], "é", "char 2");

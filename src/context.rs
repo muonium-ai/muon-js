@@ -261,6 +261,10 @@ impl Context {
         self.object_proto
     }
 
+    pub fn array_proto(&self) -> Value {
+        self.array_proto
+    }
+
     pub fn set_array_proto(&mut self, proto: Value) {
         self.array_proto = proto;
     }

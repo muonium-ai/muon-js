@@ -33,11 +33,76 @@ use crate::parser::*;
 fn string_utf16_units(ctx: &mut JSContextImpl, val: JSValue) -> Option<Vec<u16>> {
     let bytes = ctx.string_bytes(val)?;
     let s = core::str::from_utf8(bytes).ok()?;
-    Some(s.encode_utf16().collect())
+    let mut units = Vec::new();
+    for ch in s.chars() {
+        let code = ch as u32;
+        if (0xE000..=0xE7FF).contains(&code) {
+            units.push((code - 0x800) as u16);
+        } else {
+            let mut buf = [0u16; 2];
+            let slice = ch.encode_utf16(&mut buf);
+            units.extend_from_slice(slice);
+        }
+    }
+    Some(units)
 }
 
 fn string_utf16_len(ctx: &mut JSContextImpl, val: JSValue) -> Option<usize> {
     string_utf16_units(ctx, val).map(|units| units.len())
+}
+
+fn string_units_equal(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> Option<bool> {
+    let ua = string_utf16_units(ctx, a)?;
+    let ub = string_utf16_units(ctx, b)?;
+    Some(ua == ub)
+}
+
+fn object_to_string_value(ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
+    let tag = if val.is_undefined() {
+        "Undefined"
+    } else if val.is_null() {
+        "Null"
+    } else if val.is_bool() {
+        "Boolean"
+    } else if js_is_number(ctx, val) != 0 {
+        "Number"
+    } else if ctx.string_bytes(val).is_some() {
+        "String"
+    } else if let Some(class_id) = ctx.object_class_id(val) {
+        match class_id {
+            x if x == JSObjectClassEnum::Array as u32 => "Array",
+            x if x == JSObjectClassEnum::Regexp as u32 => "RegExp",
+            x if x == JSObjectClassEnum::Date as u32 => "Date",
+            x if x == JSObjectClassEnum::CFunction as u32
+                || x == JSObjectClassEnum::Closure as u32 => "Function",
+            x if x == JSObjectClassEnum::Number as u32 => "Number",
+            x if x == JSObjectClassEnum::Boolean as u32 => "Boolean",
+            x if x == JSObjectClassEnum::String as u32 => "String",
+            x if x == JSObjectClassEnum::ArrayBuffer as u32 => "ArrayBuffer",
+            x if x == JSObjectClassEnum::Uint8Array as u32 => "Uint8Array",
+            x if x == JSObjectClassEnum::Uint8cArray as u32 => "Uint8ClampedArray",
+            x if x == JSObjectClassEnum::Int8Array as u32 => "Int8Array",
+            x if x == JSObjectClassEnum::Int16Array as u32 => "Int16Array",
+            x if x == JSObjectClassEnum::Uint16Array as u32 => "Uint16Array",
+            x if x == JSObjectClassEnum::Int32Array as u32 => "Int32Array",
+            x if x == JSObjectClassEnum::Uint32Array as u32 => "Uint32Array",
+            x if x == JSObjectClassEnum::Float32Array as u32 => "Float32Array",
+            x if x == JSObjectClassEnum::Float64Array as u32 => "Float64Array",
+            x if x == JSObjectClassEnum::Error as u32
+                || x == JSObjectClassEnum::EvalError as u32
+                || x == JSObjectClassEnum::RangeError as u32
+                || x == JSObjectClassEnum::ReferenceError as u32
+                || x == JSObjectClassEnum::SyntaxError as u32
+                || x == JSObjectClassEnum::TypeError as u32
+                || x == JSObjectClassEnum::UriError as u32
+                || x == JSObjectClassEnum::InternalError as u32 => "Error",
+            _ => "Object",
+        }
+    } else {
+        "Object"
+    };
+    let out = format!("[object {}]", tag);
+    js_new_string(ctx, &out)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -432,6 +497,7 @@ pub fn js_new_context(mem: &mut [u8]) -> JSContextImpl {
     let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
     let _ = js_set_property_str(&mut ctx, global, "Infinity", inf);
     let _ = js_set_property_str(&mut ctx, global, "undefined", Value::UNDEFINED);
+    init_default_prototypes(&mut ctx, global);
     ctx
 }
 
@@ -452,7 +518,31 @@ pub fn js_new_context_with_stdlib(
     let _ = js_set_property_str(&mut ctx, global, "NaN", nan);
     let _ = js_set_property_str(&mut ctx, global, "Infinity", inf);
     let _ = js_set_property_str(&mut ctx, global, "undefined", Value::UNDEFINED);
+    init_default_prototypes(&mut ctx, global);
     ctx
+}
+
+fn init_default_prototypes(ctx: &mut JSContextImpl, global: JSValue) {
+    let object_proto = js_new_object(ctx);
+    if object_proto.is_exception() {
+        return;
+    }
+    let _ = ctx.set_object_proto(object_proto, Value::NULL);
+    let ctor_marker = js_new_string(ctx, "__builtin_Object__");
+    let to_string_marker = js_new_string(ctx, "__builtin_Object_toString__");
+    let has_own_marker = js_new_string(ctx, "__builtin_Object_hasOwnProperty__");
+    let _ = js_set_property_str(ctx, object_proto, "constructor", ctor_marker);
+    let _ = js_set_property_str(ctx, object_proto, "toString", to_string_marker);
+    let _ = js_set_property_str(ctx, object_proto, "hasOwnProperty", has_own_marker);
+    ctx.set_object_proto_default(object_proto);
+    let _ = ctx.set_object_proto(global, object_proto);
+
+    let array_proto = js_new_object(ctx);
+    if array_proto.is_exception() {
+        return;
+    }
+    let _ = ctx.set_object_proto(array_proto, object_proto);
+    ctx.set_array_proto(array_proto);
 }
 
 /// Free the context. Finalizers should run; no system allocator is used.
@@ -578,6 +668,13 @@ pub fn js_is_function(_ctx: &mut JSContextImpl, _val: JSValue) -> JSBool {
             return 1;
         }
     }
+    if let Some(bytes) = _ctx.string_bytes(_val) {
+        if let Ok(marker) = core::str::from_utf8(bytes) {
+            if marker.starts_with("__builtin_") {
+                return 1;
+            }
+        }
+    }
     // Treat custom closures (created via create_function) as functions.
     let marker = js_get_property_str(_ctx, _val, "__closure__");
     if marker == Value::TRUE { 1 } else { 0 }
@@ -662,7 +759,7 @@ pub fn js_get_property_uint32(_ctx: &mut JSContextImpl, _obj: JSValue, _idx: u32
     if let Some(units) = string_utf16_units(_ctx, _obj) {
         let idx = _idx as usize;
         if idx < units.len() {
-            let s = String::from_utf16_lossy(&[units[idx]]);
+            let s = crate::evals::utf16_units_to_string_preserve_surrogates(&[units[idx]]);
             return js_new_string(_ctx, &s);
         }
         return Value::UNDEFINED;
@@ -1545,6 +1642,34 @@ fn call_builtin_global_marker(
     }
 }
 
+fn call_function_value(
+    ctx: &mut JSContextImpl,
+    func: JSValue,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> Option<JSValue> {
+    if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
+        return Some(result);
+    }
+    if let Some((idx, params)) = ctx.c_function_info(func) {
+        return Some(call_c_function(ctx, idx, params, this_val, args));
+    }
+    let marker_owned = ctx
+        .string_bytes(func)
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .map(|s| s.to_string());
+    if let Some(marker) = marker_owned.as_deref() {
+        if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
+            return Some(val);
+        }
+        let mut parser = ArithParser::new(ctx, b"");
+        if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
+            return Some(val);
+        }
+    }
+    None
+}
+
 pub fn js_print_value_f(_ctx: &mut JSContextImpl, _val: JSValue, _flags: i32) {
     js_print_value(_ctx, _val);
 }
@@ -2386,6 +2511,135 @@ fn value_to_string(ctx: &mut JSContextImpl, val: JSValue) -> String {
         .unwrap_or_default()
 }
 
+fn expand_replace_substitutions(
+    replacement: &str,
+    matched: &str,
+    before: &str,
+    after: &str,
+    captures: Option<&[Option<String>]>,
+) -> String {
+    let mut out = String::new();
+    let mut chars = replacement.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('$') => {
+                chars.next();
+                out.push('$');
+            }
+            Some('&') => {
+                chars.next();
+                out.push_str(matched);
+            }
+            Some('`') => {
+                chars.next();
+                out.push_str(before);
+            }
+            Some('\'') => {
+                chars.next();
+                out.push_str(after);
+            }
+            Some(d) if d.is_ascii_digit() => {
+                let mut digits = String::new();
+                if let Some(d1) = chars.next() {
+                    digits.push(d1);
+                }
+                if let Some(d2) = chars.peek().copied() {
+                    if d2.is_ascii_digit() {
+                        digits.push(d2);
+                        chars.next();
+                    }
+                }
+                let idx = digits.parse::<usize>().ok();
+                if let (Some(caps), Some(i)) = (captures, idx) {
+                    if i < caps.len() {
+                        if let Some(val) = &caps[i] {
+                            out.push_str(val);
+                            continue;
+                        }
+                    }
+                }
+                out.push('$');
+                out.push_str(&digits);
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
+}
+
+fn string_replace_nonregex(
+    ctx: &mut JSContextImpl,
+    input: &str,
+    search: &str,
+    replacement: JSValue,
+    replace_all: bool,
+) -> String {
+    if search.is_empty() {
+        let rep_str = if js_is_function(ctx, replacement) != 0 {
+            let match_val = js_new_string(ctx, "");
+            let idx_val = Value::from_int32(0);
+            let input_val = js_new_string(ctx, input);
+            let args = [match_val, idx_val, input_val];
+            call_function_value(ctx, replacement, Value::UNDEFINED, &args)
+                .map(|v| value_to_string(ctx, v))
+                .unwrap_or_default()
+        } else {
+            value_to_string(ctx, replacement)
+        };
+        if replace_all {
+            let mut out = String::new();
+            out.push_str(&rep_str);
+            for ch in input.chars() {
+                out.push(ch);
+                out.push_str(&rep_str);
+            }
+            return out;
+        }
+        return format!("{}{}", rep_str, input);
+    }
+
+    let is_func = js_is_function(ctx, replacement) != 0;
+    let replacement_str = if is_func { String::new() } else { value_to_string(ctx, replacement) };
+    let input_val = if is_func { Some(js_new_string(ctx, input)) } else { None };
+    let mut result = String::new();
+    let mut search_start = 0usize;
+    let mut last_end = 0usize;
+
+    while let Some(pos) = input[search_start..].find(search) {
+        let abs = search_start + pos;
+        let match_end = abs + search.len();
+        let before = &input[..abs];
+        let after = &input[match_end..];
+        result.push_str(&input[last_end..abs]);
+
+        let rep = if is_func {
+            let match_val = js_new_string(ctx, search);
+            let idx_val = Value::from_int32(abs as i32);
+            let input_val = input_val.unwrap();
+            let args = [match_val, idx_val, input_val];
+            call_function_value(ctx, replacement, Value::UNDEFINED, &args)
+                .map(|v| value_to_string(ctx, v))
+                .unwrap_or_default()
+        } else {
+            expand_replace_substitutions(&replacement_str, search, before, after, None)
+        };
+        result.push_str(&rep);
+
+        last_end = match_end;
+        if !replace_all {
+            break;
+        }
+        search_start = match_end;
+    }
+
+    result.push_str(&input[last_end..]);
+    result
+}
+
 // ============================================================================
 // EXPRESSION EVALUATION
 // ============================================================================
@@ -3022,7 +3276,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 if let Some(units) = string_utf16_units(ctx, this_val) {
                                     if idx >= 0 && (idx as usize) < units.len() {
                                         let unit = units[idx as usize];
-                                        let s = String::from_utf16_lossy(&[unit]);
+                                        let s = crate::evals::utf16_units_to_string_preserve_surrogates(&[unit]);
                                         val = js_new_string(ctx, &s);
                                     } else {
                                         val = js_new_string(ctx, "");
@@ -3078,7 +3332,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 if start > end {
                                     core::mem::swap(&mut start, &mut end);
                                 }
-                                let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                                let slice_units = &units[start as usize..end as usize];
+                                let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                                 val = js_new_string(ctx, &s);
                                 this_val = Value::UNDEFINED;
                                 rest = next;
@@ -3105,7 +3360,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                     len - start
                                 };
                                 let end = (start + count).min(len);
-                                let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                                let slice_units = &units[start as usize..end as usize];
+                                let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                                 val = js_new_string(ctx, &s);
                                 this_val = Value::UNDEFINED;
                                 rest = next;
@@ -3187,7 +3443,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             if end < start {
                                 end = start;
                             }
-                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            let slice_units = &units[start as usize..end as usize];
+                            let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                             val = js_new_string(ctx, &s);
                             this_val = Value::UNDEFINED;
                             rest = next;
@@ -4566,8 +4823,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 val = js_new_string(ctx, &replaced.to_string());
                             } else {
                                 let search = value_to_string(ctx, args[0]);
-                                let replacement = value_to_string(ctx, args[1]);
-                                let result = s.replacen(&search, &replacement, 1);
+                                let result = string_replace_nonregex(ctx, &s, &search, args[1], false);
                                 val = js_new_string(ctx, &result);
                             }
                         } else {
@@ -4594,8 +4850,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 val = js_new_string(ctx, &replaced.to_string());
                             } else {
                                 let search = value_to_string(ctx, args[0]);
-                                let replacement = value_to_string(ctx, args[1]);
-                                let result = s.replace(&search, &replacement);
+                                let result = string_replace_nonregex(ctx, &s, &search, args[1], true);
                                 val = js_new_string(ctx, &result);
                             }
                         } else {
@@ -5322,14 +5577,42 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             js_throw_error(ctx, JSObjectClassEnum::TypeError, "Property descriptor must be an object");
                             return None;
                         }
-                        let prop_val = js_get_property_str(ctx, desc, "value");
                         if key_bytes.is_empty() {
                             js_throw_error(ctx, JSObjectClassEnum::TypeError, "Invalid property key");
                             return None;
                         }
-                        let res = js_set_property_str(ctx, obj, key_str, prop_val);
-                        if res.is_exception() {
-                            return None;
+                        let getter = js_get_property_str(ctx, desc, "get");
+                        let setter = js_get_property_str(ctx, desc, "set");
+                        let has_getter = !getter.is_undefined();
+                        let has_setter = !setter.is_undefined();
+                        let has_value = ctx.has_property_str(desc, b"value");
+                        if has_getter {
+                            let getter_key = format!("__get__{}", key_str);
+                            let res = js_set_property_str(ctx, obj, &getter_key, getter);
+                            if res.is_exception() {
+                                return None;
+                            }
+                        }
+                        if has_setter {
+                            let setter_key = format!("__set__{}", key_str);
+                            let res = js_set_property_str(ctx, obj, &setter_key, setter);
+                            if res.is_exception() {
+                                return None;
+                            }
+                        }
+                        if !has_getter && !has_setter {
+                            if has_value {
+                                let prop_val = js_get_property_str(ctx, desc, "value");
+                                let res = js_set_property_str(ctx, obj, key_str, prop_val);
+                                if res.is_exception() {
+                                    return None;
+                                }
+                            } else if !ctx.has_property_str(obj, key_bytes.as_slice()) {
+                                let res = js_set_property_str(ctx, obj, key_str, Value::UNDEFINED);
+                                if res.is_exception() {
+                                    return None;
+                                }
+                            }
                         }
                         val = obj;
                         this_val = Value::UNDEFINED;
@@ -5381,6 +5664,31 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             return None;
                         }
                         val = js_object_get_prototype_of(ctx, args[0]);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_setPrototypeOf__" {
+                        if args.len() < 2 {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf requires an object and prototype");
+                            return None;
+                        }
+                        let target = args[0];
+                        let proto = args[1];
+                        if ctx.object_class_id(target).is_none() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf called on non-object");
+                            return None;
+                        }
+                        if !proto.is_null() && ctx.object_class_id(proto).is_none() {
+                            js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf prototype must be object or null");
+                            return None;
+                        }
+                        let _ = ctx.set_object_proto(target, proto);
+                        val = target;
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Object_toString__" {
+                        val = object_to_string_value(ctx, this_val);
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
@@ -5481,7 +5789,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             let elem = if is_string {
                                 let units = string_utf16_units(ctx, source).unwrap_or_default();
                                 let unit = units.get(i as usize).copied().unwrap_or(0);
-                                let s = String::from_utf16_lossy(&[unit]);
+                                let s = crate::evals::utf16_units_to_string_preserve_surrogates(&[unit]);
                                 js_new_string(ctx, &s)
                             } else {
                                 js_get_property_uint32(ctx, source, i)
@@ -5764,18 +6072,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_String_fromCharCode__" {
                         if args.len() >= 1 {
-                            let mut result = String::new();
+                            let mut units: Vec<u16> = Vec::new();
                             for arg in args.iter() {
                                 if let Some(code) = arg.int32() {
-                                    if let Some(ch) = char::from_u32(code as u32) {
-                                        result.push(ch);
-                                    }
+                                    units.push(code as u16);
                                 } else if let Ok(n) = js_to_number(ctx, *arg) {
-                                    if let Some(ch) = char::from_u32(n as u32) {
-                                        result.push(ch);
-                                    }
+                                    units.push(n as u16);
                                 }
                             }
+                            let result = crate::evals::utf16_units_to_string_preserve_surrogates(&units);
                             val = js_new_string(ctx, &result);
                         } else {
                             val = js_new_string(ctx, "");
@@ -5790,7 +6095,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             rest = next;
                             continue;
                         }
-                        let mut result = String::new();
+                        let mut units: Vec<u16> = Vec::new();
                         for arg in args.iter() {
                             let n = js_to_number(ctx, *arg).unwrap_or(f64::NAN);
                             if !n.is_finite() {
@@ -5807,10 +6112,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 js_throw_error(ctx, JSObjectClassEnum::RangeError, "Invalid code point");
                                 return None;
                             }
-                            if let Some(ch) = char::from_u32(code_u32) {
-                                result.push(ch);
+                            if code_u32 <= 0xFFFF {
+                                units.push(code_u32 as u16);
+                            } else {
+                                let v = code_u32 - 0x10000;
+                                let high = 0xD800 + ((v >> 10) as u16);
+                                let low = 0xDC00 + ((v & 0x3FF) as u16);
+                                units.push(high);
+                                units.push(low);
                             }
                         }
+                        let result = crate::evals::utf16_units_to_string_preserve_surrogates(&units);
                         val = js_new_string(ctx, &result);
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -5821,7 +6133,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         if js_is_function(ctx, this_val) != 0 {
                             let new_this = if args.is_empty() { Value::UNDEFINED } else { args[0] };
                             let call_args: Vec<JSValue> = args.iter().skip(1).copied().collect();
-                            if let Some(result) = crate::parser::call_closure_with_this(ctx, this_val, new_this, &call_args) {
+                            if let Some(result) = call_function_value(ctx, this_val, new_this, &call_args) {
                                 val = result;
                             } else {
                                 val = Value::UNDEFINED;
@@ -5844,7 +6156,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             } else {
                                 Vec::new()
                             };
-                            if let Some(result) = crate::parser::call_closure_with_this(ctx, this_val, new_this, &call_args) {
+                            if let Some(result) = call_function_value(ctx, this_val, new_this, &call_args) {
                                 val = result;
                             } else {
                                 val = Value::UNDEFINED;
@@ -5905,7 +6217,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         // Append call args
                         all_args.extend(args.iter().copied());
 
-                        if let Some(result) = crate::parser::call_closure_with_this(ctx, orig_func, bound_this, &all_args) {
+                        if let Some(result) = call_function_value(ctx, orig_func, bound_this, &all_args) {
                             val = result;
                         } else {
                             val = Value::UNDEFINED;
@@ -6704,6 +7016,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         }
                     } else if marker == "__builtin_Object__" {
                         match name {
+                            "prototype" => {
+                                val = ctx.object_proto_default();
+                                rest = next;
+                                continue;
+                            }
                             "keys" => {
                                 val = js_new_string(ctx, "__builtin_Object_keys__");
                                 rest = next;
@@ -6769,6 +7086,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 rest = next;
                                 continue;
                             }
+                            "setPrototypeOf" => {
+                                val = js_new_string(ctx, "__builtin_Object_setPrototypeOf__");
+                                rest = next;
+                                continue;
+                            }
                             _ => {}
                         }
                     } else if marker == "__builtin_JSON__" {
@@ -6801,6 +7123,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         }
                     } else if marker == "__builtin_Array__" {
                         match name {
+                            "prototype" => {
+                                val = ctx.array_proto();
+                                rest = next;
+                                continue;
+                            }
                             "isArray" => {
                                 val = js_new_string(ctx, "__builtin_Array_isArray__");
                                 rest = next;
@@ -8088,13 +8415,34 @@ impl<'a> ArithParser<'a> {
                     js_console_log(ctx, args);
                     return Ok(Value::UNDEFINED);
                 }
+                if marker == "__builtin_Object_toString__" {
+                    return Ok(object_to_string_value(ctx, this_val));
+                }
+                if marker == "__builtin_Object_setPrototypeOf__" {
+                    if args.len() < 2 {
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf requires an object and prototype");
+                        return Err(());
+                    }
+                    let target = args[0];
+                    let proto = args[1];
+                    if ctx.object_class_id(target).is_none() {
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf called on non-object");
+                        return Err(());
+                    }
+                    if !proto.is_null() && ctx.object_class_id(proto).is_none() {
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "Object.setPrototypeOf prototype must be object or null");
+                        return Err(());
+                    }
+                    let _ = ctx.set_object_proto(target, proto);
+                    return Ok(target);
+                }
                 // String methods
                 if marker == "__builtin_string_charAt__" {
                     if args.len() == 1 {
                         if let Some(idx) = args[0].int32() {
                             if let Some(units) = string_utf16_units(ctx, this_val) {
                                 if idx >= 0 && (idx as usize) < units.len() {
-                                    let s = String::from_utf16_lossy(&[units[idx as usize]]);
+                                    let s = crate::evals::utf16_units_to_string_preserve_surrogates(&[units[idx as usize]]);
                                     return Ok(js_new_string(ctx, &s));
                                 }
                                 return Ok(js_new_string(ctx, ""));
@@ -8148,7 +8496,8 @@ impl<'a> ArithParser<'a> {
                             if start > end {
                                 core::mem::swap(&mut start, &mut end);
                             }
-                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            let slice_units = &units[start as usize..end as usize];
+                            let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                             return Ok(js_new_string(ctx, &s));
                         }
                     }
@@ -8169,7 +8518,8 @@ impl<'a> ArithParser<'a> {
                                 len - start
                             };
                             let end = (start + count).min(len);
-                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            let slice_units = &units[start as usize..end as usize];
+                            let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                             return Ok(js_new_string(ctx, &s));
                         }
                     }
@@ -8190,7 +8540,8 @@ impl<'a> ArithParser<'a> {
                                 len - start
                             };
                             let end = (start + count).min(len);
-                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            let slice_units = &units[start as usize..end as usize];
+                            let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                             return Ok(js_new_string(ctx, &s));
                         }
                     }
@@ -8214,7 +8565,8 @@ impl<'a> ArithParser<'a> {
                             if end < start {
                                 end = start;
                             }
-                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            let slice_units = &units[start as usize..end as usize];
+                            let s = crate::evals::utf16_units_to_string_preserve_surrogates(slice_units);
                             return Ok(js_new_string(ctx, &s));
                         }
                     }
@@ -8475,8 +8827,8 @@ impl<'a> ArithParser<'a> {
                             return Ok(js_new_string(ctx, &replaced.to_string()));
                         }
                         let search = value_to_string(ctx, args[0]);
-                        let replacement = value_to_string(ctx, args[1]);
-                        return Ok(js_new_string(ctx, &s.replacen(&search, &replacement, 1)));
+                        let result = string_replace_nonregex(ctx, &s, &search, args[1], false);
+                        return Ok(js_new_string(ctx, &result));
                     }
                     return Ok(this_val);
                 } else if marker == "__builtin_string_replaceAll__" {
@@ -8493,8 +8845,8 @@ impl<'a> ArithParser<'a> {
                             return Ok(js_new_string(ctx, &replaced.to_string()));
                         }
                         let search = value_to_string(ctx, args[0]);
-                        let replacement = value_to_string(ctx, args[1]);
-                        return Ok(js_new_string(ctx, &s.replace(&search, &replacement)));
+                        let result = string_replace_nonregex(ctx, &s, &search, args[1], true);
+                        return Ok(js_new_string(ctx, &result));
                     }
                     return Ok(this_val);
                 } else if marker == "__builtin_string_charCodeAt__" {
@@ -9436,23 +9788,26 @@ impl<'a> ArithParser<'a> {
         let quote = self.peek().ok_or(())?;
         self.pos += 1;
         let mut out = Vec::new();
+        let mut escaped = false;
         while let Some(b) = self.peek() {
             self.pos += 1;
+            if escaped {
+                out.push(b);
+                escaped = false;
+                continue;
+            }
             if b == quote {
-                let s = core::str::from_utf8(&out).map_err(|_| ())?;
+                let raw = core::str::from_utf8(&out).map_err(|_| ())?;
+                let unescaped = crate::evals::unescape_string_literal(raw);
                 let ctx = unsafe { &mut *self.ctx };
-                return Ok(js_new_string(ctx, s));
+                return Ok(js_new_string(ctx, &unescaped));
             }
             if b == b'\\' {
-                if let Some(esc) = self.peek() {
-                    self.pos += 1;
-                    out.push(esc);
-                } else {
-                    return Err(());
-                }
-            } else {
                 out.push(b);
+                escaped = true;
+                continue;
             }
+            out.push(b);
         }
         Err(())
     }
@@ -9691,8 +10046,8 @@ impl<'a> ArithParser<'a> {
                     // null == undefined is true in JS
                     if (left.is_null() && right.is_undefined()) || (left.is_undefined() && right.is_null()) {
                         true
-                    } else if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
-                        lb == rb
+                    } else if let Some(eq) = string_units_equal(ctx, left, right) {
+                        eq
                     } else
                     if left.0 == right.0 {
                         true
@@ -9711,8 +10066,8 @@ impl<'a> ArithParser<'a> {
                     // null != undefined is false in JS
                     if (left.is_null() && right.is_undefined()) || (left.is_undefined() && right.is_null()) {
                         false
-                    } else if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
-                        lb != rb
+                    } else if let Some(eq) = string_units_equal(ctx, left, right) {
+                        !eq
                     } else
                     if left.0 == right.0 {
                         false
@@ -9732,11 +10087,13 @@ impl<'a> ArithParser<'a> {
             match (op[0], op[1], op[2]) {
                 (b'=', b'=', b'=') => {
                     // Simplified equality
-                    if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
-                        lb == rb
+                    if let Some(eq) = string_units_equal(ctx, left, right) {
+                        eq
                     } else
                     if left.0 == right.0 {
                         true
+                    } else if ctx.object_class_id(left).is_some() || ctx.object_class_id(right).is_some() {
+                        false
                     } else {
                         let ln = js_to_number(ctx, left).ok();
                         let rn = js_to_number(ctx, right).ok();
@@ -9749,11 +10106,13 @@ impl<'a> ArithParser<'a> {
                 }
                 (b'!', b'=', b'=') => {
                     // Simplified inequality
-                    if let (Some(lb), Some(rb)) = (ctx.string_bytes(left), ctx.string_bytes(right)) {
-                        lb != rb
+                    if let Some(eq) = string_units_equal(ctx, left, right) {
+                        !eq
                     } else
                     if left.0 == right.0 {
                         false
+                    } else if ctx.object_class_id(left).is_some() || ctx.object_class_id(right).is_some() {
+                        true
                     } else {
                         let ln = js_to_number(ctx, left).ok();
                         let rn = js_to_number(ctx, right).ok();
