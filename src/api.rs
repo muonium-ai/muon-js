@@ -620,13 +620,43 @@ pub fn js_to_string(_ctx: &mut JSContextImpl, _val: JSValue) -> JSValue {
     if _val.is_undefined() {
         return js_new_string_len(_ctx, b"undefined");
     }
-    if let Some(class_id) = _ctx.object_class_id(_val) {
-        if class_id == JSObjectClassEnum::Array as u32 {
+    if let Some(_class_id) = _ctx.object_class_id(_val) {
+        if let Some(prim) = js_to_primitive(_ctx, _val, false) {
+            if _ctx.object_class_id(prim).is_none() {
+                return js_to_string(_ctx, prim);
+            }
+        }
+        if _class_id == JSObjectClassEnum::Array as u32 {
             return js_new_string(_ctx, "[object Array]");
         }
         return js_new_string(_ctx, "[object Object]");
     }
     Value::UNDEFINED
+}
+
+/// Convert object to primitive using valueOf/toString order.
+/// prefer_number = true => valueOf then toString
+/// prefer_number = false => toString then valueOf
+fn js_to_primitive(ctx: &mut JSContextImpl, val: JSValue, prefer_number: bool) -> Option<JSValue> {
+    if ctx.object_class_id(val).is_none() {
+        return Some(val);
+    }
+
+    let order = if prefer_number { ["valueOf", "toString"] } else { ["toString", "valueOf"] };
+    for name in order.iter() {
+        let method = js_get_property_str(ctx, val, name);
+        if method.is_undefined() || method.is_null() {
+            continue;
+        }
+        if js_is_function(ctx, method) != 0 {
+            if let Some(res) = crate::parser::call_closure_with_this(ctx, method, val, &[]) {
+                if ctx.object_class_id(res).is_none() {
+                    return Some(res);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSValue> {
@@ -744,6 +774,11 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
         }
         Ok(f64::NAN)
     } else if _ctx.object_class_id(_val).is_some() {
+        if let Some(prim) = js_to_primitive(_ctx, _val, true) {
+            if _ctx.object_class_id(prim).is_none() {
+                return js_to_number(_ctx, prim);
+            }
+        }
         Ok(f64::NAN)
     } else {
         Err(Value::EXCEPTION)
@@ -4171,22 +4206,89 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_String__" {
+                        if args.is_empty() {
+                            val = js_new_string(ctx, "");
+                        } else {
+                            val = js_to_string(ctx, args[0]);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Number__" {
+                        if args.is_empty() {
+                            val = Value::from_int32(0);
+                        } else {
+                            let n = js_to_number(ctx, args[0]).unwrap_or(f64::NAN);
+                            val = number_to_value(ctx, n);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_Boolean__" {
+                        if args.is_empty() {
+                            val = Value::FALSE;
+                        } else {
+                            val = Value::new_bool(crate::evals::is_truthy(ctx, args[0]));
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_parseInt__" {
                         if args.len() >= 1 {
-                            if let Some(str_bytes) = ctx.string_bytes(args[0]) {
-                                if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                    if let Ok(n) = s.trim().parse::<i32>() {
-                                        val = Value::from_int32(n);
+                            let s = if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(str_bytes).unwrap_or("").to_string()
+                            } else {
+                                let s_val = js_to_string(ctx, args[0]);
+                                if let Some(bytes) = ctx.string_bytes(s_val) {
+                                    core::str::from_utf8(bytes).unwrap_or("").to_string()
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            let mut s = s.trim_start();
+                            let mut sign = 1.0;
+                            if s.starts_with('-') {
+                                sign = -1.0;
+                                s = &s[1..];
+                            } else if s.starts_with('+') {
+                                s = &s[1..];
+                            }
+                            let radix = if args.len() >= 2 {
+                                args[1].int32().unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            let mut radix = radix;
+                            let mut s_ref = s;
+                            if radix == 0 {
+                                if s_ref.starts_with("0x") || s_ref.starts_with("0X") {
+                                    radix = 16;
+                                    s_ref = &s_ref[2..];
+                                } else {
+                                    radix = 10;
+                                }
+                            } else if radix == 16 && (s_ref.starts_with("0x") || s_ref.starts_with("0X")) {
+                                s_ref = &s_ref[2..];
+                            }
+                            if radix < 2 || radix > 36 {
+                                val = number_to_value(ctx, f64::NAN);
+                            } else {
+                                let mut acc: u64 = 0;
+                                let mut any = false;
+                                for ch in s_ref.chars() {
+                                    if let Some(d) = ch.to_digit(radix as u32) {
+                                        acc = acc.saturating_mul(radix as u64).saturating_add(d as u64);
+                                        any = true;
                                     } else {
-                                        val = number_to_value(ctx, f64::NAN);
+                                        break;
                                     }
+                                }
+                                if any {
+                                    val = number_to_value(ctx, sign * (acc as f64));
                                 } else {
                                     val = number_to_value(ctx, f64::NAN);
                                 }
-                            } else if let Some(n) = args[0].int32() {
-                                val = Value::from_int32(n);
-                            } else {
-                                val = number_to_value(ctx, f64::NAN);
                             }
                         } else {
                             val = number_to_value(ctx, f64::NAN);
@@ -4229,32 +4331,69 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_parseFloat__" {
+                        if args.len() >= 1 {
+                            let s = if let Some(str_bytes) = ctx.string_bytes(args[0]) {
+                                core::str::from_utf8(str_bytes).unwrap_or("").to_string()
+                            } else {
+                                let s_val = js_to_string(ctx, args[0]);
+                                if let Some(bytes) = ctx.string_bytes(s_val) {
+                                    core::str::from_utf8(bytes).unwrap_or("").to_string()
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            let s = s.trim_start();
+                            if s.starts_with("Infinity") || s.starts_with("+Infinity") {
+                                val = number_to_value(ctx, f64::INFINITY);
+                            } else if s.starts_with("-Infinity") {
+                                val = number_to_value(ctx, f64::NEG_INFINITY);
+                            } else {
+                                let mut end = 0usize;
+                                let mut seen_digit = false;
+                                let mut seen_dot = false;
+                                let mut seen_exp = false;
+                                let chars: Vec<char> = s.chars().collect();
+                                for i in 0..chars.len() {
+                                    let ch = chars[i];
+                                    if ch.is_ascii_digit() {
+                                        seen_digit = true;
+                                        end = i + 1;
+                                        continue;
+                                    }
+                                    if ch == '.' && !seen_dot && !seen_exp {
+                                        seen_dot = true;
+                                        end = i + 1;
+                                        continue;
+                                    }
+                                    if (ch == 'e' || ch == 'E') && seen_digit && !seen_exp {
+                                        seen_exp = true;
+                                        end = i + 1;
+                                        continue;
+                                    }
+                                    if (ch == '+' || ch == '-') && seen_exp {
+                                        let prev = if i > 0 { chars[i - 1] } else { '\0' };
+                                        if prev == 'e' || prev == 'E' {
+                                            end = i + 1;
+                                            continue;
+                                        }
+                                    }
+                                    break;
+                                }
+                                if end == 0 || !seen_digit {
+                                    val = number_to_value(ctx, f64::NAN);
+                                } else {
+                                    let num_str = &s[..end];
+                                    val = number_to_value(ctx, num_str.parse::<f64>().unwrap_or(f64::NAN));
+                                }
+                            }
+                        } else {
+                            val = number_to_value(ctx, f64::NAN);
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_isNaN__" {
-                        if args.len() >= 1 {
-                            if let Ok(n) = js_to_number(ctx, args[0]) {
-                                val = Value::new_bool(n.is_nan());
-                            } else {
-                                val = Value::TRUE;
-                            }
-                        } else {
-                            val = Value::TRUE;
-                        }
-                        this_val = Value::UNDEFINED;
-                        rest = next;
-                        continue;
-                    } else if marker == "__builtin_isFinite__" {
-                        if args.len() >= 1 {
-                            if let Ok(n) = js_to_number(ctx, args[0]) {
-                                val = Value::new_bool(n.is_finite());
-                            } else {
-                                val = Value::FALSE;
-                            }
-                        } else {
-                            val = Value::FALSE;
-                        }
-                        this_val = Value::UNDEFINED;
-                        rest = next;
-                        continue;
                     } else if marker == "__builtin_Date_now__" {
                         val = js_date_now(ctx);
                         this_val = Value::UNDEFINED;
@@ -8570,13 +8709,22 @@ impl<'a> ArithParser<'a> {
 
     fn add_values(&mut self, left: JSValue, right: JSValue) -> Result<JSValue, ()> {
         let ctx = unsafe { &mut *self.ctx };
-        let left_is_string = ctx.string_bytes(left).is_some();
-        let right_is_string = ctx.string_bytes(right).is_some();
-        let left_is_obj = ctx.object_class_id(left).is_some();
-        let right_is_obj = ctx.object_class_id(right).is_some();
-        if left_is_string || right_is_string || left_is_obj || right_is_obj {
-            let ls = js_to_string(ctx, left);
-            let rs = js_to_string(ctx, right);
+        let left_prim = if ctx.object_class_id(left).is_some() {
+            js_to_primitive(ctx, left, true).unwrap_or(left)
+        } else {
+            left
+        };
+        let right_prim = if ctx.object_class_id(right).is_some() {
+            js_to_primitive(ctx, right, true).unwrap_or(right)
+        } else {
+            right
+        };
+
+        let left_is_string = ctx.string_bytes(left_prim).is_some();
+        let right_is_string = ctx.string_bytes(right_prim).is_some();
+        if left_is_string || right_is_string {
+            let ls = js_to_string(ctx, left_prim);
+            let rs = js_to_string(ctx, right_prim);
             let lb = ctx.string_bytes(ls).ok_or(())?;
             let rb = ctx.string_bytes(rs).ok_or(())?;
             let mut out = Vec::with_capacity(lb.len() + rb.len());
@@ -8588,8 +8736,8 @@ impl<'a> ArithParser<'a> {
             }
             return Ok(val);
         }
-        let ln = js_to_number(ctx, left).map_err(|_| ())?;
-        let rn = js_to_number(ctx, right).map_err(|_| ())?;
+        let ln = js_to_number(ctx, left_prim).map_err(|_| ())?;
+        let rn = js_to_number(ctx, right_prim).map_err(|_| ())?;
         let val = number_to_value(ctx, ln + rn);
         if val.is_exception() {
             Err(())

@@ -261,6 +261,55 @@ fn extract_statement(src: &str) -> Option<(&str, &str)> {
     Some((s.trim(), ""))
 }
 
+/// Split a do...while statement into (body, while_part) at top-level.
+fn split_do_while_body(src: &str) -> Option<(&str, &str)> {
+    let s = src.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut i = 0usize;
+    while i + 5 <= bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            } else if b == b'\\' && i + 1 < bytes.len() {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            in_string = true;
+            string_delim = b;
+            i += 1;
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && i + 5 <= bytes.len() && &bytes[i..i + 5] == b"while" {
+            let prev = if i == 0 { b' ' } else { bytes[i - 1] };
+            let next = if i + 5 < bytes.len() { bytes[i + 5] } else { b' ' };
+            let prev_is_ident = prev.is_ascii_alphanumeric() || prev == b'_';
+            let next_is_ident = next.is_ascii_alphanumeric() || next == b'_';
+            if !prev_is_ident && !next_is_ident {
+                let body = s[..i].trim_end();
+                let rest = s[i..].trim_start();
+                return Some((body, rest));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Extract content within parentheses ( )
 pub fn extract_paren(src: &str) -> Option<(&str, &str)> {
     let bytes = src.as_bytes();
@@ -371,7 +420,10 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
     let after_then = after_then.trim_start();
     if after_then.starts_with("else") {
         let after_else = after_then[4..].trim_start();
-        if after_else.starts_with('{') {
+        if after_else.starts_with("if ") || after_else.starts_with("if(") {
+            // Preserve full else-if chain
+            else_body = Some((after_else, false));
+        } else if after_else.starts_with('{') {
             let (block, _) = extract_braces(after_else)?;
             else_body = Some((block, true));
         } else if let Some((stmt, _)) = extract_statement(after_else) {
@@ -868,12 +920,14 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&st
     };
 
     let rest = rest.trim_start();
+    let (body_part, after_body) = split_do_while_body(rest)?;
 
-    if !rest.starts_with('{') {
-        return None;
-    }
-    let (body, after_body) = extract_braces(rest)?;
-    let after_body = after_body.trim_start();
+    let (body, body_is_block) = if body_part.starts_with('{') {
+        let (block, _) = extract_braces(body_part)?;
+        (block, true)
+    } else {
+        (body_part, false)
+    };
 
     if !after_body.starts_with("while") {
         return None;
@@ -885,7 +939,11 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&st
     }
     let (condition, _) = extract_paren(after_while)?;
 
-    let mut last = eval_block(ctx, body)?;
+    let mut last = if body_is_block {
+        eval_block(ctx, body)?
+    } else {
+        eval_function_body(ctx, body)?
+    };
     loop {
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -922,7 +980,11 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&st
         if !is_truthy(cond_val) {
             break;
         }
-        last = eval_block(ctx, body)?;
+        last = if body_is_block {
+            eval_block(ctx, body)?
+        } else {
+            eval_function_body(ctx, body)?
+        };
     }
 
     Some(last)

@@ -375,7 +375,43 @@ pub fn normalize_line_continuations(src: &str) -> String {
                 || trimmed.starts_with("for(")
                 || trimmed.starts_with("try")
                 || trimmed.starts_with("catch");
-            if is_control && !trimmed.contains('{') && !trimmed.trim_end().ends_with(';') {
+            let has_inline_body = if trimmed.starts_with("if")
+                || trimmed.starts_with("while")
+                || trimmed.starts_with("for")
+            {
+                if let Some(start) = trimmed.find('(') {
+                    let mut depth = 0i32;
+                    let mut end_pos = None;
+                    for (idx, ch) in trimmed[start..].char_indices() {
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end_pos = Some(start + idx);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(end) = end_pos {
+                        !trimmed[end + 1..].trim().is_empty()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else if trimmed.starts_with("else") {
+                trimmed != "else"
+            } else if trimmed.starts_with("do") {
+                trimmed != "do"
+            } else {
+                false
+            };
+
+            if is_control && !trimmed.contains('{') && !trimmed.trim_end().ends_with(';') && !has_inline_body {
                 if let Some(next) = lines.next() {
                     current.push(' ');
                     current.push_str(next.trim_start());
@@ -688,6 +724,23 @@ pub fn split_statements(src: &str) -> Option<Vec<&str>> {
         }
         if (b == b';' || b == b'\n') && depth == 0 {
             let part = s[start..i].trim();
+            let p = part.trim();
+            let rest = s[i + 1..].trim_start();
+            if rest.starts_with("else") {
+                continue;
+            }
+            if b == b'\n' {
+                if p == "else" || p == "do" {
+                    continue;
+                }
+                let looks_like_control = (p.starts_with("if ") || p.starts_with("if(")
+                    || p.starts_with("while ") || p.starts_with("while(")
+                    || p.starts_with("for ") || p.starts_with("for("))
+                    && p.ends_with(')');
+                if looks_like_control {
+                    continue;
+                }
+            }
             if !part.is_empty() {
                 out.push(part);
             }

@@ -1121,25 +1121,27 @@ impl Context {
 
     unsafe fn array_set(&mut self, obj: *mut HeapObject, idx: u32, value: Value) -> Result<(), ()> {
         let len = (*obj).array_len as usize;
-        if idx as usize > len {
-            return Err(());
-        }
-        if idx as usize == len {
-            let new_len = len + 1;
+        let idx_usize = idx as usize;
+        if idx_usize >= len {
+            let new_len = idx_usize + 1;
             if new_len > (*obj).array_cap as usize {
                 self.array_grow(obj, new_len)?;
             }
             if (*obj).elements.is_null() {
                 return Err(());
             }
-            *(*obj).elements.add(len) = value;
+            // Fill holes with undefined
+            for i in len..idx_usize {
+                *(*obj).elements.add(i) = Value::UNDEFINED;
+            }
+            *(*obj).elements.add(idx_usize) = value;
             (*obj).array_len = new_len as u32;
             return Ok(());
         }
         if (*obj).elements.is_null() {
             return Err(());
         }
-        *(*obj).elements.add(idx as usize) = value;
+        *(*obj).elements.add(idx_usize) = value;
         Ok(())
     }
 
@@ -1150,7 +1152,20 @@ impl Context {
         };
         let current = (*obj).array_len as usize;
         if new_len > current {
-            return Err(());
+            if new_len > (*obj).array_cap as usize {
+                self.array_grow(obj, new_len)?;
+            }
+            if !(*obj).elements.is_null() {
+                for i in current..new_len {
+                    *(*obj).elements.add(i) = Value::UNDEFINED;
+                }
+            }
+        } else if new_len < current {
+            if !(*obj).elements.is_null() {
+                for i in new_len..current {
+                    *(*obj).elements.add(i) = Value::UNDEFINED;
+                }
+            }
         }
         (*obj).array_len = new_len as u32;
         Ok(())
