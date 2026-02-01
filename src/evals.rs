@@ -234,6 +234,9 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s == "RangeError" {
         return Some(builtin_or_global("RangeError", "__builtin_RangeError__"));
     }
+    if s == "Function" {
+        return Some(builtin_or_global("Function", "__builtin_Function__"));
+    }
     if s == "NaN" {
         return Some(number_to_value(ctx, f64::NAN));
     }
@@ -437,6 +440,8 @@ pub fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
 }
 
 /// Evaluate an object literal: {a: 1, b: 2}
+/// Also handles getter/setter syntax: {get x() { return b; }, set x(v) { b = v; }}
+/// And method shorthand: {f(v) { return v + 1 }}
 pub fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let inner = src.trim();
     let inner = &inner[1..inner.len().saturating_sub(1)];
@@ -446,6 +451,113 @@ pub fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
         return None;
     }
     for entry in entries {
+        let entry = entry.trim();
+
+        // Check for getter: get propertyName() { ... }
+        if entry.starts_with("get ") {
+            let rest = entry[4..].trim_start();
+            // Find the property name and the function definition
+            if let Some(paren_pos) = rest.find('(') {
+                let prop_name = rest[..paren_pos].trim();
+                // Make sure it's not "get: value" (property named "get")
+                if !prop_name.is_empty() && is_identifier(prop_name) {
+                    // Build a function from the rest: () { ... }
+                    let func_src = &rest[paren_pos..];
+                    if let Some((params_str, after_params)) = extract_paren(func_src) {
+                        let after_params = after_params.trim_start();
+                        if after_params.starts_with('{') {
+                            if let Some((body, _tail)) = extract_braces(after_params) {
+                                // Create the getter function (no parameters)
+                                let func = create_function(ctx, &[], body)?;
+                                // Store as __get__propertyName
+                                let getter_key = format!("__get__{}", prop_name);
+                                let res = js_set_property_str(ctx, obj, &getter_key, func);
+                                if res.is_exception() {
+                                    return None;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for setter: set propertyName(v) { ... }
+        if entry.starts_with("set ") {
+            let rest = entry[4..].trim_start();
+            // Find the property name and the function definition
+            if let Some(paren_pos) = rest.find('(') {
+                let prop_name = rest[..paren_pos].trim();
+                // Make sure it's not "set: value" (property named "set")
+                if !prop_name.is_empty() && is_identifier(prop_name) {
+                    // Build a function from the rest: (v) { ... }
+                    let func_src = &rest[paren_pos..];
+                    if let Some((params_str, after_params)) = extract_paren(func_src) {
+                        let after_params = after_params.trim_start();
+                        if after_params.starts_with('{') {
+                            if let Some((body, _tail)) = extract_braces(after_params) {
+                                // Parse parameters
+                                let param_list = split_top_level(params_str)?;
+                                let mut params = Vec::new();
+                                for p in param_list {
+                                    let p = p.trim();
+                                    if !p.is_empty() {
+                                        params.push(p.to_string());
+                                    }
+                                }
+                                // Create the setter function
+                                let func = create_function(ctx, &params, body)?;
+                                // Store as __set__propertyName
+                                let setter_key = format!("__set__{}", prop_name);
+                                let res = js_set_property_str(ctx, obj, &setter_key, func);
+                                if res.is_exception() {
+                                    return None;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for method shorthand: methodName(args) { ... }
+        // Look for pattern: identifier(params) { body }
+        if let Some(paren_pos) = entry.find('(') {
+            let potential_name = entry[..paren_pos].trim();
+            // Check it's an identifier and not a getter/setter property (those have ":")
+            if is_identifier(potential_name) && !entry.contains(':') {
+                let func_src = &entry[paren_pos..];
+                if let Some((params_str, after_params)) = extract_paren(func_src) {
+                    let after_params = after_params.trim_start();
+                    if after_params.starts_with('{') {
+                        if let Some((body, tail)) = extract_braces(after_params) {
+                            if tail.trim().is_empty() {
+                                // Parse parameters
+                                let param_list = split_top_level(params_str)?;
+                                let mut params = Vec::new();
+                                for p in param_list {
+                                    let p = p.trim();
+                                    if !p.is_empty() {
+                                        params.push(p.to_string());
+                                    }
+                                }
+                                // Create the method function
+                                let func = create_function(ctx, &params, body)?;
+                                let res = js_set_property_str(ctx, obj, potential_name, func);
+                                if res.is_exception() {
+                                    return None;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Regular property: key: value
         let mut parts = entry.splitn(2, ':');
         let key = parts.next()?.trim();
         let value_src = parts.next()?.trim();
@@ -457,6 +569,13 @@ pub fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
             key
         };
         let val = eval_expr(ctx, value_src)?;
+
+        // Handle __proto__ specially - set the prototype of the object
+        if key_str == "__proto__" {
+            ctx.set_object_proto(obj, val);
+            continue;
+        }
+
         let res = js_set_property_str(ctx, obj, key_str, val);
         if res.is_exception() {
             return None;

@@ -42,19 +42,36 @@ extract_and_run_test() {
     local test_file="$1"
     local test_name="$2"
     local test_path="$TESTS_DIR/$test_file"
-    
+
     if [ ! -f "$test_path" ]; then
         echo -e "${RED}  ✗ File not found: $test_file${NC}"
         return 1
     fi
-    
+
     # Create a test runner that calls the specific test function
     local tmp_test="$TMP_DIR/${test_name}.js"
-    
-    # Copy helper functions and the test function, then call it
+
+    # Copy helper functions (non-test functions) and the test function, then call it
     {
-        # Extract everything before the test functions (portable: drop last line)
-        sed -n '1,/^function test_/p' "$test_path" | sed '$d'
+        # Extract all non-test functions (functions not starting with "test_")
+        # This uses awk to extract function blocks that don't start with "function test_"
+        awk '
+            /^function [^t]/ || /^function t[^e]/ || /^function te[^s]/ || /^function tes[^t]/ || /^function test[^_]/ {
+                in_helper = 1
+            }
+            /^function test_/ {
+                in_helper = 0
+            }
+            in_helper {
+                print
+            }
+            /^}$/ && in_helper {
+                in_helper = 0
+                print ""
+            }
+        ' "$test_path"
+        # Also extract everything before the first function (global variables, etc.)
+        awk '/^function / {exit} {print}' "$test_path"
         # Extract the specific test function
         sed -n "/^function ${test_name}(/,/^}/p" "$test_path"
         # Call the test function

@@ -330,6 +330,19 @@ pub fn js_throw_out_of_memory(_ctx: &mut JSContextImpl) -> JSValue {
 }
 
 pub fn js_get_property_str(_ctx: &mut JSContextImpl, _this_obj: JSValue, _str: &str) -> JSValue {
+    // Check for getter first (unless we're looking for a __get__ or __set__ property itself)
+    if !_str.starts_with("__get__") && !_str.starts_with("__set__") {
+        let getter_key = format!("__get__{}", _str);
+        let getter = _ctx.get_property_str(_this_obj, getter_key.as_bytes());
+        if let Some(getter_fn) = getter {
+            if !getter_fn.is_undefined() {
+                // Call the getter with `this` bound to _this_obj
+                if let Some(result) = crate::parser::call_closure_with_this(_ctx, getter_fn, _this_obj, &[]) {
+                    return result;
+                }
+            }
+        }
+    }
     _ctx.get_property_str(_this_obj, _str.as_bytes()).unwrap_or(Value::UNDEFINED)
 }
 
@@ -343,6 +356,19 @@ pub fn js_set_property_str(
     _str: &str,
     _val: JSValue,
 ) -> JSValue {
+    // Check for setter first (unless we're setting a __get__ or __set__ property itself)
+    if !_str.starts_with("__get__") && !_str.starts_with("__set__") {
+        let setter_key = format!("__set__{}", _str);
+        let setter = _ctx.get_property_str(_this_obj, setter_key.as_bytes());
+        if let Some(setter_fn) = setter {
+            if !setter_fn.is_undefined() {
+                // Call the setter with `this` bound to _this_obj
+                if let Some(result) = crate::parser::call_closure_with_this(_ctx, setter_fn, _this_obj, &[_val]) {
+                    return result;
+                }
+            }
+        }
+    }
     if _ctx.set_property_str(_this_obj, _str.as_bytes(), _val) {
         _val
     } else {
@@ -2229,6 +2255,41 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.starts_with("typeof ") {
         let operand = s[7..].trim();
         let val = eval_expr(ctx, operand)?;
+
+        // Check for builtin function markers (these are strings that represent constructor functions)
+        if js_is_string(ctx, val) != 0 {
+            if let Some(bytes) = ctx.string_bytes(val) {
+                if let Ok(str_val) = core::str::from_utf8(bytes) {
+                    // Constructor functions that should return "function"
+                    if str_val == "__builtin_Object__" ||
+                       str_val == "__builtin_Array__" ||
+                       str_val == "__builtin_String__" ||
+                       str_val == "__builtin_Number__" ||
+                       str_val == "__builtin_Date__" ||
+                       str_val == "__builtin_RegExp__" ||
+                       str_val == "__builtin_Function__" ||
+                       str_val == "__builtin_Error__" ||
+                       str_val == "__builtin_TypeError__" ||
+                       str_val == "__builtin_ReferenceError__" ||
+                       str_val == "__builtin_SyntaxError__" ||
+                       str_val == "__builtin_RangeError__" ||
+                       str_val == "__builtin_parseInt__" ||
+                       str_val == "__builtin_parseFloat__" ||
+                       str_val == "__builtin_eval__" ||
+                       str_val == "__builtin_isNaN__" ||
+                       str_val == "__builtin_isFinite__" {
+                        return Some(js_new_string(ctx, "function"));
+                    }
+                    // Objects that should return "object"
+                    if str_val == "__builtin_Math__" ||
+                       str_val == "__builtin_JSON__" ||
+                       str_val == "__builtin_console__" {
+                        return Some(js_new_string(ctx, "object"));
+                    }
+                }
+            }
+        }
+
         let type_str = if val.is_bool() {
             "boolean"
         } else if val.is_number() {
@@ -5005,10 +5066,108 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_Function_call__" {
+                        // Function.prototype.call(thisArg, arg1, arg2, ...)
+                        // this_val contains the original function
+                        if js_is_function(ctx, this_val) != 0 {
+                            let new_this = if args.is_empty() { Value::UNDEFINED } else { args[0] };
+                            let call_args: Vec<JSValue> = args.iter().skip(1).copied().collect();
+                            if let Some(result) = crate::parser::call_closure_with_this(ctx, this_val, new_this, &call_args) {
+                                val = result;
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                    } else if marker == "__builtin_Function_apply__" {
+                        // Function.prototype.apply(thisArg, argsArray)
+                        // this_val contains the original function
+                        if js_is_function(ctx, this_val) != 0 {
+                            let new_this = if args.is_empty() { Value::UNDEFINED } else { args[0] };
+                            let call_args: Vec<JSValue> = if args.len() >= 2 && ctx.object_class_id(args[1]).is_some() {
+                                // args[1] is an array-like object
+                                let arr = args[1];
+                                let len = js_get_property_str(ctx, arr, "length");
+                                let len_val = len.int32().unwrap_or(0) as usize;
+                                (0..len_val).map(|i| js_get_property_uint32(ctx, arr, i as u32)).collect()
+                            } else {
+                                Vec::new()
+                            };
+                            if let Some(result) = crate::parser::call_closure_with_this(ctx, this_val, new_this, &call_args) {
+                                val = result;
+                            } else {
+                                val = Value::UNDEFINED;
+                            }
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                    } else if marker == "__builtin_Function_bind__" {
+                        // Function.prototype.bind(thisArg, arg1, ...)
+                        // Returns a new function with bound this and arguments
+                        // this_val contains the original function
+                        if js_is_function(ctx, this_val) != 0 {
+                            // Create a bound function object
+                            let bound_this = if args.is_empty() { Value::UNDEFINED } else { args[0] };
+                            let bound_args: Vec<JSValue> = args.iter().skip(1).copied().collect();
+
+                            // Create a wrapper function that calls the original with bound this and args
+                            // For now, we create an object that stores the bound values
+                            let bound_func = js_new_object(ctx);
+                            js_set_property_str(ctx, bound_func, "__bound_func__", this_val);
+                            js_set_property_str(ctx, bound_func, "__bound_this__", bound_this);
+
+                            // Store bound args as an array
+                            let bound_args_arr = js_new_array(ctx, bound_args.len() as i32);
+                            for (i, arg) in bound_args.iter().enumerate() {
+                                js_set_property_uint32(ctx, bound_args_arr, i as u32, *arg);
+                            }
+                            js_set_property_str(ctx, bound_func, "__bound_args__", bound_args_arr);
+
+                            // Mark it as a bound function
+                            js_set_property_str(ctx, bound_func, "__is_bound__", Value::TRUE);
+
+                            val = bound_func;
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
                     }
                 }
             }
-            
+
+            // Check if val is a bound function (created by bind())
+            if let Some(class_id) = ctx.object_class_id(val) {
+                if class_id == JSObjectClassEnum::Object as u32 {
+                    let is_bound = js_get_property_str(ctx, val, "__is_bound__");
+                    if is_bound == Value::TRUE {
+                        let orig_func = js_get_property_str(ctx, val, "__bound_func__");
+                        let bound_this = js_get_property_str(ctx, val, "__bound_this__");
+                        let bound_args_arr = js_get_property_str(ctx, val, "__bound_args__");
+
+                        // Collect bound args
+                        let bound_args_len = js_get_property_str(ctx, bound_args_arr, "length")
+                            .int32().unwrap_or(0) as usize;
+                        let mut all_args: Vec<JSValue> = (0..bound_args_len)
+                            .map(|i| js_get_property_uint32(ctx, bound_args_arr, i as u32))
+                            .collect();
+                        // Append call args
+                        all_args.extend(args.iter().copied());
+
+                        if let Some(result) = crate::parser::call_closure_with_this(ctx, orig_func, bound_this, &all_args) {
+                            val = result;
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+
             // Otherwise use the standard call mechanism
             for arg in args.iter().rev() {
                 js_push_arg(ctx, *arg);
@@ -5942,7 +6101,26 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     }
                 }
             }
-            
+
+            // Function.prototype.call, apply, bind
+            if js_is_function(ctx, val) != 0 {
+                if name == "call" {
+                    val = js_new_string(ctx, "__builtin_Function_call__");
+                    rest = next;
+                    continue;
+                }
+                if name == "apply" {
+                    val = js_new_string(ctx, "__builtin_Function_apply__");
+                    rest = next;
+                    continue;
+                }
+                if name == "bind" {
+                    val = js_new_string(ctx, "__builtin_Function_bind__");
+                    rest = next;
+                    continue;
+                }
+            }
+
             val = js_get_property_str(ctx, val, name);
             rest = next;
             continue;

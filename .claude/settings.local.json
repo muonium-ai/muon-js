@@ -5,7 +5,10 @@
       "Bash(bash:*)",
       "Bash(cargo build:*)",
       "Bash(cargo run:*)",
-      "Bash(./tests/run_integration.sh:*)"
+      "Bash(./tests/run_integration.sh:*)",
+      "Bash(./target/release/examples/eval:*)",
+      "Bash(make test-mquickjs-detailed:*)",
+      "Bash(git push:*)"
     ]
   }
 }
