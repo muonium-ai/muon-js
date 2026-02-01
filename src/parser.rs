@@ -14,7 +14,7 @@ pub enum LValueKey {
     Name(String),
 }
 
-fn eval_block(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
+pub fn eval_block(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
     let parent = ctx.current_env();
     let env = js_new_object(ctx);
     js_set_property_str(ctx, env, "__parent__", parent);
@@ -93,6 +93,95 @@ pub fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<
     js_set_property_str(ctx, env, name, func);
     
     Some(func)
+}
+
+/// Parse labeled statement: "label: statement"
+/// Returns None if not a labeled statement, Some(None) if parsing failed, Some(Some(val)) on success
+pub fn parse_labeled_statement(ctx: &mut JSContextImpl, src: &str) -> Option<Option<JSValue>> {
+    let s = src.trim();
+    
+    // Find colon after a label - but skip colons inside parentheses/brackets/braces/strings
+    let bytes = s.as_bytes();
+    let mut colon_pos = None;
+    let mut paren_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
+    let mut brace_depth: i32 = 0;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if b == string_delim && (i == 0 || bytes[i - 1] != b'\\') {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        match b {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b':' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                colon_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    
+    let colon_pos = colon_pos?;
+    let label = &s[..colon_pos];
+    
+    // Verify label is a valid identifier (not part of ternary)
+    let label = label.trim();
+    if !is_identifier(label) {
+        return None;
+    }
+    
+    let statement = s[colon_pos + 1..].trim();
+    
+    // Check for block label: "label: { ... }"
+    if statement.starts_with('{') {
+        let (block, _) = extract_braces(statement)?;
+        let result = eval_block(ctx, block);
+        // Handle break label inside the block
+        match ctx.get_loop_control() {
+            crate::context::LoopControl::BreakLabel(ref l) if l == label => {
+                ctx.set_loop_control(crate::context::LoopControl::None);
+            }
+            _ => {}
+        }
+        return Some(result);
+    }
+    
+    // Check for labeled loop statements
+    if statement.starts_with("for ") || statement.starts_with("for(") {
+        return Some(parse_for_loop(ctx, statement, Some(label)));
+    }
+    if statement.starts_with("while ") || statement.starts_with("while(") {
+        return Some(parse_while_loop(ctx, statement, Some(label)));
+    }
+    if statement.starts_with("do ") || statement.starts_with("do{") {
+        return Some(parse_do_while_loop(ctx, statement, Some(label)));
+    }
+    
+    // Other labeled statement (just execute it)
+    let result = eval_function_body(ctx, statement);
+    // Handle break label
+    match ctx.get_loop_control() {
+        crate::context::LoopControl::BreakLabel(ref l) if l == label => {
+            ctx.set_loop_control(crate::context::LoopControl::None);
+        }
+        _ => {}
+    }
+    Some(result)
 }
 
 /// Extract content within braces { }
@@ -308,7 +397,7 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
             eval_function_body(ctx, then_body)?
         };
         // Propagate return control
-        if ctx.get_loop_control() == crate::context::LoopControl::Return {
+        if *ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
         }
         Some(result)
@@ -319,7 +408,7 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
             eval_function_body(ctx, else_src)?
         };
         // Propagate return control
-        if ctx.get_loop_control() == crate::context::LoopControl::Return {
+        if *ctx.get_loop_control() == crate::context::LoopControl::Return {
             return Some(ctx.get_return_value());
         }
         Some(result)
@@ -329,7 +418,8 @@ pub fn parse_if_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
 }
 
 /// Parse while loop: "while (condition) { block }"
-pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+/// Optional label parameter for labeled statements
+pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>) -> Option<JSValue> {
     let s = src.trim();
     let rest = if s.starts_with("while ") {
         &s[6..]
@@ -387,9 +477,25 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
+            crate::context::LoopControl::BreakLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    break;
+                }
+                // Propagate labeled break up
+                break;
+            }
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 continue;
+            }
+            crate::context::LoopControl::ContinueLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    continue;
+                }
+                // Propagate labeled continue up
+                break;
             }
             crate::context::LoopControl::Return => {
                 // Propagate return up
@@ -455,7 +561,8 @@ pub fn find_for_of_keyword(header: &str) -> Option<usize> {
 }
 
 /// Parse for...of loop
-pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, after_header: &str) -> Option<JSValue> {
+/// Optional label parameter for labeled statements
+pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, after_header: &str, label: Option<&str>) -> Option<JSValue> {
     let var_part = header[..of_pos].trim();
     let iter_expr = header[of_pos + 3..].trim();
 
@@ -510,9 +617,22 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
                                 ctx.set_loop_control(crate::context::LoopControl::None);
                                 break;
                             }
+                            crate::context::LoopControl::BreakLabel(ref l) => {
+                                if label == Some(l.as_str()) {
+                                    ctx.set_loop_control(crate::context::LoopControl::None);
+                                }
+                                break;
+                            }
                             crate::context::LoopControl::Continue => {
                                 ctx.set_loop_control(crate::context::LoopControl::None);
                                 continue;
+                            }
+                            crate::context::LoopControl::ContinueLabel(ref l) => {
+                                if label == Some(l.as_str()) {
+                                    ctx.set_loop_control(crate::context::LoopControl::None);
+                                    continue;
+                                }
+                                break;
                             }
                             crate::context::LoopControl::Return => {
                                 ctx.pop_env();
@@ -534,7 +654,8 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
 }
 
 /// Parse for...in loop
-pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, after_header: &str) -> Option<JSValue> {
+/// Optional label parameter for labeled statements
+pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, after_header: &str, label: Option<&str>) -> Option<JSValue> {
     let var_part = header[..in_pos].trim();
     let obj_expr = header[in_pos + 4..].trim();
 
@@ -576,8 +697,21 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
+            crate::context::LoopControl::BreakLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                }
+                break;
+            }
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
+            }
+            crate::context::LoopControl::ContinueLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                } else {
+                    break;
+                }
             }
             crate::context::LoopControl::Return => {
                 break;
@@ -608,7 +742,8 @@ pub fn get_object_keys(ctx: &mut JSContextImpl, obj: JSValue) -> Option<Vec<Stri
 }
 
 /// Parse for loop: "for (init; condition; update) { block }"
-pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+/// Optional label parameter for labeled statements
+pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>) -> Option<JSValue> {
     let s = src.trim();
     let rest = if s.starts_with("for ") {
         &s[4..]
@@ -627,11 +762,11 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let after_header = after_header.trim_start();
 
     if let Some(in_pos) = find_for_in_keyword(header) {
-        return parse_for_in_loop(ctx, header, in_pos, after_header);
+        return parse_for_in_loop(ctx, header, in_pos, after_header, label);
     }
 
     if let Some(of_pos) = find_for_of_keyword(header) {
-        return parse_for_of_loop(ctx, header, of_pos, after_header);
+        return parse_for_of_loop(ctx, header, of_pos, after_header, label);
     }
 
     let parts: Vec<&str> = header.split(';').collect();
@@ -642,10 +777,14 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let condition = parts[1].trim();
     let update = parts[2].trim();
     
-    if !after_header.starts_with('{') {
-        return None;
-    }
-    let (body, _) = extract_braces(after_header)?;
+    // Extract body - can be either { block } or single statement
+    let body = if after_header.starts_with('{') {
+        let (b, _) = extract_braces(after_header)?;
+        b.to_string()
+    } else {
+        // Single statement body (e.g., "for(...) statement;")
+        after_header.to_string()
+    };
     
     let loop_parent = ctx.current_env();
     let loop_env = js_new_object(ctx);
@@ -674,15 +813,32 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
         }
         
-        last = eval_block(ctx, body)?;
+        last = eval_function_body(ctx, &body)?;
         
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
+            crate::context::LoopControl::BreakLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    break;
+                }
+                // Propagate labeled break up
+                break;
+            }
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
+            }
+            crate::context::LoopControl::ContinueLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    // Continue this loop
+                } else {
+                    // Propagate labeled continue up
+                    break;
+                }
             }
             crate::context::LoopControl::Return => {
                 break;
@@ -700,7 +856,8 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 }
 
 /// Parse do...while loop
-pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
+/// Optional label parameter for labeled statements
+pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>) -> Option<JSValue> {
     let s = src.trim();
     let rest = if s.starts_with("do ") {
         &s[3..]
@@ -735,8 +892,25 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
+            crate::context::LoopControl::BreakLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    break;
+                }
+                // Propagate labeled break up
+                break;
+            }
             crate::context::LoopControl::Continue => {
                 ctx.set_loop_control(crate::context::LoopControl::None);
+            }
+            crate::context::LoopControl::ContinueLabel(ref l) => {
+                if label == Some(l.as_str()) {
+                    ctx.set_loop_control(crate::context::LoopControl::None);
+                    // Continue this loop
+                } else {
+                    // Propagate labeled continue up
+                    break;
+                }
             }
             crate::context::LoopControl::Return => {
                 break;
@@ -921,7 +1095,7 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
             found_default = Some(case_body);
             if matched {
                 last = eval_function_body(ctx, case_body)?;
-                if ctx.get_loop_control() == crate::context::LoopControl::Break {
+                if *ctx.get_loop_control() == crate::context::LoopControl::Break {
                     ctx.set_loop_control(crate::context::LoopControl::None);
                     break;
                 }
@@ -931,7 +1105,7 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
 
         if matched {
             last = eval_function_body(ctx, case_body)?;
-            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+            if *ctx.get_loop_control() == crate::context::LoopControl::Break {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
@@ -943,7 +1117,7 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
         if switch_val.0 == case_val.0 {
             matched = true;
             last = eval_function_body(ctx, case_body)?;
-            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+            if *ctx.get_loop_control() == crate::context::LoopControl::Break {
                 ctx.set_loop_control(crate::context::LoopControl::None);
                 break;
             }
@@ -953,7 +1127,7 @@ pub fn parse_switch_statement(ctx: &mut JSContextImpl, src: &str) -> Option<JSVa
     if !matched {
         if let Some(default_body) = found_default {
             last = eval_function_body(ctx, default_body)?;
-            if ctx.get_loop_control() == crate::context::LoopControl::Break {
+            if *ctx.get_loop_control() == crate::context::LoopControl::Break {
                 ctx.set_loop_control(crate::context::LoopControl::None);
             }
         }
@@ -1476,12 +1650,27 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     let body_bytes = ctx.string_bytes(body_val)?;
     let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
     
+    // Check if function has a name (for recursive named function expressions)
+    let func_name_val = js_get_property_str(ctx, func, "name");
+    let func_name: Option<String> = if !func_name_val.is_undefined() {
+        ctx.string_bytes(func_name_val)
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    
     let parent_env = js_get_property_str(ctx, func, "__env__");
     let env = js_new_object(ctx);
     js_set_property_str(ctx, env, "__parent__", parent_env);
     js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
     ctx.push_env(env);
     predeclare_block_bindings(ctx, &body_str);
+    
+    // Bind function name in local scope for recursive calls
+    if let Some(name) = func_name {
+        js_set_property_str(ctx, env, &name, func);
+    }
 
     // Populate `arguments` for function scope.
     let args_obj = js_new_array(ctx, args.len() as i32);
@@ -1515,7 +1704,7 @@ pub fn call_closure(ctx: &mut JSContextImpl, func: JSValue, args: &[JSValue]) ->
     
     let result = eval_function_body(ctx, &body_str);
     
-    if ctx.get_loop_control() == crate::context::LoopControl::Return {
+    if *ctx.get_loop_control() == crate::context::LoopControl::Return {
         ctx.set_loop_control(crate::context::LoopControl::None);
     }
 

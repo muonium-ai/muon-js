@@ -607,30 +607,46 @@ pub fn js_to_int32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSVal
     if let Some(v) = _val.int32() {
         Ok(v)
     } else if let Some(f) = _ctx.float_value(_val) {
-        if f.is_finite() { Ok(f as i32) } else { Ok(0) }
+        Ok(float_to_int32(f))
     } else {
         let n = js_to_number(_ctx, _val)?;
-        if !n.is_finite() {
-            Ok(0)
-        } else {
-            Ok(n as i32)
-        }
+        Ok(float_to_int32(n))
     }
+}
+
+/// Convert a float to int32 using JavaScript's ToInt32 algorithm
+fn float_to_int32(f: f64) -> i32 {
+    if !f.is_finite() || f == 0.0 {
+        return 0;
+    }
+    // Get the integer part (truncate towards zero)
+    let int = f.trunc();
+    // Compute int modulo 2^32 (always positive)
+    let int32bit = int.rem_euclid(4294967296.0) as u32;
+    // Convert to signed: if >= 2^31, subtract 2^32
+    int32bit as i32
 }
 
 pub fn js_to_uint32(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<u32, JSValue> {
     if let Some(v) = _val.int32() {
         Ok(v as u32)
     } else if let Some(f) = _ctx.float_value(_val) {
-        if f.is_finite() { Ok(f as u32) } else { Ok(0) }
+        Ok(float_to_uint32(f))
     } else {
         let n = js_to_number(_ctx, _val)?;
-        if !n.is_finite() {
-            Ok(0)
-        } else {
-            Ok(n as u32)
-        }
+        Ok(float_to_uint32(n))
     }
+}
+
+/// Convert a float to uint32 using JavaScript's ToUint32 algorithm
+fn float_to_uint32(f: f64) -> u32 {
+    if !f.is_finite() || f == 0.0 {
+        return 0;
+    }
+    // Get the integer part (truncate towards zero)
+    let int = f.trunc();
+    // Compute int modulo 2^32 (always positive)
+    int.rem_euclid(4294967296.0) as u32
 }
 
 pub fn js_to_int32_sat(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<i32, JSValue> {
@@ -1526,19 +1542,18 @@ pub fn JS_DumpMemory(ctx: &mut JSContextImpl, is_long: JSBool) {
     js_dump_memory(ctx, is_long)
 }
 
-fn int_to_decimal_bytes(mut value: i32, buf: &mut [u8; 12]) -> &[u8] {
+fn int_to_decimal_bytes(value: i32, buf: &mut [u8; 12]) -> &[u8] {
     if value == 0 {
         buf[0] = b'0';
         return &buf[0..1];
     }
     let negative = value < 0;
-    if negative {
-        value = -value;
-    }
+    // Use i64 to avoid overflow when negating i32::MIN
+    let mut abs_value: i64 = if negative { -(value as i64) } else { value as i64 };
     let mut idx = buf.len();
-    while value > 0 {
-        let digit = (value % 10) as u8;
-        value /= 10;
+    while abs_value > 0 {
+        let digit = (abs_value % 10) as u8;
+        abs_value /= 10;
         idx -= 1;
         buf[idx] = b'0' + digit;
     }
@@ -1585,6 +1600,43 @@ pub fn parse_numeric_expr(src: &str) -> Result<f64, ()> {
         return Err(());
     }
     Ok(value)
+}
+
+/// Evaluate property increment/decrement: obj.prop++ or obj[idx]++
+/// Returns the old value (postfix) or new value (prefix)
+fn eval_property_inc_dec(ctx: &mut JSContextImpl, lvalue: &str, is_inc: bool, is_prefix: bool) -> Option<JSValue> {
+    // Try to parse as property access: obj.prop or obj[idx]
+    let (obj, key) = parse_lvalue(ctx, lvalue)?;
+    if obj.is_exception() {
+        return None;
+    }
+    
+    // Get current value
+    let old_val = match &key {
+        LValueKey::Index(idx) => js_get_property_uint32(ctx, obj, *idx),
+        LValueKey::Name(ref name) => js_get_property_str(ctx, obj, name),
+    };
+    
+    // Convert to number and increment/decrement
+    let n = js_to_number(ctx, old_val).ok()?;
+    let new_val = if is_inc {
+        number_to_value(ctx, n + 1.0)
+    } else {
+        number_to_value(ctx, n - 1.0)
+    };
+    
+    // Set new value
+    match &key {
+        LValueKey::Index(idx) => {
+            js_set_property_uint32(ctx, obj, *idx, new_val);
+        }
+        LValueKey::Name(ref name) => {
+            js_set_property_str(ctx, obj, name, new_val);
+        }
+    }
+    
+    // Return old or new value depending on prefix/postfix
+    Some(if is_prefix { new_val } else { old_val })
 }
 
 pub fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
@@ -2016,6 +2068,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         let left = eval_expr(ctx, lhs)?;
         let right = eval_expr(ctx, rhs)?;
         let mut result = false;
+        
+        // Check if right is a builtin marker string
         if let Some(bytes) = ctx.string_bytes(right) {
             if let Ok(marker) = core::str::from_utf8(bytes) {
                 result = match marker {
@@ -2028,9 +2082,29 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     "__builtin_Object__" => ctx.object_class_id(left).is_some(),
                     _ => false,
                 };
+                return Some(Value::new_bool(result));
             }
         }
-        return Some(Value::new_bool(result));
+        
+        // For regular constructor functions, check prototype chain
+        // Get the constructor's prototype property
+        let ctor_proto = js_get_property_str(ctx, right, "prototype");
+        if ctor_proto.is_undefined() || ctor_proto.is_null() {
+            // Not a valid constructor, return false
+            return Some(Value::FALSE);
+        }
+        
+        // Walk the prototype chain of left
+        let mut proto = js_get_property_str(ctx, left, "__proto__");
+        while !proto.is_undefined() && !proto.is_null() {
+            // Use raw value comparison
+            if proto.0 == ctor_proto.0 {
+                return Some(Value::TRUE);
+            }
+            proto = js_get_property_str(ctx, proto, "__proto__");
+        }
+        
+        return Some(Value::FALSE);
     }
     // Check for arithmetic operators before splitting on base/tail
     if contains_arith_op(s) {
@@ -2040,37 +2114,49 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     // Check for postfix ++ or --
     if s.ends_with("++") || s.ends_with("--") {
-        let var_name = &s[..s.len() - 2].trim();
-        if is_identifier(var_name) {
+        let lvalue_str = s[..s.len() - 2].trim();
+        let is_inc = s.ends_with("++");
+        // Try property access: obj.prop++ or obj[idx]++
+        if let Some(result) = eval_property_inc_dec(ctx, lvalue_str, is_inc, false) {
+            return Some(result);
+        }
+        // Simple variable
+        if is_identifier(lvalue_str) {
             let env = ctx
-                .resolve_binding_env(var_name)
+                .resolve_binding_env(lvalue_str)
                 .unwrap_or_else(|| ctx.current_env());
-            let old_val = js_get_property_str(ctx, env, var_name);
+            let old_val = js_get_property_str(ctx, env, lvalue_str);
             let n = js_to_number(ctx, old_val).ok()?;
-            let new_val = if s.ends_with("++") {
+            let new_val = if is_inc {
                 number_to_value(ctx, n + 1.0)
             } else {
                 number_to_value(ctx, n - 1.0)
             };
-            js_set_property_str(ctx, env, var_name, new_val);
+            js_set_property_str(ctx, env, lvalue_str, new_val);
             return Some(old_val); // postfix returns old value
         }
     }
     // Check for prefix ++ or --
     if s.starts_with("++") || s.starts_with("--") {
-        let var_name = &s[2..].trim();
-        if is_identifier(var_name) {
+        let lvalue_str = s[2..].trim();
+        let is_inc = s.starts_with("++");
+        // Try property access: ++obj.prop or ++obj[idx]
+        if let Some(result) = eval_property_inc_dec(ctx, lvalue_str, is_inc, true) {
+            return Some(result);
+        }
+        // Simple variable
+        if is_identifier(lvalue_str) {
             let env = ctx
-                .resolve_binding_env(var_name)
+                .resolve_binding_env(lvalue_str)
                 .unwrap_or_else(|| ctx.current_env());
-            let old_val = js_get_property_str(ctx, env, var_name);
+            let old_val = js_get_property_str(ctx, env, lvalue_str);
             let n = js_to_number(ctx, old_val).ok()?;
-            let new_val = if s.starts_with("++") {
+            let new_val = if is_inc {
                 number_to_value(ctx, n + 1.0)
             } else {
                 number_to_value(ctx, n - 1.0)
             };
-            js_set_property_str(ctx, env, var_name, new_val);
+            js_set_property_str(ctx, env, lvalue_str, new_val);
             return Some(new_val); // prefix returns new value
         }
     }
@@ -5689,14 +5775,28 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
             continue;
         }
         
-        // Check for break/continue
+        // Check for break/continue (with optional label)
         if trimmed == "break" {
             ctx.set_loop_control(crate::context::LoopControl::Break);
             return Some(Value::UNDEFINED);
         }
+        if trimmed.starts_with("break ") {
+            let label = trimmed[6..].trim();
+            if is_identifier(label) {
+                ctx.set_loop_control(crate::context::LoopControl::BreakLabel(label.to_string()));
+                return Some(Value::UNDEFINED);
+            }
+        }
         if trimmed == "continue" {
             ctx.set_loop_control(crate::context::LoopControl::Continue);
             return Some(Value::UNDEFINED);
+        }
+        if trimmed.starts_with("continue ") {
+            let label = trimmed[9..].trim();
+            if is_identifier(label) {
+                ctx.set_loop_control(crate::context::LoopControl::ContinueLabel(label.to_string()));
+                return Some(Value::UNDEFINED);
+            }
         }
         
         // Check for return statement
@@ -5733,7 +5833,7 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
             if let Some(val) = parse_try_catch(ctx, trimmed) {
                 last = val;
-                if ctx.get_loop_control() != crate::context::LoopControl::None {
+                if *ctx.get_loop_control() != crate::context::LoopControl::None {
                     return Some(last);
                 }
                 continue;
@@ -5750,11 +5850,21 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
             return None;
         }
 
+        // Check for labeled statement (label: statement) BEFORE loop/switch checks
+        // A labeled statement like "L1: for(...)" starts with the label, not "for"
+        if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+            last = label_result?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
         // Check for if statement
         if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
             last = parse_if_statement(ctx, trimmed)?;
             // Check if break/continue was set during statement execution
-            if ctx.get_loop_control() != crate::context::LoopControl::None {
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
                 return Some(last);
             }
             continue;
@@ -5762,9 +5872,9 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         
         // Check for while loop
         if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
-            last = parse_while_loop(ctx, trimmed)?;
+            last = parse_while_loop(ctx, trimmed, None)?;
             // Check if break/continue was set during statement execution
-            if ctx.get_loop_control() != crate::context::LoopControl::None {
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
                 return Some(last);
             }
             continue;
@@ -5772,9 +5882,9 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         
         // Check for for loop
         if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
-            last = parse_for_loop(ctx, trimmed)?;
+            last = parse_for_loop(ctx, trimmed, None)?;
             // Check if break/continue was set during statement execution
-            if ctx.get_loop_control() != crate::context::LoopControl::None {
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
                 return Some(last);
             }
             continue;
@@ -5782,9 +5892,9 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         
         // Check for do...while loop
         if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
-            last = parse_do_while_loop(ctx, trimmed)?;
+            last = parse_do_while_loop(ctx, trimmed, None)?;
             // Check if break/continue was set during statement execution
-            if ctx.get_loop_control() != crate::context::LoopControl::None {
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
                 return Some(last);
             }
             continue;
@@ -5794,7 +5904,20 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
             last = parse_switch_statement(ctx, trimmed)?;
             // Check if break/continue was set during statement execution
-            if ctx.get_loop_control() != crate::context::LoopControl::None {
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        
+        // Check for bare block statement: { ... }
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            // Verify this looks like a block, not an object literal
+            // Object literals like { x: 1 } in expression position would have a colon
+            // Blocks have statements, not key-value pairs
+            let (block_content, _) = extract_braces(trimmed)?;
+            last = eval_block(ctx, block_content)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
                 return Some(last);
             }
             continue;
@@ -5807,7 +5930,7 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         }
         
         // Check if break/continue was set during statement execution
-        if ctx.get_loop_control() != crate::context::LoopControl::None {
+        if *ctx.get_loop_control() != crate::context::LoopControl::None {
             return Some(last);
         }
     }
@@ -5872,7 +5995,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         // Check for while loop
         if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
-            if let Some(val) = parse_while_loop(ctx, trimmed) {
+            if let Some(val) = parse_while_loop(ctx, trimmed, None) {
                 last = val;
                 any = true;
                 continue;
@@ -5881,7 +6004,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         // Check for for loop
         if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
-            if let Some(val) = parse_for_loop(ctx, trimmed) {
+            if let Some(val) = parse_for_loop(ctx, trimmed, None) {
                 last = val;
                 any = true;
                 continue;
@@ -5890,7 +6013,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         // Check for do...while loop
         if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
-            if let Some(val) = parse_do_while_loop(ctx, trimmed) {
+            if let Some(val) = parse_do_while_loop(ctx, trimmed, None) {
                 last = val;
                 any = true;
                 continue;
@@ -5937,6 +6060,25 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 continue;
             }
             return None;
+        }
+        // Check for labeled statement (label: statement) BEFORE bare blocks
+        if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+            last = label_result?;
+            any = true;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+        // Check for bare block statement: { ... }
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            let (block_content, _) = extract_braces(trimmed)?;
+            last = eval_block(ctx, block_content)?;
+            any = true;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
         }
         last = eval_expr(ctx, trimmed)?;
         if last.is_exception() {

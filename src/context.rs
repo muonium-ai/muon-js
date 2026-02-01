@@ -4,12 +4,14 @@ use crate::value::Value;
 const PROTO_SEARCH_LIMIT: usize = 64;
 const MAX_ROM_ATOM_TABLES: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopControl {
     None,
     Break,
     Continue,
     Return,
+    BreakLabel(String),
+    ContinueLabel(String),
 }
 
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
@@ -132,8 +134,18 @@ impl Context {
         self.loop_control = ctrl;
     }
 
-    pub fn get_loop_control(&self) -> LoopControl {
-        self.loop_control
+    pub fn get_loop_control(&self) -> &LoopControl {
+        &self.loop_control
+    }
+
+    /// Check if a labeled break matches the given label
+    pub fn is_break_label(&self, label: &str) -> bool {
+        matches!(&self.loop_control, LoopControl::BreakLabel(l) if l == label)
+    }
+
+    /// Check if a labeled continue matches the given label
+    pub fn is_continue_label(&self, label: &str) -> bool {
+        matches!(&self.loop_control, LoopControl::ContinueLabel(l) if l == label)
     }
 
     pub fn set_return_value(&mut self, val: Value) {
@@ -1016,8 +1028,16 @@ impl Context {
         if prop.is_null() {
             return false;
         }
-        (*prop).next = (*obj).prop_head;
-        (*obj).prop_head = prop;
+        // Add at tail to maintain insertion order
+        if (*obj).prop_head.is_null() {
+            (*obj).prop_head = prop;
+        } else {
+            let mut tail = (*obj).prop_head;
+            while !(*tail).next.is_null() {
+                tail = (*tail).next;
+            }
+            (*tail).next = prop;
+        }
         (*obj).prop_count = (*obj).prop_count.saturating_add(1);
         true
     }
