@@ -45,6 +45,11 @@ pub struct Context {
     stdlib_sorted_atoms_offset: u32,
     stdlib_global_object_offset: u32,
     stdlib_class_count: u32,
+    current_filename: String,
+    current_source: String,
+    current_line_starts: Vec<usize>,
+    current_error_offset: Option<usize>,
+    current_stmt_offset: usize,
 }
 
 impl Context {
@@ -79,6 +84,11 @@ impl Context {
             stdlib_sorted_atoms_offset: 0,
             stdlib_global_object_offset: 0,
             stdlib_class_count: 0,
+            current_filename: String::new(),
+            current_source: String::new(),
+            current_line_starts: Vec::new(),
+            current_error_offset: None,
+            current_stmt_offset: 0,
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -128,6 +138,86 @@ impl Context {
 
     pub fn get_exception(&self) -> Value {
         self.last_exception
+    }
+
+    pub fn set_current_source(&mut self, filename: &str, source: &str) {
+        self.current_filename = filename.to_string();
+        self.current_source = source.to_string();
+        self.current_line_starts.clear();
+        self.current_line_starts.push(0);
+        for (i, b) in source.as_bytes().iter().enumerate() {
+            if *b == b'\n' {
+                if i + 1 < source.len() {
+                    self.current_line_starts.push(i + 1);
+                }
+            }
+        }
+        self.current_error_offset = None;
+        self.current_stmt_offset = 0;
+    }
+
+    pub fn current_source(&self) -> &str {
+        &self.current_source
+    }
+
+    pub fn current_filename(&self) -> &str {
+        if self.current_filename.is_empty() {
+            "<eval>"
+        } else {
+            &self.current_filename
+        }
+    }
+
+    pub fn set_error_offset(&mut self, offset: usize) {
+        self.current_error_offset = Some(offset);
+    }
+
+    pub fn clear_error_offset(&mut self) {
+        self.current_error_offset = None;
+    }
+
+    pub fn current_error_offset(&self) -> Option<usize> {
+        self.current_error_offset
+    }
+
+    pub fn set_current_stmt_offset(&mut self, offset: usize) {
+        self.current_stmt_offset = offset;
+    }
+
+    pub fn current_stmt_offset(&self) -> usize {
+        self.current_stmt_offset
+    }
+
+    pub fn compute_line_col(&self, offset: usize) -> (usize, usize) {
+        let end = offset.min(self.current_source.len());
+        if self.current_line_starts.is_empty() {
+            return (1, end + 1);
+        }
+        let mut lo = 0usize;
+        let mut hi = self.current_line_starts.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.current_line_starts[mid] <= end {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let line_idx = lo.saturating_sub(1);
+        let line_start = self.current_line_starts[line_idx];
+        let line = line_idx + 1;
+        let col = end.saturating_sub(line_start) + 1;
+        (line, col)
+    }
+
+    pub fn format_stack(&self) -> Option<String> {
+        let offset = self.current_error_offset?;
+        let (line, col) = self.compute_line_col(offset);
+        let filename = self.current_filename();
+        Some(format!(
+            "at {}:{}:{}\nat {}:{}:{}",
+            filename, line, col, filename, line, col
+        ))
     }
 
     pub fn set_loop_control(&mut self, ctrl: LoopControl) {

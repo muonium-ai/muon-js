@@ -390,8 +390,9 @@ pub(crate) fn utf16_units_to_string_preserve_surrogates(units: &[u16]) -> String
 /// and is re-exported here for use by other modules.
 pub use crate::api::eval_expr;
 
-/// Strip line (`//`) and block (`/* */`) comments while preserving strings.
-pub fn strip_comments(src: &str) -> String {
+/// Strip line (`//`) and block (`/* */`) comments while preserving strings and length.
+/// Returns an error offset if an unterminated block comment is found.
+pub fn strip_comments_checked(src: &str) -> Result<String, usize> {
     let bytes = src.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
@@ -423,9 +424,12 @@ pub fn strip_comments(src: &str) -> String {
         if b == b'/' && i + 1 < bytes.len() {
             let next = bytes[i + 1];
             if next == b'/' {
-                // Line comment: skip until newline, then keep newline.
+                // Line comment: replace comment with spaces, keep newline.
+                out.push(b' ');
+                out.push(b' ');
                 i += 2;
                 while i < bytes.len() && bytes[i] != b'\n' {
+                    out.push(b' ');
                     i += 1;
                 }
                 if i < bytes.len() && bytes[i] == b'\n' {
@@ -435,23 +439,42 @@ pub fn strip_comments(src: &str) -> String {
                 continue;
             }
             if next == b'*' {
-                // Block comment: skip until closing */, then add space.
+                // Block comment: replace content with spaces, preserve newlines.
+                let start = i;
+                out.push(b' ');
+                out.push(b' ');
                 i += 2;
+                let mut closed = false;
                 while i + 1 < bytes.len() {
                     if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        out.push(b' ');
+                        out.push(b' ');
                         i += 2;
+                        closed = true;
                         break;
+                    }
+                    if bytes[i] == b'\n' {
+                        out.push(b'\n');
+                    } else {
+                        out.push(b' ');
                     }
                     i += 1;
                 }
-                out.push(b' ');
+                if !closed {
+                    return Err(start);
+                }
                 continue;
             }
         }
         out.push(b);
         i += 1;
     }
-    String::from_utf8(out).unwrap_or_else(|_| src.to_string())
+    String::from_utf8(out).map_err(|_| 0)
+}
+
+/// Strip comments without error reporting.
+pub fn strip_comments(src: &str) -> String {
+    strip_comments_checked(src).unwrap_or_else(|_| src.to_string())
 }
 
 /// Join single-line control flow without braces to keep statements together.
@@ -533,6 +556,16 @@ pub fn normalize_line_continuations(src: &str) -> String {
                     current.push(' ');
                     current.push_str(next.trim_start());
                     continue;
+                }
+            }
+            if trimmed.contains("function") && trimmed.trim_end().ends_with(')') {
+                if let Some(next) = lines.peek() {
+                    if next.trim_start().starts_with('{') {
+                        let next = lines.next().unwrap();
+                        current.push(' ');
+                        current.push_str(next.trim_start());
+                        continue;
+                    }
                 }
             }
             if line_ends_with_operator(&current) {
@@ -790,8 +823,8 @@ pub fn split_top_level(src: &str) -> Option<Vec<&str>> {
 
 /// Split source into statements (respecting control flow structures)
 pub fn split_statements(src: &str) -> Option<Vec<&str>> {
-    let s = src.trim();
-    if s.is_empty() {
+    let s = src;
+    if s.trim().is_empty() {
         return Some(Vec::new());
     }
     let bytes = s.as_bytes();
@@ -858,8 +891,8 @@ pub fn split_statements(src: &str) -> Option<Vec<&str>> {
                     continue;
                 }
             }
-            if !part.is_empty() {
-                out.push(part);
+            if !p.is_empty() {
+                out.push(p);
             }
             start = i + 1;
         }
@@ -870,6 +903,93 @@ pub fn split_statements(src: &str) -> Option<Vec<&str>> {
     let part = s[start..].trim();
     if !part.is_empty() {
         out.push(part);
+    }
+    Some(out)
+}
+
+/// Split source into statements with starting offsets (preserving leading whitespace).
+pub fn split_statements_with_offsets(src: &str) -> Option<Vec<(usize, &str)>> {
+    let s = src;
+    if s.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<(usize, &str)> = Vec::new();
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if b == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            in_string = true;
+            string_delim = b;
+            continue;
+        }
+        if b == b'[' || b == b'{' || b == b'(' {
+            depth += 1;
+            continue;
+        }
+        if b == b']' || b == b'}' || b == b')' {
+            depth -= 1;
+            if depth < 0 {
+                return None;
+            }
+            if depth == 0 && b == b'}' {
+                let rest = s[i + 1..].trim_start();
+                if rest.starts_with("else ") || rest.starts_with("else{") {
+                    continue;
+                }
+                let part = &s[start..=i];
+                let trimmed = part.trim();
+                if trimmed.starts_with("if ") || trimmed.starts_with("if(")
+                    || trimmed.starts_with("while ") || trimmed.starts_with("while(")
+                    || trimmed.starts_with("for ") || trimmed.starts_with("for(")
+                    || trimmed.starts_with("function ") {
+                    if !trimmed.is_empty() {
+                        out.push((start, part));
+                    }
+                    start = i + 1;
+                }
+            }
+            continue;
+        }
+        if (b == b';' || b == b'\n') && depth == 0 {
+            let part = &s[start..i];
+            let p = part.trim();
+            let rest = s[i + 1..].trim_start();
+            if rest.starts_with("else") {
+                continue;
+            }
+            if b == b'\n' {
+                if p == "else" || p == "do" {
+                    continue;
+                }
+                let looks_like_control = (p.starts_with("if ") || p.starts_with("if(")
+                    || p.starts_with("while ") || p.starts_with("while(")
+                    || p.starts_with("for ") || p.starts_with("for("))
+                    && p.ends_with(')');
+                if looks_like_control {
+                    continue;
+                }
+            }
+            if !p.is_empty() {
+                out.push((start, part));
+            }
+            start = i + 1;
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let part = &s[start..];
+    if !part.trim().is_empty() {
+        out.push((start, part));
     }
     Some(out)
 }

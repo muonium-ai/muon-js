@@ -24,7 +24,6 @@ use crate::evals::{
     eval_value,
     split_top_level,
     split_statements,
-    strip_comments,
     normalize_line_continuations,
     is_truthy,
 };
@@ -711,8 +710,16 @@ pub fn js_throw(_ctx: &mut JSContextImpl, obj: JSValue) -> JSValue {
 }
 
 pub fn js_throw_error(_ctx: &mut JSContextImpl, _error_num: JSObjectClassEnum, _msg: &str) -> JSValue {
-    let msg = js_new_string(_ctx, _msg);
-    _ctx.set_exception(msg);
+    let name = match _error_num {
+        JSObjectClassEnum::TypeError => "TypeError",
+        JSObjectClassEnum::ReferenceError => "ReferenceError",
+        JSObjectClassEnum::SyntaxError => "SyntaxError",
+        JSObjectClassEnum::RangeError => "RangeError",
+        JSObjectClassEnum::InternalError => "InternalError",
+        _ => "Error",
+    };
+    let obj = js_new_error_object(_ctx, _error_num, name, _msg);
+    _ctx.set_exception(obj);
     Value::EXCEPTION
 }
 
@@ -730,6 +737,10 @@ fn js_new_error_object(ctx: &mut JSContextImpl, class_id: JSObjectClassEnum, nam
     }
     let _ = js_set_property_str(ctx, obj, "name", name_val);
     let _ = js_set_property_str(ctx, obj, "message", msg_val);
+    if let Some(stack) = ctx.format_stack() {
+        let stack_val = js_new_string(ctx, &stack);
+        let _ = js_set_property_str(ctx, obj, "stack", stack_val);
+    }
     obj
 }
 
@@ -930,7 +941,8 @@ pub fn js_eval(
     _filename: &str,
     _eval_flags: i32,
 ) -> JSValue {
-    let src = _input.trim();
+    _ctx.set_current_source(_filename, _input);
+    let src = _input;
     if (_eval_flags & JS_EVAL_JSON) != 0 {
         if let Some(val) = crate::json::parse_json(_ctx, src) {
             return val;
@@ -946,7 +958,93 @@ pub fn js_eval(
         }
         return Value::UNDEFINED;
     }
-    Value::EXCEPTION
+    if _ctx.current_error_offset().is_none() {
+        let off = find_syntax_error_offset(_ctx.current_source());
+        _ctx.set_error_offset(off);
+    }
+    js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "syntax error")
+}
+
+fn find_syntax_error_offset(src: &str) -> usize {
+    if let Some(pos) = src.find("/*") {
+        if !src[pos + 2..].contains("*/") {
+            return pos;
+        }
+    }
+    if let Some(pos) = find_function_error_pos(src) {
+        return pos;
+    }
+    if let Some(pos) = find_number_followed_by_ident(src) {
+        return pos;
+    }
+    if let Some(pos) = find_regex_literal_start(src) {
+        return pos;
+    }
+    src.find(|c: char| !c.is_whitespace()).unwrap_or(0)
+}
+
+fn find_function_error_pos(src: &str) -> Option<usize> {
+    let trimmed = src.trim_start();
+    let start = src.len() - trimmed.len();
+    if !trimmed.starts_with("function") {
+        return None;
+    }
+    let mut i = start + "function".len();
+    let bytes = src.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    // parse optional name
+    let name_start = i;
+    if i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+    } else {
+        return Some(i);
+    }
+    // skip whitespace after name
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] != b'(' {
+        return Some(i.max(name_start));
+    }
+    None
+}
+
+fn find_number_followed_by_ident(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+                j += 1;
+            }
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
+                return Some(j);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn find_regex_literal_start(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'/' {
+            return Some(i);
+        }
+    }
+    None
 }
 
 pub fn js_gc(_ctx: &mut JSContextImpl) {
@@ -1126,6 +1224,8 @@ fn js_to_primitive(ctx: &mut JSContextImpl, val: JSValue, prefer_number: bool) -
                 if ctx.object_class_id(res).is_none() {
                     return Some(res);
                 }
+            } else if ctx.get_exception() != Value::UNDEFINED {
+                return Some(Value::EXCEPTION);
             }
         }
     }
@@ -1248,9 +1348,15 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
         Ok(f64::NAN)
     } else if _ctx.object_class_id(_val).is_some() {
         if let Some(prim) = js_to_primitive(_ctx, _val, true) {
+            if prim.is_exception() {
+                return Err(Value::EXCEPTION);
+            }
             if _ctx.object_class_id(prim).is_none() {
                 return js_to_number(_ctx, prim);
             }
+        }
+        if _ctx.get_exception() != Value::UNDEFINED {
+            return Err(Value::EXCEPTION);
         }
         Ok(f64::NAN)
     } else {
@@ -1307,7 +1413,7 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
                 return val;
             }
         }
-        let mut parser = ArithParser::new(_ctx, b"");
+        let mut parser = ArithParser::new(_ctx, b"", _ctx.current_stmt_offset());
         if let Ok(val) = parser.call_builtin_method(_ctx, func_val, _this_val, &args) {
             return val;
         }
@@ -1705,7 +1811,7 @@ fn call_function_value(
         if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
             return Some(val);
         }
-        let mut parser = ArithParser::new(ctx, b"");
+        let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
         if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
             return Some(val);
         }
@@ -2218,7 +2324,7 @@ fn eval_property_inc_dec(ctx: &mut JSContextImpl, lvalue: &str, is_inc: bool, is
 }
 
 pub fn parse_arith_expr(ctx: &mut JSContextImpl, src: &str) -> Result<JSValue, ()> {
-    let mut parser = ArithParser::new(ctx, src.as_bytes());
+    let mut parser = ArithParser::new(ctx, src.as_bytes(), ctx.current_stmt_offset());
     let value = parser.parse_expr()?;
     parser.skip_ws();
     if parser.pos != parser.input.len() {
@@ -2929,6 +3035,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.is_empty() {
         return None;
     }
+    let stmt_offset = ctx.current_stmt_offset();
     // Handle var/let/const declarations: var x = expr OR var x
     if s.starts_with("var ") || s.starts_with("let ") || s.starts_with("const ") {
         let (kind, rest) = if s.starts_with("var ") {
@@ -3037,6 +3144,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         let lhs = s[..i - 1].trim();
                         let rhs = s[i + 1..].trim();
                         if !lhs.is_empty() && !rhs.is_empty() {
+                            ctx.set_error_offset(stmt_offset + i - 1);
                             // Expand: x += 5 => x = x + 5
                             let op = prev as char;
                             let expanded = format!("{} = {} {} {}", lhs, lhs, op, rhs);
@@ -3049,6 +3157,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
     }
     if let Some((lhs, rhs)) = split_assignment(s) {
+        if is_identifier(lhs) {
+            let env = ctx.resolve_binding_env(lhs);
+            let global = js_get_global_object(ctx);
+            let has_global = ctx.has_property_str(global, lhs.as_bytes());
+            if env.is_none() && !has_global {
+                if let Some(pos) = s.find(lhs) {
+                    ctx.set_error_offset(stmt_offset + pos);
+                }
+                return Some(js_throw_error(ctx, JSObjectClassEnum::ReferenceError, "not defined"));
+            }
+        }
         let rhs_val = eval_expr(ctx, rhs)?;
         let (base, key) = parse_lvalue(ctx, lhs)?;
         if let LValueKey::Name(name) = &key {
@@ -3152,10 +3271,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if contains_arith_op(s) {
         if let Ok(val) = parse_arith_expr(ctx, s) {
             return Some(val);
+        } else if ctx.get_exception() != Value::UNDEFINED {
+            return Some(Value::EXCEPTION);
         }
     }
     // Check for postfix ++ or --
     if s.ends_with("++") || s.ends_with("--") {
+        if let Some(pos) = s.rfind("++").or_else(|| s.rfind("--")) {
+            ctx.set_error_offset(stmt_offset + pos);
+        }
         let lvalue_str = s[..s.len() - 2].trim();
         let is_inc = s.ends_with("++");
         // Try property access: obj.prop++ or obj[idx]++
@@ -3180,6 +3304,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     // Check for prefix ++ or --
     if s.starts_with("++") || s.starts_with("--") {
+        ctx.set_error_offset(stmt_offset);
         let lvalue_str = s[2..].trim();
         let is_inc = s.starts_with("++");
         // Try property access: ++obj.prop or ++obj[idx]
@@ -7578,15 +7703,28 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 
 /// Execute a function body and handle return statements
 pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
-    let cleaned = normalize_line_continuations(&strip_comments(body));
+    let cleaned = match crate::evals::strip_comments_checked(body) {
+        Ok(s) => normalize_line_continuations(&s),
+        Err(pos) => {
+            ctx.set_error_offset(pos);
+            return None;
+        }
+    };
     let stmts = split_statements(&cleaned)?;
     let mut last = Value::UNDEFINED;
+    let mut search_idx = 0usize;
     
     for stmt in stmts {
         let trimmed = stmt.trim();
         if trimmed.is_empty() {
             continue;
         }
+        if let Some(pos) = cleaned[search_idx..].find(trimmed) {
+            let base = search_idx + pos;
+            ctx.set_current_stmt_offset(base);
+            search_idx = base + trimmed.len();
+        }
+        ctx.clear_error_offset();
         
         // Check for break/continue (with optional label)
         if trimmed == "break" {
@@ -7737,7 +7875,16 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         }
         
         // Execute statement
-        last = eval_expr(ctx, trimmed)?;
+        match eval_expr(ctx, trimmed) {
+            Some(val) => {
+                last = val;
+            }
+            None => {
+                let pos = find_syntax_error_offset(trimmed);
+                ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+                return None;
+            }
+        }
         if last.is_exception() {
             return Some(last);
         }
@@ -7770,15 +7917,28 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
 
 
 pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
-    let cleaned = normalize_line_continuations(&strip_comments(src));
+    let cleaned = match crate::evals::strip_comments_checked(src) {
+        Ok(s) => normalize_line_continuations(&s),
+        Err(pos) => {
+            ctx.set_error_offset(pos);
+            return None;
+        }
+    };
     let stmts = split_statements(&cleaned)?;
     let mut last = Value::UNDEFINED;
     let mut any = false;
+    let mut search_idx = 0usize;
     for stmt in stmts {
         let trimmed = stmt.trim();
         if trimmed.is_empty() {
             continue;
         }
+        if let Some(pos) = cleaned[search_idx..].find(trimmed) {
+            let base = search_idx + pos;
+            ctx.set_current_stmt_offset(base);
+            search_idx = base + trimmed.len();
+        }
+        ctx.clear_error_offset();
         // Check for break/continue
         if trimmed == "break" {
             ctx.set_loop_control(crate::context::LoopControl::Break);
@@ -7795,6 +7955,9 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            if let Some(pos) = find_function_error_pos(trimmed) {
+                ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+            }
             return None;
         }
         // Check for if statement
@@ -7804,6 +7967,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for while loop
@@ -7813,6 +7977,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for for loop
@@ -7822,6 +7987,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for do...while loop
@@ -7831,6 +7997,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for switch statement
@@ -7840,6 +8007,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 any = true;
                 continue;
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for throw statement
@@ -7849,6 +8017,7 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 ctx.set_exception(val);
                 return Some(Value::EXCEPTION);
             }
+            ctx.set_error_offset(ctx.current_stmt_offset());
             return None;
         }
         // Check for throw statement
@@ -7893,7 +8062,16 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
             continue;
         }
-        last = eval_expr(ctx, trimmed)?;
+        match eval_expr(ctx, trimmed) {
+            Some(val) => {
+                last = val;
+            }
+            None => {
+                let pos = find_syntax_error_offset(trimmed);
+                ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+                return None;
+            }
+        }
         if last.is_exception() {
             return Some(last);
         }
@@ -8178,11 +8356,22 @@ struct ArithParser<'a> {
     ctx: *mut JSContextImpl,
     input: &'a [u8],
     pos: usize,
+    base_offset: usize,
 }
 
 impl<'a> ArithParser<'a> {
-    fn new(ctx: &mut JSContextImpl, input: &'a [u8]) -> Self {
-        Self { ctx, input, pos: 0 }
+    fn new(ctx: &mut JSContextImpl, input: &'a [u8], base_offset: usize) -> Self {
+        Self {
+            ctx,
+            input,
+            pos: 0,
+            base_offset,
+        }
+    }
+
+    fn set_error_at(&mut self, pos: usize) {
+        let ctx = unsafe { &mut *self.ctx };
+        ctx.set_error_offset(self.base_offset + pos);
     }
 
     fn parse_expr(&mut self) -> Result<JSValue, ()> {
@@ -8334,17 +8523,22 @@ impl<'a> ArithParser<'a> {
         loop {
             self.skip_ws();
             if self.peek() == Some(b'<') && self.peek_at(1) == Some(b'<') {
+                let op_pos = self.pos;
                 self.pos += 2;
                 let rhs = self.parse_additive()?;
+                self.set_error_at(op_pos);
                 value = self.left_shift(value, rhs)?;
             } else if self.peek() == Some(b'>') && self.peek_at(1) == Some(b'>') {
+                let op_pos = self.pos;
                 self.pos += 2;
                 if self.peek() == Some(b'>') {
                     self.pos += 1;
                     let rhs = self.parse_additive()?;
+                    self.set_error_at(op_pos);
                     value = self.unsigned_right_shift(value, rhs)?;
                 } else {
                     let rhs = self.parse_additive()?;
+                    self.set_error_at(op_pos);
                     value = self.right_shift(value, rhs)?;
                 }
             } else {
@@ -8363,8 +8557,10 @@ impl<'a> ArithParser<'a> {
                 Some(b'-') => b'-',
                 _ => break,
             };
+            let op_pos = self.pos;
             self.pos += 1;
             let rhs = self.parse_term()?;
+            self.set_error_at(op_pos);
             value = if op == b'+' {
                 self.add_values(value, rhs)?
             } else {
@@ -8388,8 +8584,10 @@ impl<'a> ArithParser<'a> {
                 Some(b'%') => b'%',
                 _ => break,
             };
+            let op_pos = self.pos;
             self.pos += 1;
             let rhs = self.parse_exponent()?;
+            self.set_error_at(op_pos);
             value = if op == b'*' {
                 self.mul_values(value, rhs)?
             } else if op == b'/' {
@@ -8406,8 +8604,10 @@ impl<'a> ArithParser<'a> {
         self.skip_ws();
         // Check for ** operator (right-associative)
         if self.peek() == Some(b'*') && self.peek_at(1) == Some(b'*') {
+            let op_pos = self.pos;
             self.pos += 2;
             let rhs = self.parse_exponent()?;  // Right-associative recursion
+            self.set_error_at(op_pos);
             self.pow_values(value, rhs)
         } else {
             Ok(value)
@@ -8417,6 +8617,7 @@ impl<'a> ArithParser<'a> {
     fn parse_unary(&mut self) -> Result<JSValue, ()> {
         self.skip_ws();
         if self.starts_with_keyword(b"typeof") {
+            let op_pos = self.pos;
             self.pos += 6;
             self.skip_ws();
             let ctx = unsafe { &mut *self.ctx };
@@ -8433,32 +8634,43 @@ impl<'a> ArithParser<'a> {
                 }
             }
             let val = self.parse_unary()?;
+            self.set_error_at(op_pos);
             return self.typeof_value(val);
         }
         if self.starts_with_keyword(b"void") {
+            let op_pos = self.pos;
             self.pos += 4;
             self.skip_ws();
             let _ = self.parse_unary()?;
+            self.set_error_at(op_pos);
             return Ok(Value::UNDEFINED);
         }
         if let Some(b'+') = self.peek() {
+            let op_pos = self.pos;
             self.pos += 1;
             let val = self.parse_postfix()?;
+            self.set_error_at(op_pos);
             return self.unary_plus(val);
         }
         if let Some(b'-') = self.peek() {
+            let op_pos = self.pos;
             self.pos += 1;
             let val = self.parse_postfix()?;
+            self.set_error_at(op_pos);
             return self.unary_minus(val);
         }
         if let Some(b'!') = self.peek() {
+            let op_pos = self.pos;
             self.pos += 1;
             let val = self.parse_postfix()?;
+            self.set_error_at(op_pos);
             return self.logical_not(val);
         }
         if let Some(b'~') = self.peek() {
+            let op_pos = self.pos;
             self.pos += 1;
             let val = self.parse_postfix()?;
+            self.set_error_at(op_pos);
             return self.bitwise_not(val);
         }
         self.parse_postfix()
@@ -8471,6 +8683,7 @@ impl<'a> ArithParser<'a> {
             self.skip_ws();
             match self.peek() {
                 Some(b'.') => {
+                    let op_pos = self.pos;
                     self.pos += 1;
                     let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
                     let (prop, remaining) = parse_identifier(rest).ok_or(())?;
@@ -8478,6 +8691,12 @@ impl<'a> ArithParser<'a> {
                     self.pos += consumed;
                     this_val = value;
                     let ctx = unsafe { &mut *self.ctx };
+
+                    if value.is_null() || value.is_undefined() {
+                        self.set_error_at(op_pos);
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "cannot read property");
+                        return Err(());
+                    }
 
                     // Check for built-in string methods
                     if js_is_string(ctx, value) != 0 {
@@ -8645,6 +8864,7 @@ impl<'a> ArithParser<'a> {
                     }
                 }
                 Some(b'[') => {
+                    let op_pos = self.pos;
                     self.pos += 1;
                     let index = self.parse_expr()?;
                     self.skip_ws();
@@ -8654,6 +8874,11 @@ impl<'a> ArithParser<'a> {
                     self.pos += 1;
                     this_val = value;
                     let ctx = unsafe { &mut *self.ctx };
+                    if value.is_null() || value.is_undefined() {
+                        self.set_error_at(op_pos);
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "cannot read property");
+                        return Err(());
+                    }
                     // Try as uint32 index first
                     if let Ok(idx) = js_to_uint32(ctx, index) {
                         value = js_get_property_uint32(ctx, value, idx);
@@ -8672,6 +8897,7 @@ impl<'a> ArithParser<'a> {
                     }
                 }
                 Some(b'(') => {
+                    let op_pos = self.pos;
                     // Function call - parse arguments
                     self.pos += 1;
                     let mut args = Vec::new();
@@ -8698,6 +8924,7 @@ impl<'a> ArithParser<'a> {
 
                     // Call the method using the builtin dispatch
                     let ctx = unsafe { &mut *self.ctx };
+                    self.set_error_at(op_pos);
                     value = self.call_builtin_method(ctx, value, this_val, &args)?;
                     this_val = Value::UNDEFINED;
                 }
@@ -10016,6 +10243,7 @@ impl<'a> ArithParser<'a> {
     }
 
     fn parse_regex_literal(&mut self) -> Result<JSValue, ()> {
+        let start_pos = self.pos;
         self.pos += 1; // skip '/'
         let mut pattern = Vec::new();
         let mut escaped = false;
@@ -10055,12 +10283,14 @@ impl<'a> ArithParser<'a> {
         let ctx = unsafe { &mut *self.ctx };
         let val = js_new_regexp(ctx, pattern_str, flags_str);
         if val.is_exception() {
+            self.set_error_at(start_pos);
             return Err(());
         }
         Ok(val)
     }
 
     fn parse_identifier_value(&mut self) -> Result<JSValue, ()> {
+        let start_pos = self.pos;
         let rest = core::str::from_utf8(&self.input[self.pos..]).map_err(|_| ())?;
         let (name, remaining) = parse_identifier(rest).ok_or(())?;
         let consumed = rest.len() - remaining.len();
@@ -10084,7 +10314,14 @@ impl<'a> ArithParser<'a> {
         if let Some(val) = eval_value(ctx, name) {
             return Ok(val);
         }
-        Err(())
+        let global = js_get_global_object(ctx);
+        let val = js_get_property_str(ctx, global, name);
+        if val.is_undefined() && !ctx.has_property_str(global, name.as_bytes()) {
+            self.set_error_at(start_pos);
+            js_throw_error(ctx, JSObjectClassEnum::ReferenceError, "not defined");
+            return Err(());
+        }
+        Ok(val)
     }
 
     fn parse_string(&mut self) -> Result<JSValue, ()> {

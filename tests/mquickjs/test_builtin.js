@@ -1019,14 +1019,19 @@ function test_line_column_numbers()
 {
     var f, e, tab;
 
+    console.log("test_line_column_numbers: start");
     /* The '@' character provides the expected position of the
        error. It is removed before evaluating the string. */
     
     /* parsing */
+    console.log("test_line_column_numbers: parsing 1");
     eval_error("\n 123 @a ", SyntaxError);
+    console.log("test_line_column_numbers: parsing 2");
     eval_error("\n  @/*  ", SyntaxError);
+    console.log("test_line_column_numbers: parsing 3");
     eval_error("function f  @a", SyntaxError);
     /* currently regexp syntax errors point to the start of the regexp */
+    console.log("test_line_column_numbers: parsing 4");
     eval_error("\n  @/aaa]/u", SyntaxError); 
 
     /* function definitions */
@@ -1037,39 +1042,59 @@ function test_line_column_numbers()
     assert(e.columnNumber, tab[2]);
 */
     /* errors */
+    console.log("test_line_column_numbers: errors 1");
     tab = get_string_pos('\n  Error@("hello");');
     e = (1, eval)(tab[0]);
     check_error_pos(e, Error, tab[1], tab[2]);
     
+    console.log("test_line_column_numbers: errors 2");
     eval_error('\n  throw Error@("hello");', Error);
 
     /* operators */
+    console.log("test_line_column_numbers: operators 1");
     eval_error('\n  1 + 2 @* poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 2");
     eval_error('\n  1 + "café" @* poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 3");
     eval_error('\n  1 + 2 @** poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 4");
     eval_error('\n  2 * @+ poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 5");
     eval_error('\n  2 * @- poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 6");
     eval_error('\n  2 * @~ poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 7");
     eval_error('\n  2 * @++ poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 8");
     eval_error('\n  2 * @-- poisoned_number;', Error, 1);
+    console.log("test_line_column_numbers: operators 9");
     eval_error('\n  2 * poisoned_number @++;', Error, 1);
+    console.log("test_line_column_numbers: operators 10");
     eval_error('\n  2 * poisoned_number @--;', Error, 1);
 
     /* accessors */
+    console.log("test_line_column_numbers: accessors 1");
     eval_error('\n 1 + null@[0];', TypeError); 
+    console.log("test_line_column_numbers: accessors 2");
     eval_error('\n 1 + null @. abcd;', TypeError); 
     //    eval_error('\n 1 + null @( 1234 );', TypeError);
+    console.log("test_line_column_numbers: accessors 3");
     eval_error('var obj = { get a() { throw Error("test"); } }\n 1 + obj @. a;',
                Error, 1);
+    console.log("test_line_column_numbers: accessors 4");
     eval_error('var obj = { set a(b) { throw Error("test"); } }\n obj @. a = 1;',
                Error, 1);
     
     /* variables reference */
+    console.log("test_line_column_numbers: reference 1");
     eval_error('\n  1 + @not_def', ReferenceError, 0);
 
     /* assignments */
+    console.log("test_line_column_numbers: assignments 1");
     eval_error('1 + (@not_def = 1)', ReferenceError, 0);
+    console.log("test_line_column_numbers: assignments 2");
     eval_error('1 + (@not_def += 2)', ReferenceError, 0);
+    console.log("test_line_column_numbers: assignments 3");
     eval_error('var a;\n 1 + (a @+= poisoned_number);', Error, 1);
 }
 

@@ -711,10 +711,14 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
     let var_part = header[..in_pos].trim();
     let obj_expr = header[in_pos + 4..].trim();
 
-    let var_name = if var_part.starts_with("var ") {
-        var_part[4..].trim()
+    let (decl_kind, lvalue_src) = if var_part.starts_with("var ") {
+        (Some("var"), var_part[4..].trim())
+    } else if var_part.starts_with("let ") {
+        (Some("let"), var_part[4..].trim())
+    } else if var_part.starts_with("const ") {
+        (Some("const"), var_part[6..].trim())
     } else {
-        var_part
+        (None, var_part)
     };
 
     if !after_header.starts_with('{') {
@@ -732,15 +736,31 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
     let keys = get_object_keys(ctx, obj_val)?;
 
     let mut last = Value::UNDEFINED;
-    let env = if var_part.starts_with("var ") {
+    let env = if decl_kind == Some("var") {
         ctx.current_var_env()
     } else {
         ctx.current_env()
     };
 
+    if decl_kind.is_some() && !is_identifier(lvalue_src) {
+        return None;
+    }
+
     for key in keys {
         let key_val = js_new_string(ctx, &key);
-        js_set_property_str(ctx, env, var_name, key_val);
+        if let Some(_) = decl_kind {
+            js_set_property_str(ctx, env, lvalue_src, key_val);
+        } else {
+            let (base, key) = parse_lvalue(ctx, lvalue_src)?;
+            match key {
+                LValueKey::Index(idx) => {
+                    js_set_property_uint32(ctx, base, idx, key_val);
+                }
+                LValueKey::Name(name) => {
+                    js_set_property_str(ctx, base, &name, key_val);
+                }
+            }
+        }
 
         last = eval_block(ctx, body)?;
 
