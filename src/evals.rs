@@ -245,7 +245,8 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     }
     if is_simple_string_literal(s) {
         let inner = &s[1..s.len() - 1];
-        return Some(js_new_string(ctx, inner));
+        let unescaped = unescape_string_literal(inner);
+        return Some(js_new_string(ctx, &unescaped));
     }
     if contains_arith_op(s) {
         if let Ok(val) = crate::api::parse_arith_expr(ctx, s) {
@@ -264,6 +265,77 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return Some(v);
     }
     None
+}
+
+fn unescape_string_literal(src: &str) -> String {
+    let mut units: Vec<u16> = Vec::new();
+    let mut chars = src.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut buf = [0u16; 2];
+            let slice = ch.encode_utf16(&mut buf);
+            units.extend_from_slice(slice);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => units.push('\n' as u16),
+            Some('r') => units.push('\r' as u16),
+            Some('t') => units.push('\t' as u16),
+            Some('b') => units.push(0x0008),
+            Some('f') => units.push(0x000C),
+            Some('v') => units.push(0x000B),
+            Some('\\') => units.push('\\' as u16),
+            Some('"') => units.push('"' as u16),
+            Some('\'') => units.push('\'' as u16),
+            Some('x') => {
+                let mut hex = String::new();
+                for _ in 0..2 {
+                    if let Some(h) = chars.next() {
+                        hex.push(h);
+                    }
+                }
+                if let Ok(v) = u16::from_str_radix(&hex, 16) {
+                    units.push(v);
+                }
+            }
+            Some('u') => {
+                if let Some('{') = chars.peek().copied() {
+                    let _ = chars.next();
+                    let mut hex = String::new();
+                    while let Some(h) = chars.next() {
+                        if h == '}' {
+                            break;
+                        }
+                        hex.push(h);
+                    }
+                    if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                        if v <= 0xFFFF {
+                            units.push(v as u16);
+                        } else {
+                            let v = v - 0x10000;
+                            let high = 0xD800 + ((v >> 10) as u16);
+                            let low = 0xDC00 + ((v & 0x3FF) as u16);
+                            units.push(high);
+                            units.push(low);
+                        }
+                    }
+                } else {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        if let Some(h) = chars.next() {
+                            hex.push(h);
+                        }
+                    }
+                    if let Ok(v) = u16::from_str_radix(&hex, 16) {
+                        units.push(v);
+                    }
+                }
+            }
+            Some(other) => units.push(other as u16),
+            None => break,
+        }
+    }
+    String::from_utf16_lossy(&units)
 }
 
 /// Evaluate an expression (handles assignments, operators, method calls, etc.)

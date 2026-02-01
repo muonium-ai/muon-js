@@ -347,6 +347,14 @@ pub fn js_get_property_str(_ctx: &mut JSContextImpl, _this_obj: JSValue, _str: &
 }
 
 pub fn js_get_property_uint32(_ctx: &mut JSContextImpl, _obj: JSValue, _idx: u32) -> JSValue {
+    if let Some(units) = string_utf16_units(_ctx, _obj) {
+        let idx = _idx as usize;
+        if idx < units.len() {
+            let s = String::from_utf16_lossy(&[units[idx]]);
+            return js_new_string(_ctx, &s);
+        }
+        return Value::UNDEFINED;
+    }
     _ctx.get_property_index(_obj, _idx).unwrap_or(Value::UNDEFINED)
 }
 
@@ -827,6 +835,18 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
     if let Some((idx, params)) = _ctx.c_function_info(func_val) {
         return call_c_function(_ctx, idx, params, _this_val, &args);
     }
+    if let Some(bytes) = _ctx.string_bytes(func_val) {
+        let marker_owned = core::str::from_utf8(bytes).ok().map(|s| s.to_string());
+        if let Some(marker) = marker_owned.as_deref() {
+            if let Some(val) = call_builtin_global_marker(_ctx, marker, &args) {
+                return val;
+            }
+        }
+        let mut parser = ArithParser::new(_ctx, b"");
+        if let Ok(val) = parser.call_builtin_method(_ctx, func_val, _this_val, &args) {
+            return val;
+        }
+    }
     js_throw_error(_ctx, JSObjectClassEnum::TypeError, "not a function")
 }
 
@@ -1148,7 +1168,11 @@ fn call_builtin_global_marker(
             if args.len() >= 1 {
                 if let Some(str_bytes) = ctx.string_bytes(args[0]) {
                     if let Ok(s) = core::str::from_utf8(str_bytes) {
-                        if let Ok(n) = s.trim().parse::<f64>() {
+                        let trimmed = s.trim_start();
+                        if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+                            return Some(number_to_value(ctx, 0.0));
+                        }
+                        if let Ok(n) = trimmed.parse::<f64>() {
                             return Some(number_to_value(ctx, n));
                         }
                     }
@@ -1738,8 +1762,16 @@ fn format_fixed(n: f64, digits: i32) -> String {
         }
         return "Infinity".to_string();
     }
-    let prec = digits.max(0) as usize;
-    format!("{:.*}", prec, n)
+    let prec = digits.max(0) as i32;
+    let factor = 10_f64.powi(prec);
+    let rounded = round_half_away_from_zero(n * factor) / factor;
+    if rounded == 0.0 && n.is_sign_negative() {
+        if prec > 0 {
+            return format!("-0.{:0width$}", 0, width = prec as usize);
+        }
+        return "-0".to_string();
+    }
+    format!("{:.*}", prec as usize, rounded)
 }
 
 fn format_exponential(n: f64, digits: Option<i32>) -> String {
@@ -1752,10 +1784,10 @@ fn format_exponential(n: f64, digits: Option<i32>) -> String {
         }
         return "Infinity".to_string();
     }
-    let s = match digits {
-        Some(d) => format!("{:.*e}", d as usize, n),
-        None => format!("{:e}", n),
-    };
+    if let Some(d) = digits {
+        return format_exponential_rounded(n, d);
+    }
+    let s = format!("{:e}", n);
     normalize_exponent(&s)
 }
 
@@ -1811,8 +1843,69 @@ fn format_precision(n: f64, precision: i32) -> String {
     if exp < -6 || exp >= precision {
         return format_exponential(n, Some(precision - 1));
     }
-    let frac = (precision - exp - 1).max(0) as usize;
-    format!("{:.*}", frac, n)
+    let frac = (precision - exp - 1).max(0) as i32;
+    let factor = 10_f64.powi(frac);
+    let rounded = round_half_away_from_zero(n * factor) / factor;
+    if rounded == 0.0 && n.is_sign_negative() {
+        if frac > 0 {
+            return format!("-0.{:0width$}", 0, width = frac as usize);
+        }
+        return "-0".to_string();
+    }
+    format!("{:.*}", frac as usize, rounded)
+}
+
+fn round_half_away_from_zero(n: f64) -> f64 {
+    if n.is_nan() || n.is_infinite() {
+        return n;
+    }
+    if n.is_sign_negative() {
+        return -round_half_away_from_zero(-n);
+    }
+    let floor = n.floor();
+    let frac = n - floor;
+    if frac > 0.5 {
+        floor + 1.0
+    } else if frac < 0.5 {
+        floor
+    } else {
+        floor + 1.0
+    }
+}
+
+fn format_exponential_rounded(n: f64, digits: i32) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        if n.is_sign_negative() {
+            return "-Infinity".to_string();
+        }
+        return "Infinity".to_string();
+    }
+    if n == 0.0 {
+        let mut s = String::from("0");
+        if digits > 0 {
+            s.push('.');
+            s.push_str(&"0".repeat(digits as usize));
+        }
+        s.push_str("e+0");
+        return s;
+    }
+    let sign = if n.is_sign_negative() { "-" } else { "" };
+    let abs = n.abs();
+    let mut exp = abs.log10().floor() as i32;
+    let mut normalized = abs / 10_f64.powi(exp);
+    let factor = 10_f64.powi(digits);
+    let rounded = round_half_away_from_zero(normalized * factor);
+    normalized = rounded / factor;
+    if normalized >= 10.0 {
+        normalized /= 10.0;
+        exp += 1;
+    }
+    let mut out = format!("{:.*}", digits as usize, normalized);
+    out = normalize_exponent(&format!("{}{}e{:+}", sign, out, exp));
+    out
 }
 
 fn compile_regex(
@@ -2603,30 +2696,22 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_string_substring__" {
                         if args.len() >= 1 && args.len() <= 2 {
-                            if let Some(start) = args[0].int32() {
-                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                    let start = start.max(0) as usize;
-                                    let start = start.min(str_bytes.len());
-                                    let end = if args.len() == 2 {
-                                        if let Some(e) = args[1].int32() {
-                                            let e = e.max(0) as usize;
-                                            e.min(str_bytes.len())
-                                        } else {
-                                            str_bytes.len()
-                                        }
-                                    } else {
-                                        str_bytes.len()
-                                    };
-                                    let (start, end) = if start > end { (end, start) } else { (start, end) };
-                                    // Copy the substring to avoid borrow issues
-                                    let substr_bytes = str_bytes[start..end].to_vec();
-                                    if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                        val = js_new_string(ctx, substr);
-                                        this_val = Value::UNDEFINED;
-                                        rest = next;
-                                        continue;
-                                    }
+                            if let Some(units) = string_utf16_units(ctx, this_val) {
+                                let len = units.len() as i32;
+                                let mut start = args[0].int32().unwrap_or(0).max(0).min(len);
+                                let mut end = if args.len() == 2 {
+                                    args[1].int32().unwrap_or(len).max(0).min(len)
+                                } else {
+                                    len
+                                };
+                                if start > end {
+                                    core::mem::swap(&mut start, &mut end);
                                 }
+                                let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                                val = js_new_string(ctx, &s);
+                                this_val = Value::UNDEFINED;
+                                rest = next;
+                                continue;
                             }
                         }
                         val = js_new_string(ctx, "");
@@ -2635,28 +2720,25 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         continue;
                     } else if marker == "__builtin_string_substr__" {
                         if args.len() >= 1 {
-                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                let len = str_bytes.len() as i32;
+                            if let Some(units) = string_utf16_units(ctx, this_val) {
+                                let len = units.len() as i32;
                                 let mut start = args[0].int32().unwrap_or(0);
                                 if start < 0 {
                                     start = (len + start).max(0);
                                 } else if start > len {
                                     start = len;
                                 }
-                                let mut end = len;
-                                if args.len() >= 2 {
-                                    let count = args[1].int32().unwrap_or(0).max(0);
-                                    end = (start + count).min(len);
-                                }
-                                let start_u = start as usize;
-                                let end_u = end.max(start) as usize;
-                                let substr_bytes = str_bytes[start_u..end_u].to_vec();
-                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                    val = js_new_string(ctx, substr);
-                                    this_val = Value::UNDEFINED;
-                                    rest = next;
-                                    continue;
-                                }
+                                let count = if args.len() >= 2 {
+                                    args[1].int32().unwrap_or(0).max(0)
+                                } else {
+                                    len - start
+                                };
+                                let end = (start + count).min(len);
+                                let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                                val = js_new_string(ctx, &s);
+                                this_val = Value::UNDEFINED;
+                                rest = next;
+                                continue;
                             }
                         }
                         val = js_new_string(ctx, "");
@@ -2717,29 +2799,28 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                         }
                     } else if marker == "__builtin_string_slice__" {
-                        if args.len() == 2 {
-                            if let (Some(start), Some(end)) = (args[0].int32(), args[1].int32()) {
-                                if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                    let len = str_bytes.len() as i32;
-                                    let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                                    let end = if end < 0 { (len + end).max(0) } else { end.min(len) } as usize;
-                                    if start <= end {
-                                        // Copy the substring to avoid borrow issues
-                                        let substr_bytes = str_bytes[start..end].to_vec();
-                                        if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                            val = js_new_string(ctx, substr);
-                                            this_val = Value::UNDEFINED;
-                                            rest = next;
-                                            continue;
-                                        }
-                                    } else {
-                                        val = js_new_string(ctx, "");
-                                        this_val = Value::UNDEFINED;
-                                        rest = next;
-                                        continue;
-                                    }
-                                }
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            let len = units.len() as i32;
+                            let mut start = if args.len() >= 1 { args[0].int32().unwrap_or(0) } else { 0 };
+                            let mut end = if args.len() >= 2 { args[1].int32().unwrap_or(len) } else { len };
+                            if start < 0 {
+                                start = (len + start).max(0);
+                            } else {
+                                start = start.min(len);
                             }
+                            if end < 0 {
+                                end = (len + end).max(0);
+                            } else {
+                                end = end.min(len);
+                            }
+                            if end < start {
+                                end = start;
+                            }
+                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            val = js_new_string(ctx, &s);
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
                         }
                     } else if marker == "__builtin_array_shift__" {
                         // Get first element and remove it
@@ -2766,23 +2847,28 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_unshift__" {
-                        if args.len() == 1 {
-                            // Get array length
-                            let len_val = js_get_property_str(ctx, this_val, "length");
-                            if let Some(len) = len_val.int32() {
-                                // Shift all elements up
+                        // Get array length
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        if let Some(len) = len_val.int32() {
+                            let count = args.len() as i32;
+                            if count == 0 {
+                                val = Value::from_int32(len);
+                            } else {
+                                // Shift all elements up by count
                                 for i in (0..len).rev() {
                                     let elem = js_get_property_uint32(ctx, this_val, i as u32);
-                                    js_set_property_uint32(ctx, this_val, (i + 1) as u32, elem);
+                                    js_set_property_uint32(ctx, this_val, (i + count) as u32, elem);
                                 }
-                                // Set first element
-                                js_set_property_uint32(ctx, this_val, 0, args[0]);
+                                // Insert new elements at start
+                                for (i, arg) in args.iter().enumerate() {
+                                    js_set_property_uint32(ctx, this_val, i as u32, *arg);
+                                }
                                 // Set new length
-                                js_set_property_str(ctx, this_val, "length", Value::from_int32(len + 1));
-                                val = Value::from_int32(len + 1);
-                            } else {
-                                val = Value::UNDEFINED;
+                                js_set_property_str(ctx, this_val, "length", Value::from_int32(len + count));
+                                val = Value::from_int32(len + count);
                             }
+                        } else {
+                            val = Value::UNDEFINED;
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -2988,31 +3074,6 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                             }
                         } else {
                             val = this_val;
-                        }
-                        this_val = Value::UNDEFINED;
-                        rest = next;
-                        continue;
-                    } else if marker == "__builtin_string_normalize__" {
-                        val = this_val;
-                        this_val = Value::UNDEFINED;
-                        rest = next;
-                        continue;
-                    } else if marker == "__builtin_Math_floor__" {
-                        if args.len() == 1 {
-                            let n = js_to_number(ctx, args[0]).ok()?;
-                            val = Value::from_int32(n.floor() as i32);
-                        } else {
-                            val = Value::UNDEFINED;
-                        }
-                        this_val = Value::UNDEFINED;
-                        rest = next;
-                        continue;
-                    } else if marker == "__builtin_Math_ceil__" {
-                        if args.len() == 1 {
-                            let n = js_to_number(ctx, args[0]).ok()?;
-                            val = Value::from_int32(n.ceil() as i32);
-                        } else {
-                            val = Value::UNDEFINED;
                         }
                         this_val = Value::UNDEFINED;
                         rest = next;
@@ -3680,22 +3741,29 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_indexOf__" {
-                        if args.len() == 1 {
+                        if args.len() >= 1 {
                             let len_val = js_get_property_str(ctx, this_val, "length");
-                            if let Some(len) = len_val.int32() {
-                                let search_val = args[0];
-                                let mut found_idx = -1;
-                                for i in 0..len {
+                            let len = len_val.int32().unwrap_or(0);
+                            let search_val = args[0];
+                            let mut start = if args.len() >= 2 {
+                                js_to_int32(ctx, args[1]).unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            if start < 0 {
+                                start = (len + start).max(0);
+                            }
+                            let mut found_idx = -1;
+                            if start < len {
+                                for i in start..len {
                                     let elem = js_get_property_uint32(ctx, this_val, i as u32);
                                     if elem.0 == search_val.0 {
                                         found_idx = i;
                                         break;
                                     }
                                 }
-                                val = Value::from_int32(found_idx);
-                            } else {
-                                val = Value::from_int32(-1);
                             }
+                            val = Value::from_int32(found_idx);
                         } else {
                             val = Value::from_int32(-1);
                         }
@@ -3703,22 +3771,35 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         rest = next;
                         continue;
                     } else if marker == "__builtin_array_lastIndexOf__" {
-                        if args.len() == 1 {
+                        if args.len() >= 1 {
                             let len_val = js_get_property_str(ctx, this_val, "length");
-                            if let Some(len) = len_val.int32() {
-                                let search_val = args[0];
-                                let mut found_idx = -1;
-                                for i in (0..len).rev() {
+                            let len = len_val.int32().unwrap_or(0);
+                            let search_val = args[0];
+                            let mut start = if args.len() >= 2 {
+                                js_to_int32(ctx, args[1]).unwrap_or(len - 1)
+                            } else {
+                                len - 1
+                            };
+                            if start >= len {
+                                start = len - 1;
+                            }
+                            if start < 0 {
+                                start = len + start;
+                            }
+                            let mut found_idx = -1;
+                            if start >= 0 {
+                                let mut i = start;
+                                loop {
                                     let elem = js_get_property_uint32(ctx, this_val, i as u32);
                                     if elem.0 == search_val.0 {
                                         found_idx = i;
                                         break;
                                     }
+                                    if i == 0 { break; }
+                                    i -= 1;
                                 }
-                                val = Value::from_int32(found_idx);
-                            } else {
-                                val = Value::from_int32(-1);
                             }
+                            val = Value::from_int32(found_idx);
                         } else {
                             val = Value::from_int32(-1);
                         }
@@ -3848,6 +3929,40 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 if let Some(res) = call_closure(ctx, callback, &call_args) {
                                     accumulator = res;
                                 }
+                            }
+                            val = accumulator;
+                        } else {
+                            val = Value::UNDEFINED;
+                        }
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
+                    } else if marker == "__builtin_array_reduceRight__" {
+                        if args.len() >= 1 {
+                            let callback = args[0];
+                            let len_val = js_get_property_str(ctx, this_val, "length");
+                            let len = len_val.int32().unwrap_or(0) as i32;
+                            if len <= 0 {
+                                val = Value::UNDEFINED;
+                                this_val = Value::UNDEFINED;
+                                rest = next;
+                                continue;
+                            }
+                            let mut accumulator = if args.len() >= 2 {
+                                args[1]
+                            } else {
+                                js_get_property_uint32(ctx, this_val, (len - 1) as u32)
+                            };
+                            let mut i = if args.len() >= 2 { len - 1 } else { len - 2 };
+                            while i >= 0 {
+                                let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                let idx_val = Value::from_int32(i as i32);
+                                let call_args = [accumulator, elem, idx_val, this_val];
+                                if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                    accumulator = res;
+                                }
+                                if i == 0 { break; }
+                                i -= 1;
                             }
                             val = accumulator;
                         } else {
@@ -4312,7 +4427,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         if args.len() >= 1 {
                             if let Some(str_bytes) = ctx.string_bytes(args[0]) {
                                 if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                    if let Ok(n) = s.trim().parse::<f64>() {
+                                    let trimmed = s.trim_start();
+                                    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+                                        val = number_to_value(ctx, 0.0);
+                                    } else if let Ok(n) = trimmed.parse::<f64>() {
                                         val = number_to_value(ctx, n);
                                     } else {
                                         val = number_to_value(ctx, f64::NAN);
@@ -5205,6 +5323,38 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         this_val = Value::UNDEFINED;
                         rest = next;
                         continue;
+                    } else if marker == "__builtin_String_fromCodePoint__" {
+                        if args.is_empty() {
+                            val = js_new_string(ctx, "");
+                            this_val = Value::UNDEFINED;
+                            rest = next;
+                            continue;
+                        }
+                        let mut result = String::new();
+                        for arg in args.iter() {
+                            let n = js_to_number(ctx, *arg).unwrap_or(f64::NAN);
+                            if !n.is_finite() {
+                                js_throw_error(ctx, JSObjectClassEnum::RangeError, "Invalid code point");
+                                return None;
+                            }
+                            let code = n.trunc() as i64;
+                            if code < 0 || code > 0x10FFFF {
+                                js_throw_error(ctx, JSObjectClassEnum::RangeError, "Invalid code point");
+                                return None;
+                            }
+                            let code_u32 = code as u32;
+                            if (0xD800..=0xDFFF).contains(&code_u32) {
+                                js_throw_error(ctx, JSObjectClassEnum::RangeError, "Invalid code point");
+                                return None;
+                            }
+                            if let Some(ch) = char::from_u32(code_u32) {
+                                result.push(ch);
+                            }
+                        }
+                        val = js_new_string(ctx, &result);
+                        this_val = Value::UNDEFINED;
+                        rest = next;
+                        continue;
                     } else if marker == "__builtin_Function_call__" {
                         // Function.prototype.call(thisArg, arg1, arg2, ...)
                         // this_val contains the original function
@@ -5430,6 +5580,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                     continue;
                 }
             }
+
+            // String.lastIndexOf
+            if name == "lastIndexOf" {
+                if js_is_string(ctx, val) != 0 {
+                    val = js_new_string(ctx, "__builtin_string_lastIndexOf__");
+                    rest = next;
+                    continue;
+                }
+            }
             
             // String.slice
             if name == "slice" {
@@ -5555,6 +5714,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 if let Some(class_id) = ctx.object_class_id(val) {
                     if class_id == JSObjectClassEnum::Array as u32 {
                         val = js_new_string(ctx, "__builtin_array_reduce__");
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            if name == "reduceRight" {
+                if let Some(class_id) = ctx.object_class_id(val) {
+                    if class_id == JSObjectClassEnum::Array as u32 {
+                        val = js_new_string(ctx, "__builtin_array_reduceRight__");
                         rest = next;
                         continue;
                     }
@@ -6232,6 +6400,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         match name {
                             "fromCharCode" => {
                                 val = js_new_string(ctx, "__builtin_String_fromCharCode__");
+                                rest = next;
+                                continue;
+                            }
+                            "fromCodePoint" => {
+                                val = js_new_string(ctx, "__builtin_String_fromCodePoint__");
                                 rest = next;
                                 continue;
                             }
@@ -7240,6 +7413,22 @@ impl<'a> ArithParser<'a> {
                                     };
                                     continue;
                                 }
+                                if marker == "__builtin_String__" {
+                                    value = match prop {
+                                        "fromCharCode" => js_new_string(ctx, "__builtin_String_fromCharCode__"),
+                                        "fromCodePoint" => js_new_string(ctx, "__builtin_String_fromCodePoint__"),
+                                        _ => value,
+                                    };
+                                    continue;
+                                }
+                                if marker == "__builtin_JSON__" {
+                                    value = match prop {
+                                        "stringify" => js_new_string(ctx, "__builtin_JSON_stringify__"),
+                                        "parse" => js_new_string(ctx, "__builtin_JSON_parse__"),
+                                        _ => value,
+                                    };
+                                    continue;
+                                }
                                 if marker == "__builtin_Date__" {
                                     if prop == "now" {
                                         value = js_new_string(ctx, "__builtin_Date_now__");
@@ -7282,11 +7471,8 @@ impl<'a> ArithParser<'a> {
                             "padStart" => js_new_string(ctx, "__builtin_string_padStart__"),
                             "padEnd" => js_new_string(ctx, "__builtin_string_padEnd__"),
                             "length" => {
-                                if let Some(bytes) = ctx.string_bytes(value) {
-                                    Value::from_int32(bytes.len() as i32)
-                                } else {
-                                    Value::from_int32(0)
-                                }
+                                let len = string_utf16_len(ctx, value).unwrap_or(0);
+                                Value::from_int32(len as i32)
                             }
                             _ => js_get_property_str(ctx, value, prop),
                         };
@@ -7312,6 +7498,7 @@ impl<'a> ArithParser<'a> {
                                 "map" => js_new_string(ctx, "__builtin_array_map__"),
                                 "filter" => js_new_string(ctx, "__builtin_array_filter__"),
                                 "reduce" => js_new_string(ctx, "__builtin_array_reduce__"),
+                                "reduceRight" => js_new_string(ctx, "__builtin_array_reduceRight__"),
                                 "every" => js_new_string(ctx, "__builtin_array_every__"),
                                 "some" => js_new_string(ctx, "__builtin_array_some__"),
                                 "find" => js_new_string(ctx, "__builtin_array_find__"),
@@ -7417,15 +7604,12 @@ impl<'a> ArithParser<'a> {
                 if marker == "__builtin_string_charAt__" {
                     if args.len() == 1 {
                         if let Some(idx) = args[0].int32() {
-                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                if idx >= 0 && (idx as usize) < str_bytes.len() {
-                                    let ch = str_bytes[idx as usize];
-                                    let ch_buf = [ch];
-                                    let ch_str = core::str::from_utf8(&ch_buf).unwrap_or("");
-                                    return Ok(js_new_string(ctx, ch_str));
-                                } else {
-                                    return Ok(js_new_string(ctx, ""));
+                            if let Some(units) = string_utf16_units(ctx, this_val) {
+                                if idx >= 0 && (idx as usize) < units.len() {
+                                    let s = String::from_utf16_lossy(&[units[idx as usize]]);
+                                    return Ok(js_new_string(ctx, &s));
                                 }
+                                return Ok(js_new_string(ctx, ""));
                             }
                         }
                     }
@@ -7465,120 +7649,146 @@ impl<'a> ArithParser<'a> {
                     return Ok(this_val);
                 } else if marker == "__builtin_string_substring__" {
                     if args.len() >= 1 && args.len() <= 2 {
-                        if let Some(start) = args[0].int32() {
-                            if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                                let start = start.max(0) as usize;
-                                let start = start.min(str_bytes.len());
-                                let end = if args.len() == 2 {
-                                    if let Some(e) = args[1].int32() {
-                                        let e = e.max(0) as usize;
-                                        e.min(str_bytes.len())
-                                    } else {
-                                        str_bytes.len()
-                                    }
-                                } else {
-                                    str_bytes.len()
-                                };
-                                let (start, end) = if start > end { (end, start) } else { (start, end) };
-                                let substr_bytes = str_bytes[start..end].to_vec();
-                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                    return Ok(js_new_string(ctx, substr));
-                                }
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            let len = units.len() as i32;
+                            let mut start = args[0].int32().unwrap_or(0).max(0).min(len);
+                            let mut end = if args.len() == 2 {
+                                args[1].int32().unwrap_or(len).max(0).min(len)
+                            } else {
+                                len
+                            };
+                            if start > end {
+                                core::mem::swap(&mut start, &mut end);
                             }
+                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            return Ok(js_new_string(ctx, &s));
                         }
                     }
                     return Ok(js_new_string(ctx, ""));
                 } else if marker == "__builtin_string_substr__" {
                     if args.len() >= 1 {
-                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                            let len = str_bytes.len() as i32;
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            let len = units.len() as i32;
                             let mut start = args[0].int32().unwrap_or(0);
                             if start < 0 {
                                 start = (len + start).max(0);
                             } else if start > len {
                                 start = len;
                             }
-                            let mut end = len;
-                            if args.len() >= 2 {
-                                let count = args[1].int32().unwrap_or(0).max(0);
-                                end = (start + count).min(len);
-                            }
-                            let start_u = start as usize;
-                            let end_u = end.max(start) as usize;
-                            let substr_bytes = str_bytes[start_u..end_u].to_vec();
-                            if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                return Ok(js_new_string(ctx, substr));
-                            }
+                            let count = if args.len() >= 2 {
+                                args[1].int32().unwrap_or(0).max(0)
+                            } else {
+                                len - start
+                            };
+                            let end = (start + count).min(len);
+                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            return Ok(js_new_string(ctx, &s));
                         }
                     }
                     return Ok(js_new_string(ctx, ""));
                 } else if marker == "__builtin_string_substr__" {
                     if args.len() >= 1 {
-                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                            let len = str_bytes.len() as i32;
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            let len = units.len() as i32;
                             let mut start = args[0].int32().unwrap_or(0);
                             if start < 0 {
                                 start = (len + start).max(0);
                             } else if start > len {
                                 start = len;
                             }
-                            let mut end = len;
-                            if args.len() >= 2 {
-                                let count = args[1].int32().unwrap_or(0).max(0);
-                                end = (start + count).min(len);
-                            }
-                            let start_u = start as usize;
-                            let end_u = end.max(start) as usize;
-                            let substr_bytes = str_bytes[start_u..end_u].to_vec();
-                            if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                return Ok(js_new_string(ctx, substr));
-                            }
+                            let count = if args.len() >= 2 {
+                                args[1].int32().unwrap_or(0).max(0)
+                            } else {
+                                len - start
+                            };
+                            let end = (start + count).min(len);
+                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            return Ok(js_new_string(ctx, &s));
                         }
                     }
                     return Ok(js_new_string(ctx, ""));
                 } else if marker == "__builtin_string_slice__" {
                     if args.len() >= 1 && args.len() <= 2 {
-                        if let Some(str_bytes) = ctx.string_bytes(this_val) {
-                            let len = str_bytes.len() as i32;
-                            let start = if let Some(s) = args[0].int32() {
-                                (if s < 0 { (len + s).max(0) } else { s.min(len) }) as usize
-                            } else { 0 };
-                            let end = if args.len() == 2 {
-                                if let Some(e) = args[1].int32() {
-                                    (if e < 0 { (len + e).max(0) } else { e.min(len) }) as usize
-                                } else {
-                                    str_bytes.len()
-                                }
+                        if let Some(units) = string_utf16_units(ctx, this_val) {
+                            let len = units.len() as i32;
+                            let mut start = if args.len() >= 1 { args[0].int32().unwrap_or(0) } else { 0 };
+                            let mut end = if args.len() == 2 { args[1].int32().unwrap_or(len) } else { len };
+                            if start < 0 {
+                                start = (len + start).max(0);
                             } else {
-                                str_bytes.len()
-                            };
-                            if start <= end {
-                                let substr_bytes = str_bytes[start..end].to_vec();
-                                if let Ok(substr) = core::str::from_utf8(&substr_bytes) {
-                                    return Ok(js_new_string(ctx, substr));
-                                }
-                            } else {
-                                return Ok(js_new_string(ctx, ""));
+                                start = start.min(len);
                             }
+                            if end < 0 {
+                                end = (len + end).max(0);
+                            } else {
+                                end = end.min(len);
+                            }
+                            if end < start {
+                                end = start;
+                            }
+                            let s = String::from_utf16_lossy(&units[start as usize..end as usize]);
+                            return Ok(js_new_string(ctx, &s));
                         }
                     }
                 } else if marker == "__builtin_string_indexOf__" {
                     if args.len() >= 1 {
-                        if let Some(needle_bytes) = ctx.string_bytes(args[0]) {
-                            let needle = needle_bytes.to_vec();
-                            if let Some(haystack_bytes) = ctx.string_bytes(this_val) {
-                                if needle.is_empty() {
-                                    return Ok(Value::from_int32(0));
-                                }
-                                let mut found = -1;
-                                for i in 0..=(haystack_bytes.len().saturating_sub(needle.len())) {
-                                    if &haystack_bytes[i..i + needle.len()] == needle.as_slice() {
+                        if let Some(haystack_units) = string_utf16_units(ctx, this_val) {
+                            let needle_str = value_to_string(ctx, args[0]);
+                            let needle_units: Vec<u16> = needle_str.encode_utf16().collect();
+                            let len = haystack_units.len() as i32;
+                            let mut start = if args.len() >= 2 { js_to_int32(ctx, args[1]).unwrap_or(0) } else { 0 };
+                            if start < 0 {
+                                start = 0;
+                            }
+                            if needle_units.is_empty() {
+                                return Ok(Value::from_int32(start.min(len)));
+                            }
+                            let mut found = -1;
+                            let start_u = start.min(len) as usize;
+                            if needle_units.len() <= haystack_units.len().saturating_sub(start_u) {
+                                for i in start_u..=haystack_units.len().saturating_sub(needle_units.len()) {
+                                    if haystack_units[i..i + needle_units.len()] == needle_units[..] {
                                         found = i as i32;
                                         break;
                                     }
                                 }
-                                return Ok(Value::from_int32(found));
                             }
+                            return Ok(Value::from_int32(found));
+                        }
+                    }
+                } else if marker == "__builtin_string_lastIndexOf__" {
+                    if args.len() >= 1 {
+                        if let Some(haystack_units) = string_utf16_units(ctx, this_val) {
+                            let needle_str = value_to_string(ctx, args[0]);
+                            let needle_units: Vec<u16> = needle_str.encode_utf16().collect();
+                            let len = haystack_units.len() as i32;
+                            let mut start = if args.len() >= 2 {
+                                js_to_int32(ctx, args[1]).unwrap_or(len - 1)
+                            } else {
+                                len - 1
+                            };
+                            if start >= len {
+                                start = len - 1;
+                            }
+                            if start < 0 {
+                                start = len + start;
+                            }
+                            let mut found = -1;
+                            if needle_units.is_empty() {
+                                found = start.max(-1);
+                            } else if start >= 0 {
+                                let mut i = (start as usize).min(haystack_units.len().saturating_sub(needle_units.len()));
+                                loop {
+                                    if i + needle_units.len() <= haystack_units.len()
+                                        && haystack_units[i..i + needle_units.len()] == needle_units[..] {
+                                        found = i as i32;
+                                        break;
+                                    }
+                                    if i == 0 { break; }
+                                    i -= 1;
+                                }
+                            }
+                            return Ok(Value::from_int32(found));
                         }
                     }
                 } else if marker == "__builtin_string_split__" {
@@ -7965,7 +8175,11 @@ impl<'a> ArithParser<'a> {
                     if args.len() >= 1 {
                         if let Some(str_bytes) = ctx.string_bytes(args[0]) {
                             if let Ok(s) = core::str::from_utf8(str_bytes) {
-                                if let Ok(n) = s.trim().parse::<f64>() {
+                                let trimmed = s.trim_start();
+                                if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+                                    return Ok(number_to_value(ctx, 0.0));
+                                }
+                                if let Ok(n) = trimmed.parse::<f64>() {
                                     return Ok(number_to_value(ctx, n));
                                 }
                                 return Ok(number_to_value(ctx, f64::NAN));
@@ -8293,11 +8507,51 @@ impl<'a> ArithParser<'a> {
                 } else if marker == "__builtin_array_indexOf__" {
                     if args.len() >= 1 {
                         let len_val = js_get_property_str(ctx, this_val, "length");
-                        let len = len_val.int32().unwrap_or(0) as usize;
-                        for i in 0..len {
-                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
-                            if elem.0 == args[0].0 {
-                                return Ok(Value::from_int32(i as i32));
+                        let len = len_val.int32().unwrap_or(0);
+                        let search_val = args[0];
+                        let mut start = if args.len() >= 2 {
+                            js_to_int32(ctx, args[1]).unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        if start < 0 {
+                            start = (len + start).max(0);
+                        }
+                        if start < len {
+                            for i in start..len {
+                                let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                if elem.0 == search_val.0 {
+                                    return Ok(Value::from_int32(i as i32));
+                                }
+                            }
+                        }
+                        return Ok(Value::from_int32(-1));
+                    }
+                } else if marker == "__builtin_array_lastIndexOf__" {
+                    if args.len() >= 1 {
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0);
+                        let search_val = args[0];
+                        let mut start = if args.len() >= 2 {
+                            js_to_int32(ctx, args[1]).unwrap_or(len - 1)
+                        } else {
+                            len - 1
+                        };
+                        if start >= len {
+                            start = len - 1;
+                        }
+                        if start < 0 {
+                            start = len + start;
+                        }
+                        if start >= 0 {
+                            let mut i = start;
+                            loop {
+                                let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                                if elem.0 == search_val.0 {
+                                    return Ok(Value::from_int32(i as i32));
+                                }
+                                if i == 0 { break; }
+                                i -= 1;
                             }
                         }
                         return Ok(Value::from_int32(-1));
@@ -8371,6 +8625,32 @@ impl<'a> ArithParser<'a> {
                             if let Some(res) = call_closure(ctx, callback, &call_args) {
                                 accumulator = res;
                             }
+                        }
+                        return Ok(accumulator);
+                    }
+                } else if marker == "__builtin_array_reduceRight__" {
+                    if args.len() >= 1 {
+                        let callback = args[0];
+                        let len_val = js_get_property_str(ctx, this_val, "length");
+                        let len = len_val.int32().unwrap_or(0) as i32;
+                        if len <= 0 {
+                            return Ok(Value::UNDEFINED);
+                        }
+                        let mut accumulator = if args.len() >= 2 {
+                            args[1]
+                        } else {
+                            js_get_property_uint32(ctx, this_val, (len - 1) as u32)
+                        };
+                        let mut i = if args.len() >= 2 { len - 1 } else { len - 2 };
+                        while i >= 0 {
+                            let elem = js_get_property_uint32(ctx, this_val, i as u32);
+                            let idx_val = Value::from_int32(i as i32);
+                            let call_args = [accumulator, elem, idx_val, this_val];
+                            if let Some(res) = call_closure(ctx, callback, &call_args) {
+                                accumulator = res;
+                            }
+                            if i == 0 { break; }
+                            i -= 1;
                         }
                         return Ok(accumulator);
                     }
