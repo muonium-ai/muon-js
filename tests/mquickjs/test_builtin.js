@@ -307,8 +307,12 @@ function test_array()
     assert(log, "1234");
     console.log("test_array: some ok");
 
+    console.log("test_array: forEach start");
     log = "";
-    assert([1, 2, 3, 4].forEach(function(val, k) { log += val; assert(k, (val - 1)); }), void 0);
+    var fe_ret = [1, 2, 3, 4].forEach(function(val, k) { console.log("test_array: forEach cb", val, k); log += val; assert(k, (val - 1)); });
+    console.log("test_array: forEach return", fe_ret);
+    assert(fe_ret, void 0);
+    console.log("test_array: forEach log", log);
     assert(log, "1234");
     console.log("test_array: forEach ok");
 
@@ -363,15 +367,25 @@ function test_array_ext()
 {
     var a;
     a = [1, 2, 3];
+    console.log("test_array_ext: idx 1.2");
     assert_throws(TypeError, function () { a[1.2] = 1; } );
+    console.log("test_array_ext: idx NaN");
     assert_throws(TypeError, function () { a[NaN] = 1; } );
+    console.log("test_array_ext: prop NaN");
     assert_throws(TypeError, function () { a.NaN = 1; } );
+    console.log("test_array_ext: idx Infinity");
     assert_throws(TypeError, function () { a[Infinity] = 1; } );
+    console.log("test_array_ext: prop Infinity");
     assert_throws(TypeError, function () { a.Infinity = 1; } );
+    console.log("test_array_ext: idx -Infinity");
     assert_throws(TypeError, function () { a[-Infinity] = 1; } );
+    console.log("test_array_ext: idx " + "1.2");
     assert_throws(TypeError, function () { a["1.2"] = 1; } );
+    console.log("test_array_ext: idx " + "NaN");
     assert_throws(TypeError, function () { a["NaN"] = 1; } );
+    console.log("test_array_ext: idx " + "Infinity");
     assert_throws(TypeError, function () { a["Infinity"] = 1; } );
+    console.log("test_array_ext: idx " + "-Infinity");
     assert_throws(TypeError, function () { a["-Infinity"] = 1; } );
 }
 
@@ -711,21 +725,36 @@ function test_json()
 {
     var a, s, n;
 
+    console.log("test_json: start");
     s = '{"1234":"str","x":1,"y":true,"z":null,"a":[1,2,false]}';
+    console.log("test_json: parse 1");
     a = JSON.parse(s);
+    console.log("test_json: parse 1 ok");
     assert(a.x, 1);
     assert(a.y, true);
     assert(a.z, null);
     assert(a[1234], "str");
+    console.log("test_json: stringify 1");
     assert(JSON.stringify(a), s);
+    console.log("test_json: stringify 1 ok");
 
-    assert(JSON.stringify({x: 1, y: undefined, z:2}), '{"x":1,"z":2}');
+    console.log("test_json: stringify 2");
+    console.log("test_json: typeof assert", typeof assert);
+    console.log("test_json: typeof throw_error", typeof throw_error);
+    console.log("test_json: typeof Error", typeof Error);
+    s = JSON.stringify({x: 1, y: undefined, z:2});
+    console.log("test_json: stringify 2 result", s);
+    assert(s, '{"x":1,"z":2}');
+    console.log("test_json: stringify 2 ok");
 
     /* larger stack */
     n = 100;
     s = repeat("[", n) + repeat("]", n);
+    console.log("test_json: parse 2");
     a = JSON.parse(s);
+    console.log("test_json: parse 2 ok");
     assert(JSON.stringify(a), s);
+    console.log("test_json: stringify 3 ok");
 
 //    assert_json_error('\n"  \\@x"');
 //    assert_json_error('\n{ "a": @x }"');
@@ -750,31 +779,69 @@ function test_regexp()
 {
     var a, str, n;
 
+    console.log("test_regexp: basic exec");
     str = "abbbbbc";
-    a = /(b+)c/.exec(str);
+    var r = /(b+)c/;
+    console.log("test_regexp: r", r);
+    console.log("test_regexp: typeof r.exec", typeof r.exec);
+    a = r.exec(str);
+    console.log("test_regexp: exec1", a);
+    if (a) {
+        console.log("test_regexp: exec1 parts", a[0], a[1], a.index, a.input);
+    }
     assert(a[0], "bbbbbc");
     assert(a[1], "bbbbb");
     assert(a.index, 1);
     assert(a.input, str);
-    a = /(b+)c/.test(str);
+    a = r.test(str);
+    console.log("test_regexp: test1", a);
     assert(a, true);
-    assert(/\x61/.exec("a")[0], "a");
-    assert(/\u0061/.exec("a")[0], "a");
-    assert(/\ca/.exec("\x01")[0], "\x01");
-    assert(/\\a/.exec("\\a")[0], "\\a");
-    assert(/\c0/.exec("\\c0")[0], "\\c0");
+    console.log("test_regexp: basic exec ok");
 
-    a = /(\.(?=com|org)|\/)/.exec("ah.com");
+    console.log("test_regexp: escapes");
+    console.log("test_regexp: escape \\x");
+    assert(/\x61/.exec("a")[0], "a");
+    console.log("test_regexp: escape \\u");
+    assert(/\u0061/.exec("a")[0], "a");
+    console.log("test_regexp: escape \\c a");
+    assert(/\ca/.exec("\x01")[0], "\x01");
+    console.log("test_regexp: escape \\a");
+    assert(/\\a/.exec("\\a")[0], "\\a");
+    console.log("test_regexp: escape \\c0");
+    assert(/\c0/.exec("\\c0")[0], "\\c0");
+    console.log("test_regexp: escapes ok");
+
+    console.log("test_regexp: lookahead");
+    var r2 = /(\.(?=com|org)|\/)/;
+    console.log("test_regexp: r2", r2);
+    console.log("test_regexp: typeof r2.exec", typeof r2.exec);
+    a = r2.exec("ah.com");
+    console.log("test_regexp: lookahead 1", a, a && a.index, a && a[0]);
     assert(a.index === 2 && a[0] === ".");
 
-    a = /(\.(?!com|org)|\/)/.exec("ah.com");
+    var r3 = /(\.(?!com|org)|\/)/;
+    console.log("test_regexp: r3", r3);
+    console.log("test_regexp: typeof r3.exec", typeof r3.exec);
+    a = r3.exec("ah.com");
+    console.log("test_regexp: lookahead 2", a);
     assert(a, null);
 
-    a = /(?=(a+))/.exec("baaabac");
+    var r4 = /(?=(a+))/;
+    console.log("test_regexp: r4", r4);
+    console.log("test_regexp: typeof r4.exec", typeof r4.exec);
+    a = r4.exec("baaabac");
+    console.log("test_regexp: lookahead 3", a, a && a.index, a && a[0], a && a[1]);
     assert(a.index === 1 && a[0] === "" && a[1] === "aaa");
+    console.log("test_regexp: lookahead ok");
 
-    a = /(z)((a+)?(b+)?(c))*/.exec("zaacbbbcac");
+    console.log("test_regexp: nested groups");
+    var r5 = /(z)((a+)?(b+)?(c))*/;
+    console.log("test_regexp: r5", r5);
+    console.log("test_regexp: typeof r5.exec", typeof r5.exec);
+    a = r5.exec("zaacbbbcac");
+    console.log("test_regexp: nested result", a);
     assert(a, ["zaacbbbcac","z","ac","a", undefined,"c"]);
+    console.log("test_regexp: nested groups ok");
 
 //    a = (1,eval)("/\0a/");
 //    assert(a.toString(), "/\0a/");
@@ -785,65 +852,141 @@ function test_regexp()
 //    assert(a, ["a{11"]);
 
     /* test zero length matches */
-    a = /(?:(?=(abc)))a/.exec("abc");
+    console.log("test_regexp: zero length");
+    var r6 = /(?:(?=(abc)))a/;
+    console.log("test_regexp: r6", r6);
+    console.log("test_regexp: typeof r6.exec", typeof r6.exec);
+    a = r6.exec("abc");
+    console.log("test_regexp: zero 1", a);
+    if (a) {
+        console.log("test_regexp: zero 1 parts", a[0], a[1], a.length, a.index, a.input);
+    }
     assert(a, ["a", "abc"]);
-    a = /(?:(?=(abc)))?a/.exec("abc");
+    var r7 = /(?:(?=(abc)))?a/;
+    console.log("test_regexp: r7", r7);
+    console.log("test_regexp: typeof r7.exec", typeof r7.exec);
+    a = r7.exec("abc");
+    console.log("test_regexp: zero 2", a);
+    if (a) {
+        console.log("test_regexp: zero 2 parts", a[0], a[1], a.length, a.index, a.input);
+    }
     assert(a, ["a", undefined]);
-    a = /(?:(?=(abc))){0,2}a/.exec("abc");
+    var r8 = /(?:(?=(abc))){0,2}a/;
+    console.log("test_regexp: r8", r8);
+    console.log("test_regexp: typeof r8.exec", typeof r8.exec);
+    a = r8.exec("abc");
+    console.log("test_regexp: zero 3", a);
+    if (a) {
+        console.log("test_regexp: zero 3 parts", a[0], a[1], a.length, a.index, a.input);
+    }
     assert(a, ["a", undefined]);
-    a = /(?:|[\w])+([0-9])/.exec("123a23");
+    var r9 = /(?:|[\w])+([0-9])/;
+    console.log("test_regexp: r9", r9);
+    console.log("test_regexp: typeof r9.exec", typeof r9.exec);
+    a = r9.exec("123a23");
+    console.log("test_regexp: zero 4", a);
+    if (a) {
+        console.log("test_regexp: zero 4 parts", a[0], a[1], a.length, a.index, a.input);
+    }
     assert(a, ["123a23", "3"]);
-    a = /()*?a/.exec(",");
+    var r10 = /()*?a/;
+    console.log("test_regexp: r10", r10);
+    console.log("test_regexp: typeof r10.exec", typeof r10.exec);
+    a = r10.exec(",");
+    console.log("test_regexp: zero 5", a);
     assert(a, null);
+    console.log("test_regexp: zero length ok");
 
     /* test \b escape */
-    assert(/[\q{a\b}]/.test("a\b"), true);
-    assert(/[\b]/.test("\b"), true);
+    console.log("test_regexp: word boundary");
+    var r11 = /[\q{a\b}]/;
+    console.log("test_regexp: r11", r11, "test", r11.test("a\b"));
+    assert(r11.test("a\b"), true);
+    var r12 = /[\b]/;
+    console.log("test_regexp: r12", r12, "test", r12.test("\b"));
+    assert(r12.test("\b"), true);
+    console.log("test_regexp: word boundary ok");
     
     /* test case insensitive matching (test262 hardly tests it) */
+    console.log("test_regexp: case insensitive");
     assert("aAbBcC".replace(/[^b]/gui, "X"), "XXbBXX");
     assert("aAbBcC".replace(/[^A-B]/gui, "X"), "aAbBXX");
+    console.log("test_regexp: case insensitive ok");
 
     /* case where lastIndex points to the second element of a
        surrogate pair */
+     console.log("test_regexp: lastIndex surrogate");
     a = /(?:)/gu;
     a.lastIndex = 1;
     a.exec("🐱");
     assert(a.lastIndex, 0);
+     console.log("test_regexp: lastIndex surrogate ok");
 
     /* test backreferences */
-    assert(/(abc)\1/.exec("abcabc"), ["abcabc", "abc"]);
-    assert(/(abc)\1/i.exec("aBcaBC"), ["aBcaBC", "aBc"]);
+     console.log("test_regexp: backrefs");
+    var r13 = /(abc)\1/;
+    console.log("test_regexp: r13", r13, "exec", r13.exec("abcabc"));
+    assert(r13.exec("abcabc"), ["abcabc", "abc"]);
+    var r14 = /(abc)\1/i;
+    console.log("test_regexp: r14", r14, "exec", r14.exec("aBcaBC"));
+    assert(r14.exec("aBcaBC"), ["aBcaBC", "aBc"]);
+     console.log("test_regexp: backrefs ok");
 
     /* large parse stack */
+    console.log("test_regexp: large parse");
+    console.log("test_regexp: typeof RegExp", typeof RegExp);
+    console.log("test_regexp: typeof repeat", typeof repeat);
     n = 10000;
-    a = new RegExp(repeat("(?:", n) + "a+" + repeat(")", n));
+    var pat = repeat("(?:", n) + "a+" + repeat(")", n);
+    console.log("test_regexp: pat length", pat.length);
+    a = new RegExp(pat);
+    console.log("test_regexp: large re", a, typeof a.exec);
     assert(a.exec("aa"), ["aa"]);
+    console.log("test_regexp: large parse ok");
     
     /* additional functions */
+    console.log("test_regexp: additional");
     
+        console.log("test_regexp: match 1");
     a = "abbbc".match(/b+/);
+        console.log("test_regexp: match 1 result", a);
     assert(a, [ "bbb" ]);
+        console.log("test_regexp: match 2");
     assert("abcaaad".match(/a+/g), [ "a", "aaa" ]);
 
+        console.log("test_regexp: search");
     assert("abc".search(/b/), 1);
     assert("abc".search(/d/), -1);
 
-    assert("abbbbcbbd".replace(/b+/, "€$&"), "a€bbbbcbbd");
+        console.log("test_regexp: replace 1");
+        try {
+            var rep1 = "abbbbcbbd".replace(/b+/, "€$&");
+            console.log("test_regexp: replace 1 result", rep1);
+            assert(rep1, "a€bbbbcbbd");
+        } catch(e) {
+            console.log("test_regexp: replace 1 error", e);
+            throw e;
+        }
+        console.log("test_regexp: replace 2");
     assert("abbbbcbbd".replace(/b+/g, "€$&"), "a€bbbbc€bbd");
+        console.log("test_regexp: replace 3");
     assert("abbbbccccd".replace(/(b+)(c+)/g, "_$1_$2_"), "a_bbbb_cccc_d");
+        console.log("test_regexp: replace 4");
     assert("abbbbcd".replace(/b+/g, "_$`_$&_$'_"), "a_a_bbbb_cd_cd");
 
+        console.log("test_regexp: replace 5");
     a = "";
     assert("babbc".replace(/a(b+)/, function() { var i; for(i=0;i<arguments.length;i++) a += " " + arguments[i]; return "hi"; }),
            "bhic");
     assert(a, " abb bb 1 babbc");
     
+        console.log("test_regexp: split");
     assert("abc".split(/b/), ["a", "c"]);
     assert("ab".split(/a*/g), ["", "b"]);
     assert("ab".split(/a*?/g), ["a", "b"]);
     assert("abc".split(/b/), ["a", "c"]);
     assert("A<B>bold</B>and<CODE>coded</CODE>".split(/<(\/)?([^<>]+)>/), ["A", undefined, "B", "bold", "/", "B", "and", undefined, "CODE", "coded", "/", "CODE", ""]);
+    console.log("test_regexp: additional ok");
 }
 
 function eval_error(eval_str, expected_error, level)

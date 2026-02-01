@@ -18,8 +18,12 @@ pub fn parse_json(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 }
 
 /// Stringify JSValue into JSON string
-pub fn json_stringify_value(ctx: &mut JSContextImpl, value: JSValue) -> String {
-    use crate::api::{js_is_string, js_get_property_uint32, js_get_property_str};
+pub fn json_stringify_value(ctx: &mut JSContextImpl, value: JSValue) -> Option<String> {
+    json_stringify_value_inner(ctx, value, false)
+}
+
+fn json_stringify_value_inner(ctx: &mut JSContextImpl, value: JSValue, in_array: bool) -> Option<String> {
+    use crate::api::{js_is_function, js_is_number, js_is_string, js_get_property_uint32, js_get_property_str, js_to_number};
     
     // Check string first
     if js_is_string(ctx, value) != 0 {
@@ -38,34 +42,39 @@ pub fn json_stringify_value(ctx: &mut JSContextImpl, value: JSValue) -> String {
                 }
             }
             result.push('\"');
-            return result;
+            return Some(result);
         } else {
-            return String::from("\"\"");
+            return Some(String::from("\"\""));
         }
     }
     
     // Check number
-    if value.is_int() {
-        return value.int32().unwrap_or(0).to_string();
+    if js_is_number(ctx, value) != 0 {
+        if let Ok(n) = js_to_number(ctx, value) {
+            if n.is_finite() {
+                return Some(n.to_string());
+            }
+        }
+        return Some(String::from("null"));
     }
     
     // Check bool
     if value.is_bool() {
         return if value == Value::TRUE {
-            String::from("true")
+            Some(String::from("true"))
         } else {
-            String::from("false")
+            Some(String::from("false"))
         };
     }
     
     // Check null
     if value.is_null() {
-        return String::from("null");
+        return Some(String::from("null"));
     }
     
     // Check undefined
-    if value.is_undefined() {
-        return String::from("undefined");
+    if value.is_undefined() || js_is_function(ctx, value) != 0 {
+        return if in_array { Some(String::from("null")) } else { None };
     }
     
     // Check if it's an array
@@ -80,31 +89,39 @@ pub fn json_stringify_value(ctx: &mut JSContextImpl, value: JSValue) -> String {
                             result.push(',');
                         }
                         let elem = js_get_property_uint32(ctx, value, i as u32);
-                        result.push_str(&json_stringify_value(ctx, elem));
+                        if let Some(elem_str) = json_stringify_value_inner(ctx, elem, true) {
+                            result.push_str(&elem_str);
+                        } else {
+                            result.push_str("null");
+                        }
                     }
                 }
             }
             result.push(']');
-            return result;
+            return Some(result);
         }
     }
     
     // Stringify as object
     let mut result = String::from("{");
     if let Some(keys) = ctx.object_keys(value) {
-        for (i, key) in keys.iter().enumerate() {
-            if i > 0 {
-                result.push(',');
-            }
-            result.push('\"');
-            result.push_str(key);
-            result.push_str("\":");
+        let mut first = true;
+        for key in keys.iter() {
             let prop_val = js_get_property_str(ctx, value, key);
-            result.push_str(&json_stringify_value(ctx, prop_val));
+            if let Some(prop_str) = json_stringify_value_inner(ctx, prop_val, false) {
+                if !first {
+                    result.push(',');
+                }
+                first = false;
+                result.push('\"');
+                result.push_str(key);
+                result.push_str("\":");
+                result.push_str(&prop_str);
+            }
         }
     }
     result.push('}');
-    result
+    Some(result)
 }
 
 struct JsonParser<'a> {
