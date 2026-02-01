@@ -1,14 +1,14 @@
-text = "hello world from javascript"
-words = text.split(" ")
-wordCount = words.length
+const text = "hello world from javascript"
+const words = text.split(" ")
+const wordCount = words.length
 
-totalChars = 0
-i = 0
+let totalChars = 0
+let i = 0
 while (i < words.length) {
     totalChars = totalChars + words[i].length
     i = i + 1
 }
 
-avgWordLength = Math.floor(totalChars / wordCount)
-result = wordCount * 100 + avgWordLength
+const avgWordLength = Math.floor(totalChars / wordCount)
+const result = wordCount * 100 + avgWordLength
 result

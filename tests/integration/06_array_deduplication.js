@@ -1,11 +1,11 @@
-items = [1, 2, 3, 2, 4, 1, 5, 3]
-unique = []
+const items = [1, 2, 3, 2, 4, 1, 5, 3]
+const unique = []
 
-i = 0
+let i = 0
 while (i < items.length) {
-    item = items[i]
-    found = false
-    j = 0
+    const item = items[i]
+    let found = false
+    let j = 0
     while (j < unique.length) {
         if (unique[j] == item) {
             found = true

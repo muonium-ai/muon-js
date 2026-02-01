@@ -1,11 +1,11 @@
-text = "racecar"
-reversed = ""
+const text = "racecar"
+let reversed = ""
 
-i = text.length - 1
+let i = text.length - 1
 while (i >= 0) {
     reversed = reversed + text.charAt(i)
     i = i - 1
 }
 
-isPalindrome = text == reversed
+const isPalindrome = text == reversed
 isPalindrome
