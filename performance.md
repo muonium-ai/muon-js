@@ -25,3 +25,16 @@ Current benchmarks show mini-redis is between 9x and 300x slower than Redis (C) 
 - Add microbenchmarks around parsing and command execution.
 - Profile CPU (sampling) to confirm top hotspots.
 - Toggle persistence/logging to measure impact.
+
+## Profiling results (CPU sampling)
+- Dominant time spent in persistence logging: `Persist::log_command` → libsql/sqlite `execute` → `sqlite3_step` → `vdbeCommit` → `fsync`.
+- Async runtime overhead visible: `async_global_executor` scheduling and `async_io::reactor` wait/park cycles.
+- Additional overhead from allocations (`RawVec::grow_one`, queue `push`).
+
+These indicate persistence write/commit/fsync is a major bottleneck under load, with non-trivial runtime scheduling overhead.
+
+## Targeted toggles for next tests
+- Run without persistence (no libsql logging) and compare throughput.
+- Run with persistence but batch/async logging (if supported) to avoid per-command fsync.
+- Reduce logging verbosity on hot path.
+- Compare async vs sync server loop (if feasible) to isolate runtime overhead.
