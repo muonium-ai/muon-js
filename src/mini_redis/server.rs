@@ -420,7 +420,7 @@ async fn handle_command(
         "INCR" => match args.get(0) {
             Some(key) => {
                 let db = &mut state.dbs[*db_index];
-                match db.incr_by(key.as_ref().to_vec(), 1) {
+                match db.incr_by(key.as_ref(), 1) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
@@ -434,7 +434,7 @@ async fn handle_command(
             Some((key, delta)) => {
                 let delta = parse_i64(delta.as_ref()).unwrap_or(0);
                 let db = &mut state.dbs[*db_index];
-                match db.incr_by(key.as_ref().to_vec(), delta) {
+                match db.incr_by(key.as_ref(), delta) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
@@ -447,7 +447,7 @@ async fn handle_command(
         "DECR" => match args.get(0) {
             Some(key) => {
                 let db = &mut state.dbs[*db_index];
-                match db.incr_by(key.as_ref().to_vec(), -1) {
+                match db.incr_by(key.as_ref(), -1) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
@@ -461,7 +461,7 @@ async fn handle_command(
             Some((key, delta)) => {
                 let delta = parse_i64(delta.as_ref()).unwrap_or(0);
                 let db = &mut state.dbs[*db_index];
-                match db.incr_by(key.as_ref().to_vec(), -delta) {
+                match db.incr_by(key.as_ref(), -delta) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
@@ -576,9 +576,8 @@ async fn handle_command(
                 return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
             }
             let key = &args[0];
-            let values: Vec<Vec<u8>> = args[1..].iter().map(|v| v.as_ref().to_vec()).collect();
             let db = &mut state.dbs[*db_index];
-            match db.list_push(key.as_ref(), &values, cmd == "LPUSH") {
+            match db.list_push(key.as_ref(), &args[1..], cmd == "LPUSH") {
                 Ok(len) => {
                     log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(len)
@@ -605,7 +604,7 @@ async fn handle_command(
                 let mut out = Vec::new();
                 for _ in 0..count {
                     match db.list_pop(key.as_ref(), cmd == "LPOP") {
-                        Ok(Some(v)) => out.push(RespValue::Blob(v.into())),
+                        Ok(Some(v)) => out.push(RespValue::Blob(v)),
                         Ok(None) => break,
                         Err(_) => {
                             return RespValue::Error(
@@ -625,7 +624,7 @@ async fn handle_command(
                 match db.list_pop(key.as_ref(), cmd == "LPOP") {
                     Ok(Some(v)) => {
                         log_cmd!(state, *db_index, cmd, args);
-                        RespValue::Blob(v.into())
+                        RespValue::Blob(v)
                     }
                     Ok(None) => RespValue::Null,
                     Err(_) => RespValue::Error(
@@ -640,7 +639,7 @@ async fn handle_command(
                 let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
                 let db = &mut state.dbs[*db_index];
                 match db.list_range(key.as_ref(), start, stop) {
-                    Ok(items) => RespValue::Array(items.into_iter().map(|v| RespValue::Blob(v.into())).collect()),
+                    Ok(items) => RespValue::Array(items.into_iter().map(RespValue::Blob).collect()),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                 }
             }
@@ -664,7 +663,7 @@ async fn handle_command(
                 };
                 let db = &mut state.dbs[*db_index];
                 match db.list_index(key.as_ref(), idx) {
-                    Ok(Some(v)) => RespValue::Blob(v.into()),
+                    Ok(Some(v)) => RespValue::Blob(v),
                     Ok(None) => RespValue::Null,
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                 }

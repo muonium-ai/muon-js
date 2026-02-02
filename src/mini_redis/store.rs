@@ -1,11 +1,12 @@
 //! In-memory multi-DB store with TTL support.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Vec<u8>),
-    List(VecDeque<Vec<u8>>),
+    List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Vec<u8>>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
     ZSet(Vec<(Vec<u8>, f64)>),
@@ -281,7 +282,7 @@ impl Db {
         pi == pattern.len() && ti == text.len()
     }
 
-    pub fn list_push(&mut self, key: &[u8], values: &[Vec<u8>], left: bool) -> Result<i64, ()> {
+    pub fn list_push(&mut self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -306,7 +307,7 @@ impl Db {
         }
     }
 
-    pub fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Vec<u8>>, ()> {
+    pub fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -331,7 +332,7 @@ impl Db {
         }
     }
 
-    pub fn list_range(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
+    pub fn list_range(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -399,7 +400,7 @@ impl Db {
         }
     }
 
-    pub fn list_index(&mut self, key: &[u8], index: i64) -> Result<Option<Vec<u8>>, ()> {
+    pub fn list_index(&mut self, key: &[u8], index: i64) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -429,7 +430,7 @@ impl Db {
                     return Err(());
                 }
                 if let Some(slot) = list.get_mut(idx as usize) {
-                    *slot = value.to_vec();
+                    *slot = Arc::from(value.to_vec());
                 }
                 Ok(())
             }
@@ -444,11 +445,11 @@ impl Db {
         }
         match self.data.get_mut(key) {
             Some(Value::List(list)) => {
-                let pos = list.iter().position(|v| v.as_slice() == pivot);
+                let pos = list.iter().position(|v| v.as_ref() == pivot);
                 match pos {
                     Some(idx) => {
                         let insert_at = if before { idx } else { idx + 1 };
-                        list.insert(insert_at, value.to_vec());
+                        list.insert(insert_at, Arc::from(value.to_vec()));
                         Ok(list.len() as i64)
                     }
                     None => Ok(-1),
@@ -468,7 +469,7 @@ impl Db {
                 let mut removed = 0i64;
                 if count == 0 {
                     list.retain(|v| {
-                        if v.as_slice() == value {
+                        if v.as_ref() == value {
                             removed += 1;
                             false
                         } else {
@@ -478,7 +479,7 @@ impl Db {
                 } else if count > 0 {
                     let mut i = 0usize;
                     while i < list.len() && removed < count {
-                        if list.get(i).map(|v| v.as_slice() == value).unwrap_or(false) {
+                        if list.get(i).map(|v| v.as_ref() == value).unwrap_or(false) {
                             list.remove(i);
                             removed += 1;
                         } else {
@@ -489,7 +490,7 @@ impl Db {
                     let mut i = list.len();
                     while i > 0 && removed < (-count) {
                         i -= 1;
-                        if list.get(i).map(|v| v.as_slice() == value).unwrap_or(false) {
+                        if list.get(i).map(|v| v.as_ref() == value).unwrap_or(false) {
                             list.remove(i);
                             removed += 1;
                         }
@@ -549,22 +550,23 @@ impl Db {
         }
     }
 
-    pub fn incr_by(&mut self, key: Vec<u8>, delta: i64) -> Result<i64, ()> {
-        if self.is_expired(&key) {
-            self.remove(&key);
+    pub fn incr_by(&mut self, key: &[u8], delta: i64) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
         }
-        match self.data.get_mut(&key) {
+        match self.data.get_mut(key) {
             Some(Value::String(buf)) => {
-                let s = std::str::from_utf8(buf).map_err(|_| ())?;
-                let n: i64 = s.parse().map_err(|_| ())?;
+                let n = parse_i64_bytes(buf)?;
                 let next = n.saturating_add(delta);
-                *buf = next.to_string().into_bytes();
+                write_i64_bytes(buf, next);
                 Ok(next)
             }
             Some(_) => Err(()),
             None => {
                 let next = delta;
-                self.data.insert(key, Value::String(next.to_string().into_bytes()));
+                let mut out = Vec::with_capacity(20);
+                write_i64_bytes(&mut out, next);
+                self.data.insert(key.to_vec(), Value::String(out));
                 Ok(next)
             }
         }
@@ -891,6 +893,63 @@ impl Db {
         }
         false
     }
+}
+
+fn parse_i64_bytes(input: &[u8]) -> Result<i64, ()> {
+    if input.is_empty() {
+        return Err(());
+    }
+    let mut idx = 0;
+    let mut sign: i128 = 1;
+    if input[0] == b'-' {
+        sign = -1;
+        idx = 1;
+    } else if input[0] == b'+' {
+        idx = 1;
+    }
+    if idx >= input.len() {
+        return Err(());
+    }
+    let mut value: i128 = 0;
+    for &b in &input[idx..] {
+        if b < b'0' || b > b'9' {
+            return Err(());
+        }
+        value = value * 10 + (b - b'0') as i128;
+        if value > (i64::MAX as i128) + 1 {
+            return Err(());
+        }
+    }
+    value *= sign;
+    if value < i64::MIN as i128 || value > i64::MAX as i128 {
+        return Err(());
+    }
+    Ok(value as i64)
+}
+
+fn write_i64_bytes(buf: &mut Vec<u8>, n: i64) {
+    buf.clear();
+    let mut tmp = [0u8; 20];
+    let mut idx = tmp.len();
+    let mut value = n as i128;
+    let negative = value < 0;
+    if negative {
+        value = -value;
+    }
+    loop {
+        let digit = (value % 10) as u8;
+        idx -= 1;
+        tmp[idx] = b'0' + digit;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    if negative {
+        idx -= 1;
+        tmp[idx] = b'-';
+    }
+    buf.extend_from_slice(&tmp[idx..]);
 }
 
 fn now_ms() -> u64 {
