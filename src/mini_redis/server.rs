@@ -119,7 +119,7 @@ async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<
             counts.0, counts.1, counts.2, counts.3, counts.4, counts.5
         );
     }
-    let path_msg = persist_path.as_deref().unwrap_or("<unknown>");
+    let _path_msg = persist_path.as_deref().unwrap_or("<unknown>");
     if guard.persist.is_none() {
         eprintln!("mini-redis: persistence not configured; skipping snapshot");
         return;
@@ -230,8 +230,8 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
         while let Ok(msg) = pub_rx.try_recv() {
             let _ = write_value_buf(&mut writer, &msg, &mut resp_buf).await;
         }
+        writer.flush().await?;
         if cmd.as_ref() == "QUIT" {
-            let _ = writer.flush().await;
             let _ = peer;
             return Ok(());
         }

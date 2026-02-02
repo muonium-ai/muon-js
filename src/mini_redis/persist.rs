@@ -56,6 +56,7 @@ pub struct LibsqlPersist {
 
 #[cfg(feature = "mini-redis-libsql")]
 impl LibsqlPersist {
+    #[allow(deprecated)] // TODO: migrate to libsql Builder API
     pub async fn open(path: &str, aof_enabled: bool) -> io::Result<Self> {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
