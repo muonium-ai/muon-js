@@ -17,51 +17,72 @@ def resp_encode(args: List[bytes]) -> bytes:
     return out
 
 
-def resp_read(sock: socket.socket):
-    def read_line():
-        buf = b""
-        while not buf.endswith(b"\r\n"):
-            chunk = sock.recv(1)
-            if not chunk:
-                return None
-            buf += chunk
-        return buf[:-2]
+class RespReader:
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.buf = bytearray()
 
-    prefix = sock.recv(1)
+    def _fill(self) -> bool:
+        chunk = self.sock.recv(4096)
+        if not chunk:
+            return False
+        self.buf.extend(chunk)
+        return True
+
+    def read_exact(self, n: int) -> bytes:
+        while len(self.buf) < n:
+            if not self._fill():
+                return b""
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
+
+    def read_line(self) -> bytes:
+        while True:
+            idx = self.buf.find(b"\r\n")
+            if idx != -1:
+                out = bytes(self.buf[:idx])
+                del self.buf[:idx + 2]
+                return out
+            if not self._fill():
+                return b""
+
+
+def resp_read(reader: RespReader):
+    prefix = reader.read_exact(1)
     if not prefix:
         return None
     if prefix == b"+":
-        return ("simple", read_line().decode())
+        return ("simple", reader.read_line().decode())
     if prefix == b"-":
-        return ("error", read_line().decode())
+        return ("error", reader.read_line().decode())
     if prefix == b":":
-        return ("int", int(read_line()))
+        line = reader.read_line()
+        return ("int", int(line))
     if prefix == b"_":
-        _ = read_line()
+        _ = reader.read_line()
         return ("null", None)
     if prefix == b"$":
-        ln = int(read_line())
+        ln = int(reader.read_line())
         if ln < 0:
             return ("null", None)
-        data = b""
-        while len(data) < ln:
-            data += sock.recv(ln - len(data))
-        _ = sock.recv(2)
+        data = reader.read_exact(ln)
+        _ = reader.read_exact(2)
         return ("blob", data)
     if prefix == b"*":
-        ln = int(read_line())
+        ln = int(reader.read_line())
         if ln < 0:
             return ("null", None)
         arr = []
         for _ in range(ln):
-            arr.append(resp_read(sock))
+            arr.append(resp_read(reader))
         return ("array", arr)
     return ("error", "ERR unknown RESP type")
 
 
-def send_cmd(sock: socket.socket, args: List[bytes]):
-    sock.sendall(resp_encode(args))
-    return resp_read(sock)
+def send_cmd(reader: RespReader, args: List[bytes]):
+    reader.sock.sendall(resp_encode(args))
+    return resp_read(reader)
 
 
 def percentile(values: List[float], pct: float) -> float:
@@ -120,6 +141,7 @@ def run_workers(
         local_latencies: List[float] = []
         try:
             sock = socket.create_connection((host, port))
+            reader = RespReader(sock)
         except Exception:
             with lock:
                 errors += count
@@ -127,7 +149,7 @@ def run_workers(
         for i in range(count):
             cmd = cmd_builder(cid, i)
             start = time.perf_counter()
-            resp = send_cmd(sock, cmd)
+            resp = send_cmd(reader, cmd)
             end = time.perf_counter()
             local_latencies.append((end - start) * 1000.0)
             if resp is None or resp[0] == "error":
@@ -162,13 +184,14 @@ def run_test(
     clients: int,
     requests: int,
     payload: bytes,
-    setup_fn: Callable[[socket.socket], None],
+    setup_fn: Callable[[RespReader], None],
     cmd_builder: Callable[[int, int], List[bytes]],
 ):
     print(f"\n=== running {name} ===", flush=True)
     setup_sock = socket.create_connection((host, port))
+    setup_reader = RespReader(setup_sock)
     try:
-        setup_fn(setup_sock)
+        setup_fn(setup_reader)
     finally:
         setup_sock.close()
 
@@ -231,36 +254,36 @@ def main():
     )
     tests = [t.strip().lower() for t in args.tests.split(",") if t.strip()]
 
-    def setup_noop(_sock: socket.socket):
+    def setup_noop(_reader: RespReader):
         return
 
-    def setup_set_keys(sock: socket.socket, key_prefix: bytes, value: bytes = None):
+    def setup_set_keys(reader: RespReader, key_prefix: bytes, value: bytes = None):
         data = payload if value is None else value
         for cid in range(clients):
             key = key_prefix + str(cid).encode()
-            send_cmd(sock, [b"SET", key, data])
+            send_cmd(reader, [b"SET", key, data])
 
-    def setup_list(sock: socket.socket, key: bytes, count: int):
-        send_cmd(sock, [b"DEL", key])
+    def setup_list(reader: RespReader, key: bytes, count: int):
+        send_cmd(reader, [b"DEL", key])
         for i in range(count):
-            send_cmd(sock, [b"RPUSH", key, str(i).encode()])
+            send_cmd(reader, [b"RPUSH", key, str(i).encode()])
 
-    def setup_set(sock: socket.socket, key: bytes):
-        send_cmd(sock, [b"DEL", key])
+    def setup_set(reader: RespReader, key: bytes):
+        send_cmd(reader, [b"DEL", key])
         for i in range(10):
-            send_cmd(sock, [b"SADD", key, str(i).encode()])
+            send_cmd(reader, [b"SADD", key, str(i).encode()])
 
-    def setup_hash(sock: socket.socket, key: bytes):
-        send_cmd(sock, [b"DEL", key])
-        send_cmd(sock, [b"HSET", key, b"f", b"v"])
+    def setup_hash(reader: RespReader, key: bytes):
+        send_cmd(reader, [b"DEL", key])
+        send_cmd(reader, [b"HSET", key, b"f", b"v"])
 
-    def setup_zset(sock: socket.socket, key: bytes):
-        send_cmd(sock, [b"DEL", key])
-        send_cmd(sock, [b"ZADD", key, b"1", b"a", b"2", b"b"])
+    def setup_zset(reader: RespReader, key: bytes):
+        send_cmd(reader, [b"DEL", key])
+        send_cmd(reader, [b"ZADD", key, b"1", b"a", b"2", b"b"])
 
-    def setup_stream(sock: socket.socket, key: bytes):
-        send_cmd(sock, [b"DEL", key])
-        send_cmd(sock, [b"XADD", key, b"*", b"f", b"v0"])
+    def setup_stream(reader: RespReader, key: bytes):
+        send_cmd(reader, [b"DEL", key])
+        send_cmd(reader, [b"XADD", key, b"*", b"f", b"v0"])
 
     for test in tests:
         if test == "ping":
@@ -288,8 +311,8 @@ def main():
             )
         elif test == "get":
             key_prefix = b"bench:get:"
-            def setup(sock: socket.socket):
-                setup_set_keys(sock, key_prefix)
+            def setup(reader: RespReader):
+                setup_set_keys(reader, key_prefix)
             run_test(
                 "GET",
                 host,
@@ -302,8 +325,8 @@ def main():
             )
         elif test == "incr":
             key_prefix = b"bench:incr:"
-            def setup(sock: socket.socket):
-                setup_set_keys(sock, key_prefix, b"0")
+            def setup(reader: RespReader):
+                setup_set_keys(reader, key_prefix, b"0")
             run_test(
                 "INCR",
                 host,
@@ -340,8 +363,8 @@ def main():
             )
         elif test == "lpop":
             key = b"bench:list:lpop"
-            def setup(sock: socket.socket):
-                setup_list(sock, key, requests + 10)
+            def setup(reader: RespReader):
+                setup_list(reader, key, requests + 10)
             run_test(
                 "LPOP",
                 host,
@@ -354,8 +377,8 @@ def main():
             )
         elif test == "rpop":
             key = b"bench:list:rpop"
-            def setup(sock: socket.socket):
-                setup_list(sock, key, requests + 10)
+            def setup(reader: RespReader):
+                setup_list(reader, key, requests + 10)
             run_test(
                 "RPOP",
                 host,
@@ -375,7 +398,7 @@ def main():
                 clients,
                 requests,
                 payload,
-                lambda sock: setup_set(sock, key),
+                lambda reader: setup_set(reader, key),
                 lambda cid, i: [b"SADD", key, str(cid).encode() + b":" + str(i).encode()],
             )
         elif test == "hset":
@@ -387,7 +410,7 @@ def main():
                 clients,
                 requests,
                 payload,
-                lambda sock: setup_hash(sock, key),
+                lambda reader: setup_hash(reader, key),
                 lambda cid, i: [b"HSET", key, str(cid).encode() + b":" + str(i).encode(), payload],
             )
         elif test == "zadd":
@@ -399,7 +422,7 @@ def main():
                 clients,
                 requests,
                 payload,
-                lambda sock: setup_zset(sock, key),
+                lambda reader: setup_zset(reader, key),
                 lambda cid, i: [b"ZADD", key, b"1", str(cid).encode() + b":" + str(i).encode()],
             )
         elif test == "xadd":
@@ -411,13 +434,13 @@ def main():
                 clients,
                 requests,
                 payload,
-                lambda sock: setup_stream(sock, key),
+                lambda reader: setup_stream(reader, key),
                 lambda _cid, _i: [b"XADD", key, b"*", b"f", payload],
             )
         elif test == "lrange":
             key = b"bench:list:lrange"
-            def setup(sock: socket.socket):
-                setup_list(sock, key, max(args.lrange_size, 1))
+            def setup(reader: RespReader):
+                setup_list(reader, key, max(args.lrange_size, 1))
             run_test(
                 f"LRANGE_{args.lrange_size} (first {args.lrange_size} elements)",
                 host,

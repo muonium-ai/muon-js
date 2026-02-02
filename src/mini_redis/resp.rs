@@ -15,6 +15,42 @@ pub enum RespValue {
     Array(Vec<RespValue>),
 }
 
+fn push_usize(buf: &mut Vec<u8>, mut n: usize) {
+    if n == 0 {
+        buf.push(b'0');
+        return;
+    }
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    while n > 0 {
+        i -= 1;
+        tmp[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    buf.extend_from_slice(&tmp[i..]);
+}
+
+fn push_i64(buf: &mut Vec<u8>, n: i64) {
+    if n == 0 {
+        buf.push(b'0');
+        return;
+    }
+    let mut v: u64 = if n < 0 {
+        buf.push(b'-');
+        (-(n as i128)) as u64
+    } else {
+        n as u64
+    };
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    while v > 0 {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    buf.extend_from_slice(&tmp[i..]);
+}
+
 impl RespValue {
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
@@ -30,12 +66,12 @@ impl RespValue {
             }
             RespValue::Integer(n) => {
                 out.extend_from_slice(b":");
-                out.extend_from_slice(n.to_string().as_bytes());
+                push_i64(out, *n);
                 out.extend_from_slice(b"\r\n");
             }
             RespValue::Blob(bytes) => {
                 out.extend_from_slice(b"$");
-                out.extend_from_slice(bytes.len().to_string().as_bytes());
+                push_usize(out, bytes.len());
                 out.extend_from_slice(b"\r\n");
                 out.extend_from_slice(bytes.as_ref());
                 out.extend_from_slice(b"\r\n");
@@ -45,7 +81,7 @@ impl RespValue {
             }
             RespValue::Array(items) => {
                 out.extend_from_slice(b"*");
-                out.extend_from_slice(items.len().to_string().as_bytes());
+                push_usize(out, items.len());
                 out.extend_from_slice(b"\r\n");
                 for item in items {
                     item.encode(out);
@@ -83,11 +119,11 @@ pub async fn write_array_of_blobs_buf<W: io::Write + Unpin>(
 
 fn encode_array_of_blobs(items: &[Arc<[u8]>], out: &mut Vec<u8>) {
     out.extend_from_slice(b"*");
-    out.extend_from_slice(items.len().to_string().as_bytes());
+    push_usize(out, items.len());
     out.extend_from_slice(b"\r\n");
     for item in items {
         out.extend_from_slice(b"$");
-        out.extend_from_slice(item.len().to_string().as_bytes());
+        push_usize(out, item.len());
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(item.as_ref());
         out.extend_from_slice(b"\r\n");
