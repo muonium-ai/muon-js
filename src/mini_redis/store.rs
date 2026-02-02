@@ -9,7 +9,7 @@ pub enum Value {
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Vec<u8>>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
-    ZSet(Vec<(Vec<u8>, f64)>),
+    ZSet(HashMap<Vec<u8>, f64>),
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
 
@@ -766,18 +766,9 @@ impl Db {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::ZSet(Vec::new()));
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::ZSet(HashMap::new()));
         match entry {
-            Value::ZSet(items) => {
-                for item in items.iter_mut() {
-                    if item.0 == member {
-                        item.1 = score;
-                        return Ok(false);
-                    }
-                }
-                items.push((member, score));
-                Ok(true)
-            }
+            Value::ZSet(items) => Ok(items.insert(member, score).is_none()),
             _ => Err(()),
         }
     }
@@ -788,9 +779,12 @@ impl Db {
         }
         match self.data.get_mut(key) {
             Some(Value::ZSet(items)) => {
-                let before = items.len();
-                items.retain(|(m, _)| !members.iter().any(|x| x == m));
-                let removed = (before - items.len()) as i64;
+                let mut removed = 0i64;
+                for member in members {
+                    if items.remove(member).is_some() {
+                        removed += 1;
+                    }
+                }
                 if items.is_empty() {
                     self.data.remove(key);
                     self.expires.remove(key);
@@ -822,8 +816,15 @@ impl Db {
                 if items.is_empty() {
                     return Ok(Vec::new());
                 }
-                let mut sorted = items.clone();
-                sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
+                let mut sorted: Vec<(Vec<u8>, f64)> = items
+                    .iter()
+                    .map(|(member, score)| (member.clone(), *score))
+                    .collect();
+                sorted.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
                 let len = sorted.len() as i64;
                 let mut s = if start < 0 { len + start } else { start };
                 let mut e = if stop < 0 { len + stop } else { stop };
