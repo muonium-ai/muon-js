@@ -3212,12 +3212,10 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if let Some((lhs, rhs)) = split_instanceof(s) {
         let left = eval_expr(ctx, lhs)?;
         let right = eval_expr(ctx, rhs)?;
-        let mut result = false;
-        
         // Check if right is a builtin marker string
         if let Some(bytes) = ctx.string_bytes(right) {
             if let Ok(marker) = core::str::from_utf8(bytes) {
-                result = match marker {
+                let result = match marker {
                     "__builtin_Error__" => js_is_error(ctx, left) != 0,
                     "__builtin_TypeError__" => ctx.object_class_id(left) == Some(JSObjectClassEnum::TypeError as u32),
                     "__builtin_ReferenceError__" => ctx.object_class_id(left) == Some(JSObjectClassEnum::ReferenceError as u32),
@@ -9376,7 +9374,6 @@ impl<'a> ArithParser<'a> {
                         Ok(None) => return Ok(Value::from_int32(-1)),
                         Err(_) => return Err(()),
                     }
-                    return Ok(Value::from_int32(-1));
                 } else if marker == "__builtin_string_replace__" {
                     if args.len() >= 2 {
                         let s = value_to_string(ctx, this_val);

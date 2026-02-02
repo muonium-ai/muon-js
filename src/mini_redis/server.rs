@@ -1,6 +1,6 @@
 //! RESP3 server and command dispatcher.
 
-use async_std::io::{self, BufReader, BufWriter};
+use async_std::io::{self, BufReader, BufWriter, WriteExt};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
@@ -302,7 +302,7 @@ async fn handle_command(
         ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
             if let Some(p) = $state.persist.as_ref() {
                 if p.aof_enabled() {
-                    let _ = p.log_command($db, &build_cmd($cmd, $args)).await;
+                    let _ = p.log_command($db, $cmd, $args).await;
                 }
             }
         };
@@ -1613,15 +1613,6 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn build_cmd(cmd: &str, args: &[Arc<[u8]>]) -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(args.len() + 1);
-    out.push(cmd.as_bytes().to_vec());
-    for arg in args {
-        out.push(arg.as_ref().to_vec());
-    }
-    out
 }
 
 async fn init_persist(config: &ServerConfig) -> io::Result<Option<Persist>> {

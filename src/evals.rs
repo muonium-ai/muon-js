@@ -473,6 +473,7 @@ pub fn strip_comments_checked(src: &str) -> Result<String, usize> {
 }
 
 /// Strip comments without error reporting.
+#[allow(dead_code)]
 pub fn strip_comments(src: &str) -> String {
     strip_comments_checked(src).unwrap_or_else(|_| src.to_string())
 }
@@ -649,7 +650,7 @@ pub fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
                 if !prop_name.is_empty() && is_identifier(prop_name) {
                     // Build a function from the rest: () { ... }
                     let func_src = &rest[paren_pos..];
-                    if let Some((params_str, after_params)) = extract_paren(func_src) {
+                    if let Some((_params_str, after_params)) = extract_paren(func_src) {
                         let after_params = after_params.trim_start();
                         if after_params.starts_with('{') {
                             if let Some((body, _tail)) = extract_braces(after_params) {
@@ -908,6 +909,7 @@ pub fn split_statements(src: &str) -> Option<Vec<&str>> {
 }
 
 /// Split source into statements with starting offsets (preserving leading whitespace).
+#[allow(dead_code)]
 pub fn split_statements_with_offsets(src: &str) -> Option<Vec<(usize, &str)>> {
     let s = src;
     if s.trim().is_empty() {

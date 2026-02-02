@@ -31,11 +31,11 @@ impl Persist {
         }
     }
 
-    pub async fn log_command(&self, db: usize, cmd: &[Vec<u8>]) -> io::Result<()> {
+    pub async fn log_command(&self, db: usize, cmd: &str, args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
-            Persist::Libsql(persist) => persist.log_command(db, cmd).await,
+            Persist::Libsql(persist) => persist.log_command(db, cmd, args).await,
         }
     }
 
@@ -139,14 +139,14 @@ impl LibsqlPersist {
         Ok(())
     }
 
-    async fn log_command(&self, db: usize, cmd: &[Vec<u8>]) -> io::Result<()> {
-        if !self.aof_enabled {
-            return Ok(());
+    async fn log_command(&self, db: usize, cmd: &str, args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
+            if !self.aof_enabled {
+                return Ok(());
+            }
+            let encoded = encode_cmd(cmd, args);
+            self.conn.execute("INSERT INTO aof_log (db, cmd) VALUES (?, ?)", (db as i64, encoded)).await.map_err(to_io)?;
+            Ok(())
         }
-        let encoded = encode_cmd(cmd);
-        self.conn.execute("INSERT INTO aof_log (db, cmd) VALUES (?, ?)", (db as i64, encoded)).await.map_err(to_io)?;
-        Ok(())
-    }
 
     async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
         self.conn.execute("DELETE FROM kv", ()).await.map_err(to_io)?;
@@ -235,16 +235,22 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-fn encode_cmd(cmd: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
+fn encode_cmd(cmd: &str, args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
+    let count = args.len() + 1;
+    let capacity = 16 + cmd.len() + args.iter().map(|a| 16 + a.len()).sum::<usize>();
+    let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(b"*");
+    out.extend_from_slice(count.to_string().as_bytes());
+    out.extend_from_slice(b"\r\n$");
     out.extend_from_slice(cmd.len().to_string().as_bytes());
     out.extend_from_slice(b"\r\n");
-    for item in cmd {
+    out.extend_from_slice(cmd.as_bytes());
+    out.extend_from_slice(b"\r\n");
+    for item in args {
         out.extend_from_slice(b"$");
         out.extend_from_slice(item.len().to_string().as_bytes());
         out.extend_from_slice(b"\r\n");
-        out.extend_from_slice(item);
+        out.extend_from_slice(item.as_ref());
         out.extend_from_slice(b"\r\n");
     }
     out
