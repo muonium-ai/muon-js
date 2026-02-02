@@ -162,14 +162,14 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
         } else {
             None
         };
-        let resp = if cmd == "SUBSCRIBE" {
+        let resp = if cmd.as_ref() == "SUBSCRIBE" {
             handle_subscribe(&state, &pub_tx, &args[1..]).await
-        } else if cmd == "PUBLISH" {
+        } else if cmd.as_ref() == "PUBLISH" {
             handle_publish(&state, &args[1..]).await
-        } else if in_multi && cmd != "EXEC" && cmd != "DISCARD" && cmd != "MULTI" {
-            queued.push((cmd.clone(), args[1..].to_vec()));
+        } else if in_multi && cmd.as_ref() != "EXEC" && cmd.as_ref() != "DISCARD" && cmd.as_ref() != "MULTI" {
+            queued.push((cmd.as_ref().to_string(), args[1..].to_vec()));
             RespValue::Simple("QUEUED".to_string())
-        } else if cmd == "MULTI" {
+        } else if cmd.as_ref() == "MULTI" {
             if in_multi {
                 RespValue::Error("ERR MULTI calls can not be nested".to_string())
             } else {
@@ -177,7 +177,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 queued.clear();
                 RespValue::Simple("OK".to_string())
             }
-        } else if cmd == "DISCARD" {
+        } else if cmd.as_ref() == "DISCARD" {
             if !in_multi {
                 RespValue::Error("ERR DISCARD without MULTI".to_string())
             } else {
@@ -185,7 +185,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 queued.clear();
                 RespValue::Simple("OK".to_string())
             }
-        } else if cmd == "EXEC" {
+        } else if cmd.as_ref() == "EXEC" {
             if !in_multi {
                 RespValue::Error("ERR EXEC without MULTI".to_string())
             } else {
@@ -200,18 +200,30 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             }
         } else {
             let mut guard = state.lock().await;
-            handle_command(&mut guard, &mut current_db, &mut script_runtime, &cmd, &args[1..]).await
+            handle_command(
+                &mut guard,
+                &mut current_db,
+                &mut script_runtime,
+                cmd.as_ref(),
+                &args[1..],
+            )
+            .await
         };
         if let Some(start) = timing {
             let elapsed_us = start.elapsed().as_micros();
             let arg_count = args.len().saturating_sub(1);
-            eprintln!("mini-redis: cmd={} args={} elapsed_us={}", cmd, arg_count, elapsed_us);
+            eprintln!(
+                "mini-redis: cmd={} args={} elapsed_us={}",
+                cmd.as_ref(),
+                arg_count,
+                elapsed_us
+            );
         }
         write_value(&mut &stream, &resp).await?;
         while let Ok(msg) = pub_rx.try_recv() {
             let _ = write_value(&mut &stream, &msg).await;
         }
-        if cmd == "QUIT" {
+        if cmd.as_ref() == "QUIT" {
             let _ = peer;
             return Ok(());
         }
@@ -278,6 +290,15 @@ async fn handle_command(
     cmd: &str,
     args: &[Vec<u8>],
 ) -> RespValue {
+    macro_rules! log_cmd {
+        ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
+            if let Some(p) = $state.persist.as_ref() {
+                if p.aof_enabled() {
+                    let _ = p.log_command($db, &build_cmd($cmd, $args)).await;
+                }
+            }
+        };
+    }
     match cmd {
         "PING" => {
             if let Some(arg) = args.get(0) {
@@ -318,9 +339,7 @@ async fn handle_command(
                 match db.set_nx(key.clone(), value.clone()) {
                     Ok(set) => {
                         if set {
-                            if let Some(p) = state.persist.as_ref() {
-                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                            }
+                            log_cmd!(state, *db_index, cmd, args);
                         }
                         RespValue::Integer(if set { 1 } else { 0 })
                     }
@@ -341,9 +360,7 @@ async fn handle_command(
                 db.set_string(key, value, None);
                 idx += 2;
             }
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, *db_index, cmd, args);
             RespValue::Simple("OK".to_string())
         }
         "MGET" => {
@@ -371,9 +388,7 @@ async fn handle_command(
                     }
                 };
                 db.set_string(key.clone(), value.clone(), None);
-                if let Some(p) = state.persist.as_ref() {
-                    let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                }
+                log_cmd!(state, *db_index, cmd, args);
                 match prev {
                     Some(v) => RespValue::Blob(v),
                     None => RespValue::Null,
@@ -386,9 +401,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.append(key.clone(), value) {
                     Ok(len) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(len)
                     }
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -401,9 +414,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.incr_by(key.clone(), 1) {
                     Ok(val) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
                     }
                     Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
@@ -417,9 +428,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.incr_by(key.clone(), delta) {
                     Ok(val) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
                     }
                     Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
@@ -432,9 +441,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.incr_by(key.clone(), -1) {
                     Ok(val) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
                     }
                     Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
@@ -448,9 +455,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.incr_by(key.clone(), -delta) {
                     Ok(val) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Integer(val)
                     }
                     Err(_) => RespValue::Error("ERR value is not an integer or out of range".to_string()),
@@ -492,9 +497,7 @@ async fn handle_command(
                 }
                 idx += 2;
             }
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, *db_index, cmd, args);
             RespValue::Integer(added)
         }
         "HGET" => match (args.get(0), args.get(1)) {
@@ -517,9 +520,7 @@ async fn handle_command(
             let db = &mut state.dbs[*db_index];
             match db.hash_del(key, fields) {
                 Ok(removed) => {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(removed)
                 }
                 Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -571,9 +572,7 @@ async fn handle_command(
             let db = &mut state.dbs[*db_index];
             match db.list_push(key, values, cmd == "LPUSH") {
                 Ok(len) => {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(len)
                 }
                 Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -611,17 +610,13 @@ async fn handle_command(
                 if out.is_empty() {
                     RespValue::Null
                 } else {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                     RespValue::Array(out)
                 }
             } else {
                 match db.list_pop(key, cmd == "LPOP") {
                     Ok(Some(v)) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Blob(v)
                     }
                     Ok(None) => RespValue::Null,
@@ -677,9 +672,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 match db.list_set(key, idx, value) {
                     Ok(()) => {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                        log_cmd!(state, *db_index, cmd, args);
                         RespValue::Simple("OK".to_string())
                     }
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -698,9 +691,7 @@ async fn handle_command(
                 match db.list_insert(key, before, pivot, value) {
                     Ok(len) => {
                         if len > 0 {
-                            if let Some(p) = state.persist.as_ref() {
-                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                            }
+                            log_cmd!(state, *db_index, cmd, args);
                         }
                         RespValue::Integer(len)
                     }
@@ -719,9 +710,7 @@ async fn handle_command(
                 match db.list_rem(key, cnt, value) {
                     Ok(removed) => {
                         if removed > 0 {
-                            if let Some(p) = state.persist.as_ref() {
-                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                            }
+                            log_cmd!(state, *db_index, cmd, args);
                         }
                         RespValue::Integer(removed)
                     }
@@ -739,9 +728,7 @@ async fn handle_command(
             let db = &mut state.dbs[*db_index];
             match db.set_add(key, members) {
                 Ok(added) => {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(added)
                 }
                 Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -756,9 +743,7 @@ async fn handle_command(
             let db = &mut state.dbs[*db_index];
             match db.set_remove(key, members) {
                 Ok(removed) => {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(removed)
                 }
                 Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -806,9 +791,7 @@ async fn handle_command(
                 match db.set_move(source, dest, member) {
                     Ok(moved) => {
                         if moved {
-                            if let Some(p) = state.persist.as_ref() {
-                                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                            }
+                            log_cmd!(state, *db_index, cmd, args);
                         }
                         RespValue::Integer(if moved { 1 } else { 0 })
                     }
@@ -840,9 +823,7 @@ async fn handle_command(
                 }
                 idx += 2;
             }
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, *db_index, cmd, args);
             RespValue::Integer(added)
         }
         "ZRANGE" => match (args.get(0), args.get(1), args.get(2)) {
@@ -867,9 +848,7 @@ async fn handle_command(
             match db.zrem(key, members) {
                 Ok(removed) => {
                     if removed > 0 {
-                        if let Some(p) = state.persist.as_ref() {
-                            let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                        }
+                            log_cmd!(state, *db_index, cmd, args);
                     }
                     RespValue::Integer(removed)
                 }
@@ -904,9 +883,7 @@ async fn handle_command(
             let db = &mut state.dbs[*db_index];
             match db.stream_add(key, id, fields) {
                 Ok(new_id) => {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                        log_cmd!(state, *db_index, cmd, args);
                     RespValue::Blob(new_id.into_bytes())
                 }
                 Err(_) => RespValue::Error("ERR invalid stream ID".to_string()),
@@ -943,9 +920,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
                 db.set_string(key, value, expire_at);
-                if let Some(p) = state.persist.as_ref() {
-                    let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                }
+                log_cmd!(state, *db_index, cmd, args);
                 RespValue::Simple("OK".to_string())
             }
             Err(e) => RespValue::Error(e),
@@ -958,9 +933,7 @@ async fn handle_command(
                     removed += 1;
                 }
             }
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, *db_index, cmd, args);
             RespValue::Integer(removed)
         }
         "EXISTS" => {
@@ -979,9 +952,7 @@ async fn handle_command(
                 let ms = parse_u64(sec).unwrap_or(0).saturating_mul(1000);
                 let ok = db.set_expire_ms(key, ms);
                 if ok {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                 }
                 RespValue::Integer(if ok { 1 } else { 0 })
             }
@@ -993,9 +964,7 @@ async fn handle_command(
                 let ms = parse_u64(ms).unwrap_or(0);
                 let ok = db.set_expire_ms(key, ms);
                 if ok {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                 }
                 RespValue::Integer(if ok { 1 } else { 0 })
             }
@@ -1006,9 +975,7 @@ async fn handle_command(
                 let db = &mut state.dbs[*db_index];
                 let removed = db.persist(key);
                 if removed == 1 {
-                    if let Some(p) = state.persist.as_ref() {
-                        let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-                    }
+                    log_cmd!(state, *db_index, cmd, args);
                 }
                 RespValue::Integer(removed)
             }
@@ -1114,9 +1081,7 @@ async fn handle_command(
             }
             let db = &mut state.dbs[*db_index];
             db.flush();
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(*db_index, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, *db_index, cmd, args);
             RespValue::Simple("OK".to_string())
         }
         "FLUSHALL" => {
@@ -1126,9 +1091,7 @@ async fn handle_command(
             for db in state.dbs.iter_mut() {
                 db.flush();
             }
-            if let Some(p) = state.persist.as_ref() {
-                let _ = p.log_command(0, &build_cmd(cmd, args)).await;
-            }
+            log_cmd!(state, 0, cmd, args);
             RespValue::Simple("OK".to_string())
         }
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec()),
@@ -1157,7 +1120,7 @@ async fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'FUNCTION'".to_string());
             }
             let sub = to_upper_ascii(&args[0]);
-            match sub.as_str() {
+            match sub.as_ref() {
                 "LIST" => RespValue::Array(Vec::new()),
                 "FLUSH" => {
                     state.script_cache.clear();
@@ -1291,7 +1254,7 @@ fn handle_script_command(state: &mut ServerState, args: &[Vec<u8>]) -> RespValue
         return RespValue::Error("ERR wrong number of arguments for 'SCRIPT'".to_string());
     }
     let sub = to_upper_ascii(&args[0]);
-    match sub.as_str() {
+    match sub.as_ref() {
         "LOAD" => {
             if args.len() != 2 {
                 return RespValue::Error("ERR wrong number of arguments for 'SCRIPT LOAD'".to_string());
@@ -1617,8 +1580,21 @@ fn parse_f64(input: &[u8]) -> Option<f64> {
     core::str::from_utf8(input).ok()?.parse::<f64>().ok()
 }
 
-fn to_upper_ascii(input: &[u8]) -> String {
-    input.iter().map(|b| b.to_ascii_uppercase() as char).collect()
+fn to_upper_ascii(input: &[u8]) -> std::borrow::Cow<'_, str> {
+    let mut has_lower = false;
+    for b in input {
+        if b.is_ascii_lowercase() {
+            has_lower = true;
+            break;
+        }
+    }
+    if !has_lower {
+        if let Ok(s) = core::str::from_utf8(input) {
+            return std::borrow::Cow::Borrowed(s);
+        }
+    }
+    let upper: String = input.iter().map(|b| b.to_ascii_uppercase() as char).collect();
+    std::borrow::Cow::Owned(upper)
 }
 
 fn now_ms() -> u64 {

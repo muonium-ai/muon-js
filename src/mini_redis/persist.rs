@@ -15,6 +15,14 @@ pub enum Persist {
 }
 
 impl Persist {
+    pub fn aof_enabled(&self) -> bool {
+        match self {
+            Persist::Noop => false,
+            #[cfg(feature = "mini-redis-libsql")]
+            Persist::Libsql(persist) => persist.aof_enabled,
+        }
+    }
+
     pub async fn load(&self, dbs: &mut [Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
