@@ -61,6 +61,16 @@ pub async fn write_value<W: io::Write + Unpin>(writer: &mut W, val: &RespValue) 
     writer.write_all(&buf).await
 }
 
+pub async fn write_value_buf<W: io::Write + Unpin>(
+    writer: &mut W,
+    val: &RespValue,
+    buf: &mut Vec<u8>,
+) -> io::Result<()> {
+    buf.clear();
+    val.encode(buf);
+    writer.write_all(buf).await
+}
+
 pub fn read_value<'a, R>(
     reader: &'a mut R,
 ) -> Pin<Box<dyn Future<Output = io::Result<Option<RespValue>>> + Send + 'a>>

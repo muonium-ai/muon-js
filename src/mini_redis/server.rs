@@ -1,6 +1,6 @@
 //! RESP3 server and command dispatcher.
 
-use async_std::io::{self, BufReader};
+use async_std::io::{self, BufReader, BufWriter};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::mini_redis::resp::{read_value, write_value, RespValue};
+use crate::mini_redis::resp::{read_value, write_value_buf, RespValue};
 use crate::mini_redis::persist::Persist;
 use crate::mini_redis::store::Db;
 use crate::{
@@ -134,6 +134,8 @@ async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<
 async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.clone());
+    let mut writer = BufWriter::new(stream);
+    let mut resp_buf: Vec<u8> = Vec::with_capacity(1024);
     let mut current_db: usize = 0;
     let mut in_multi = false;
     let mut queued: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
@@ -148,12 +150,17 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
         let args = match value_to_args(val) {
             Ok(a) => a,
             Err(err) => {
-                write_value(&mut &stream, &RespValue::Error(err)).await?;
+                write_value_buf(&mut writer, &RespValue::Error(err), &mut resp_buf).await?;
                 continue;
             }
         };
         if args.is_empty() {
-            write_value(&mut &stream, &RespValue::Error("ERR empty command".to_string())).await?;
+            write_value_buf(
+                &mut writer,
+                &RespValue::Error("ERR empty command".to_string()),
+                &mut resp_buf,
+            )
+            .await?;
             continue;
         }
         let cmd = to_upper_ascii(&args[0]);
@@ -219,11 +226,12 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 elapsed_us
             );
         }
-        write_value(&mut &stream, &resp).await?;
+        write_value_buf(&mut writer, &resp, &mut resp_buf).await?;
         while let Ok(msg) = pub_rx.try_recv() {
-            let _ = write_value(&mut &stream, &msg).await;
+            let _ = write_value_buf(&mut writer, &msg, &mut resp_buf).await;
         }
         if cmd.as_ref() == "QUIT" {
+            let _ = writer.flush().await;
             let _ = peer;
             return Ok(());
         }
