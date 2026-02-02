@@ -248,15 +248,15 @@ fn to_io<E: std::fmt::Display>(err: E) -> io::Error {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn load_list(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+async fn load_list(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::VecDeque<Vec<u8>>> {
     let mut rows = conn
         .query("SELECT idx, value FROM list_items WHERE db = ? AND key = ? ORDER BY idx ASC", (db as i64, key.to_vec()))
         .await
         .map_err(to_io)?;
-    let mut out = Vec::new();
+    let mut out = std::collections::VecDeque::new();
     while let Some(row) = rows.next().await.map_err(to_io)? {
         let value: Vec<u8> = row.get(1).map_err(to_io)?;
-        out.push(value);
+        out.push_back(value);
     }
     Ok(out)
 }

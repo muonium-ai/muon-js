@@ -38,3 +38,9 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Run with persistence but batch/async logging (if supported) to avoid per-command fsync.
 - Reduce logging verbosity on hot path.
 - Compare async vs sync server loop (if feasible) to isolate runtime overhead.
+
+## Code review quick wins
+- Replace list storage with `VecDeque` to make LPUSH/LPOP $O(1)$ (currently `Vec` + `insert/remove` at index 0 is $O(n)$). See [src/mini_redis/store.rs](src/mini_redis/store.rs#L284-L337).
+- Optimize `LRANGE` to avoid index-heavy access patterns and reduce cloning overhead. See [src/mini_redis/store.rs](src/mini_redis/store.rs#L331-L370).
+- Avoid per-command `String` allocation for `to_upper_ascii` by matching case-insensitively on bytes. See [src/mini_redis/server.rs](src/mini_redis/server.rs#L1616-L1618).
+- Skip `build_cmd` unless AOF is enabled; it currently clones args for every mutating command. See [src/mini_redis/server.rs](src/mini_redis/server.rs#L1632-L1639).

@@ -1,11 +1,11 @@
 //! In-memory multi-DB store with TTL support.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Vec<u8>),
-    List(Vec<Vec<u8>>),
+    List(VecDeque<Vec<u8>>),
     Set(HashSet<Vec<u8>>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
     ZSet(Vec<(Vec<u8>, f64)>),
@@ -285,16 +285,19 @@ impl Db {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::List(Vec::new()));
+        let entry = self
+            .data
+            .entry(key.to_vec())
+            .or_insert_with(|| Value::List(VecDeque::new()));
         match entry {
             Value::List(list) => {
                 if left {
                     for value in values {
-                        list.insert(0, value.clone());
+                        list.push_front(value.clone());
                     }
                 } else {
                     for value in values {
-                        list.push(value.clone());
+                        list.push_back(value.clone());
                     }
                 }
                 Ok(list.len() as i64)
@@ -313,9 +316,9 @@ impl Db {
                 let out = if list.is_empty() {
                     None
                 } else if left {
-                    Some(list.remove(0))
+                    list.pop_front()
                 } else {
-                    list.pop()
+                    list.pop_back()
                 };
                 if list.is_empty() {
                     self.data.remove(key);
@@ -355,9 +358,11 @@ impl Db {
                 if s > e {
                     return Ok(Vec::new());
                 }
-                let mut out = Vec::with_capacity((e - s + 1) as usize);
-                for i in s..=e {
-                    out.push(list[i as usize].clone());
+                let start_idx = s as usize;
+                let count = (e - s + 1) as usize;
+                let mut out = Vec::with_capacity(count);
+                for item in list.iter().skip(start_idx).take(count) {
+                    out.push(item.clone());
                 }
                 Ok(out)
             }
@@ -384,11 +389,11 @@ impl Db {
         match self.data.get(key) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
-                let mut idx = if index < 0 { len + index } else { index };
+                let idx = if index < 0 { len + index } else { index };
                 if idx < 0 || idx >= len {
                     return Ok(None);
                 }
-                Ok(Some(list[idx as usize].clone()))
+                Ok(list.get(idx as usize).cloned())
             }
             Some(_) => Err(()),
             None => Ok(None),
@@ -402,11 +407,13 @@ impl Db {
         match self.data.get_mut(key) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
-                let mut idx = if index < 0 { len + index } else { index };
+                let idx = if index < 0 { len + index } else { index };
                 if idx < 0 || idx >= len {
                     return Err(());
                 }
-                list[idx as usize] = value.to_vec();
+                if let Some(slot) = list.get_mut(idx as usize) {
+                    *slot = value.to_vec();
+                }
                 Ok(())
             }
             Some(_) => Err(()),
@@ -454,7 +461,7 @@ impl Db {
                 } else if count > 0 {
                     let mut i = 0usize;
                     while i < list.len() && removed < count {
-                        if list[i].as_slice() == value {
+                        if list.get(i).map(|v| v.as_slice() == value).unwrap_or(false) {
                             list.remove(i);
                             removed += 1;
                         } else {
@@ -465,7 +472,7 @@ impl Db {
                     let mut i = list.len();
                     while i > 0 && removed < (-count) {
                         i -= 1;
-                        if list[i].as_slice() == value {
+                        if list.get(i).map(|v| v.as_slice() == value).unwrap_or(false) {
                             list.remove(i);
                             removed += 1;
                         }
