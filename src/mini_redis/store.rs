@@ -361,8 +361,25 @@ impl Db {
                 let start_idx = s as usize;
                 let count = (e - s + 1) as usize;
                 let mut out = Vec::with_capacity(count);
-                for item in list.iter().skip(start_idx).take(count) {
-                    out.push(item.clone());
+                let (front, back) = list.as_slices();
+                if start_idx < front.len() {
+                    let end = (start_idx + count).min(front.len());
+                    for item in &front[start_idx..end] {
+                        out.push(item.clone());
+                    }
+                    if out.len() < count {
+                        let remaining = count - out.len();
+                        let end_back = remaining.min(back.len());
+                        for item in &back[..end_back] {
+                            out.push(item.clone());
+                        }
+                    }
+                } else {
+                    let back_start = start_idx - front.len();
+                    let end = (back_start + count).min(back.len());
+                    for item in &back[back_start..end] {
+                        out.push(item.clone());
+                    }
                 }
                 Ok(out)
             }

@@ -2,6 +2,10 @@
 #![allow(dead_code)]
 
 use async_std::io;
+use async_std::channel::{bounded, Sender, Receiver};
+use async_std::future::timeout;
+use async_std::task;
+use std::time::Duration;
 
 use crate::mini_redis::store::Db;
 
@@ -52,6 +56,13 @@ impl Persist {
 pub struct LibsqlPersist {
     conn: libsql::Connection,
     aof_enabled: bool,
+    aof_tx: Option<Sender<AofEntry>>,
+}
+
+#[cfg(feature = "mini-redis-libsql")]
+struct AofEntry {
+    db: i64,
+    cmd: Vec<u8>,
 }
 
 #[cfg(feature = "mini-redis-libsql")]
@@ -60,12 +71,23 @@ impl LibsqlPersist {
     pub async fn open(path: &str, aof_enabled: bool) -> io::Result<Self> {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
-        let persist = Self { conn, aof_enabled };
+        let aof_tx = if aof_enabled {
+            let (tx, rx) = bounded::<AofEntry>(4096);
+            let path = path.to_string();
+            task::spawn(async move {
+                run_aof_worker(path, rx).await;
+            });
+            Some(tx)
+        } else {
+            None
+        };
+        let persist = Self { conn, aof_enabled, aof_tx };
         persist.init_schema().await?;
         Ok(persist)
     }
 
     async fn init_schema(&self) -> io::Result<()> {
+        let _ = self.conn.execute("PRAGMA journal_mode=WAL", ()).await;
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS kv (db INTEGER, key BLOB, type INTEGER, value BLOB, expires_at_ms INTEGER, PRIMARY KEY(db, key))",
             (),
@@ -141,13 +163,19 @@ impl LibsqlPersist {
     }
 
     async fn log_command(&self, db: usize, cmd: &str, args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
-            if !self.aof_enabled {
-                return Ok(());
-            }
-            let encoded = encode_cmd(cmd, args);
+        if !self.aof_enabled {
+            return Ok(());
+        }
+        let encoded = encode_cmd(cmd, args);
+        if let Some(tx) = self.aof_tx.as_ref() {
+            let entry = AofEntry { db: db as i64, cmd: encoded };
+            tx.send(entry).await.map_err(to_io)?;
+            Ok(())
+        } else {
             self.conn.execute("INSERT INTO aof_log (db, cmd) VALUES (?, ?)", (db as i64, encoded)).await.map_err(to_io)?;
             Ok(())
         }
+    }
 
     async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
         self.conn.execute("DELETE FROM kv", ()).await.map_err(to_io)?;
@@ -236,6 +264,59 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
+async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
+    let db = match libsql::Database::open(&path) {
+        Ok(db) => db,
+        Err(err) => {
+            eprintln!("mini-redis: failed to open AOF db: {}", err);
+            return;
+        }
+    };
+    let conn = match db.connect() {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("mini-redis: failed to connect AOF db: {}", err);
+            return;
+        }
+    };
+    loop {
+        let first = match rx.recv().await {
+            Ok(entry) => entry,
+            Err(_) => break,
+        };
+        let mut batch = Vec::with_capacity(256);
+        batch.push(first);
+        while batch.len() < 256 {
+            match timeout(Duration::from_millis(2), rx.recv()).await {
+                Ok(Ok(entry)) => batch.push(entry),
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+        if let Err(err) = flush_aof_batch(&conn, batch).await {
+            eprintln!("mini-redis: AOF batch insert failed: {}", err);
+        }
+    }
+}
+
+#[cfg(feature = "mini-redis-libsql")]
+async fn flush_aof_batch(conn: &libsql::Connection, mut batch: Vec<AofEntry>) -> io::Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    conn.execute("BEGIN", ()).await.map_err(to_io)?;
+    for entry in batch.drain(..) {
+        conn.execute(
+            "INSERT INTO aof_log (db, cmd) VALUES (?, ?)",
+            (entry.db, entry.cmd),
+        )
+        .await
+        .map_err(to_io)?;
+    }
+    conn.execute("COMMIT", ()).await.map_err(to_io)?;
+    Ok(())
+}
+
 fn encode_cmd(cmd: &str, args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
     let count = args.len() + 1;
     let capacity = 16 + cmd.len() + args.iter().map(|a| 16 + a.len()).sum::<usize>();
