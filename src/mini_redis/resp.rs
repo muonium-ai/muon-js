@@ -71,6 +71,29 @@ pub async fn write_value_buf<W: io::Write + Unpin>(
     writer.write_all(buf).await
 }
 
+pub async fn write_array_of_blobs_buf<W: io::Write + Unpin>(
+    writer: &mut W,
+    items: &[Arc<[u8]>],
+    buf: &mut Vec<u8>,
+) -> io::Result<()> {
+    buf.clear();
+    encode_array_of_blobs(items, buf);
+    writer.write_all(buf).await
+}
+
+fn encode_array_of_blobs(items: &[Arc<[u8]>], out: &mut Vec<u8>) {
+    out.extend_from_slice(b"*");
+    out.extend_from_slice(items.len().to_string().as_bytes());
+    out.extend_from_slice(b"\r\n");
+    for item in items {
+        out.extend_from_slice(b"$");
+        out.extend_from_slice(item.len().to_string().as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(item.as_ref());
+        out.extend_from_slice(b"\r\n");
+    }
+}
+
 pub fn read_value<'a, R>(
     reader: &'a mut R,
 ) -> Pin<Box<dyn Future<Output = io::Result<Option<RespValue>>> + Send + 'a>>

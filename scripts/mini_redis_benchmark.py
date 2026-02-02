@@ -234,10 +234,11 @@ def main():
     def setup_noop(_sock: socket.socket):
         return
 
-    def setup_set_keys(sock: socket.socket, key_prefix: bytes):
+    def setup_set_keys(sock: socket.socket, key_prefix: bytes, value: bytes = None):
+        data = payload if value is None else value
         for cid in range(clients):
             key = key_prefix + str(cid).encode()
-            send_cmd(sock, [b"SET", key, payload])
+            send_cmd(sock, [b"SET", key, data])
 
     def setup_list(sock: socket.socket, key: bytes, count: int):
         send_cmd(sock, [b"DEL", key])
@@ -302,7 +303,7 @@ def main():
         elif test == "incr":
             key_prefix = b"bench:incr:"
             def setup(sock: socket.socket):
-                setup_set_keys(sock, key_prefix)
+                setup_set_keys(sock, key_prefix, b"0")
             run_test(
                 "INCR",
                 host,

@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::mini_redis::resp::{read_value, write_value_buf, RespValue};
+use crate::mini_redis::resp::{read_value, write_array_of_blobs_buf, write_value_buf, RespValue};
 use crate::mini_redis::persist::Persist;
 use crate::mini_redis::store::Db;
 use crate::{
@@ -170,31 +170,36 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             None
         };
         let resp = if cmd.as_ref() == "SUBSCRIBE" {
-            handle_subscribe(&state, &pub_tx, &args[1..]).await
+            FastResponse::Value(handle_subscribe(&state, &pub_tx, &args[1..]).await)
         } else if cmd.as_ref() == "PUBLISH" {
-            handle_publish(&state, &args[1..]).await
+            FastResponse::Value(handle_publish(&state, &args[1..]).await)
+        } else if cmd.as_ref() == "LRANGE" && !in_multi {
+            match handle_lrange_fast(&state, &mut current_db, &args[1..]).await {
+                Ok(items) => FastResponse::BlobArray(items),
+                Err(err) => FastResponse::Value(err),
+            }
         } else if in_multi && cmd.as_ref() != "EXEC" && cmd.as_ref() != "DISCARD" && cmd.as_ref() != "MULTI" {
             queued.push((cmd.as_ref().to_string(), args[1..].to_vec()));
-            RespValue::Simple("QUEUED".to_string())
+            FastResponse::Value(RespValue::Simple("QUEUED".to_string()))
         } else if cmd.as_ref() == "MULTI" {
             if in_multi {
-                RespValue::Error("ERR MULTI calls can not be nested".to_string())
+                FastResponse::Value(RespValue::Error("ERR MULTI calls can not be nested".to_string()))
             } else {
                 in_multi = true;
                 queued.clear();
-                RespValue::Simple("OK".to_string())
+                FastResponse::Value(RespValue::Simple("OK".to_string()))
             }
         } else if cmd.as_ref() == "DISCARD" {
             if !in_multi {
-                RespValue::Error("ERR DISCARD without MULTI".to_string())
+                FastResponse::Value(RespValue::Error("ERR DISCARD without MULTI".to_string()))
             } else {
                 in_multi = false;
                 queued.clear();
-                RespValue::Simple("OK".to_string())
+                FastResponse::Value(RespValue::Simple("OK".to_string()))
             }
         } else if cmd.as_ref() == "EXEC" {
             if !in_multi {
-                RespValue::Error("ERR EXEC without MULTI".to_string())
+                FastResponse::Value(RespValue::Error("ERR EXEC without MULTI".to_string()))
             } else {
                 in_multi = false;
                 let mut results = Vec::with_capacity(queued.len());
@@ -203,18 +208,19 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                     let resp = handle_command(&mut guard, &mut current_db, &mut script_runtime, &qcmd, &qargs).await;
                     results.push(resp);
                 }
-                RespValue::Array(results)
+                FastResponse::Value(RespValue::Array(results))
             }
         } else {
             let mut guard = state.lock().await;
-            handle_command(
+            let resp = handle_command(
                 &mut guard,
                 &mut current_db,
                 &mut script_runtime,
                 cmd.as_ref(),
                 &args[1..],
             )
-            .await
+            .await;
+            FastResponse::Value(resp)
         };
         if let Some(start) = timing {
             let elapsed_us = start.elapsed().as_micros();
@@ -226,7 +232,14 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 elapsed_us
             );
         }
-        write_value_buf(&mut writer, &resp, &mut resp_buf).await?;
+        match resp {
+            FastResponse::Value(value) => {
+                write_value_buf(&mut writer, &value, &mut resp_buf).await?;
+            }
+            FastResponse::BlobArray(items) => {
+                write_array_of_blobs_buf(&mut writer, &items, &mut resp_buf).await?;
+            }
+        }
         while let Ok(msg) = pub_rx.try_recv() {
             let _ = write_value_buf(&mut writer, &msg, &mut resp_buf).await;
         }
@@ -235,6 +248,33 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             let _ = peer;
             return Ok(());
         }
+    }
+}
+
+enum FastResponse {
+    Value(RespValue),
+    BlobArray(Vec<Arc<[u8]>>),
+}
+
+async fn handle_lrange_fast(
+    state: &Arc<Mutex<ServerState>>,
+    db_index: &mut usize,
+    args: &[Arc<[u8]>],
+) -> Result<Vec<Arc<[u8]>>, RespValue> {
+    match (args.get(0), args.get(1), args.get(2)) {
+        (Some(key), Some(start), Some(stop)) => {
+            let start = parse_i64(start.as_ref()).unwrap_or(0);
+            let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
+            let mut guard = state.lock().await;
+            let db = &mut guard.dbs[*db_index];
+            match db.list_range(key.as_ref(), start, stop) {
+                Ok(items) => Ok(items),
+                Err(_) => Err(RespValue::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
+                )),
+            }
+        }
+        _ => Err(RespValue::Error("ERR wrong number of arguments for 'LRANGE'".to_string())),
     }
 }
 
