@@ -247,8 +247,8 @@ async fn handle_subscribe(
     }
     let channel = channels[0].clone();
     RespValue::Array(vec![
-        RespValue::Blob(b"subscribe".to_vec()),
-        RespValue::Blob(channel),
+        RespValue::Blob(b"subscribe".to_vec().into()),
+        RespValue::Blob(channel.into()),
         RespValue::Integer(count),
     ])
 }
@@ -270,9 +270,9 @@ async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Vec<u8>]) -> Re
     for tx in receivers {
         if tx
             .send(RespValue::Array(vec![
-                RespValue::Blob(b"message".to_vec()),
-                RespValue::Blob(channel.clone()),
-                RespValue::Blob(message.clone()),
+                RespValue::Blob(b"message".to_vec().into()),
+                RespValue::Blob(channel.clone().into()),
+                RespValue::Blob(message.clone().into()),
             ]))
             .await
             .is_ok()

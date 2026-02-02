@@ -1,6 +1,7 @@
 //! RESP3 parser/encoder (minimal subset for commands).
 
 use async_std::io::{self, BufReadExt, ReadExt, WriteExt};
+use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -9,7 +10,7 @@ pub enum RespValue {
     Simple(String),
     Error(String),
     Integer(i64),
-    Blob(Vec<u8>),
+    Blob(Arc<[u8]>),
     Null,
     Array(Vec<RespValue>),
 }
@@ -36,7 +37,7 @@ impl RespValue {
                 out.extend_from_slice(b"$");
                 out.extend_from_slice(bytes.len().to_string().as_bytes());
                 out.extend_from_slice(b"\r\n");
-                out.extend_from_slice(bytes);
+                out.extend_from_slice(bytes.as_ref());
                 out.extend_from_slice(b"\r\n");
             }
             RespValue::Null => {
@@ -95,7 +96,7 @@ where
                 reader.read_exact(&mut buf).await?;
                 let mut crlf = [0u8; 2];
                 reader.read_exact(&mut crlf).await?;
-                Ok(Some(RespValue::Blob(buf)))
+                Ok(Some(RespValue::Blob(Arc::from(buf))))
             }
             b'*' => {
                 let line = read_line(reader).await?;
