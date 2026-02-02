@@ -8,7 +8,22 @@
       "Bash(./tests/run_integration.sh:*)",
       "Bash(./target/release/examples/eval:*)",
       "Bash(make test-mquickjs-detailed:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(cargo check:*)",
+      "Bash(make:*)",
+      "Bash(make redis-run:*)",
+      "Bash(make redis-benchmark:*)",
+      "Bash(make redis-stop:*)",
+      "Bash(python3:*)",
+      "Bash(nc:*)",
+      "Bash(TaskStop b53be55)",
+      "Bash(pkill:*)",
+      "Bash(printf:*)",
+      "Bash(redis-cli:*)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(git reset:*)",
+      "Bash(lsof:*)"
     ]
   }
 }
