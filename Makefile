@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -17,6 +17,8 @@ REDIS_PIDFILE ?= tmp/redis.pid
 REDIS_LOG ?= tmp/redis.log
 REDIS_BENCH_LOG ?= tmp/redis_benchmark_$(shell date +%Y%m%d_%H%M%S).log
 REDIS_LUA_TEST_LOG ?= tmp/redis_lua_tests_$(shell date +%Y%m%d_%H%M%S).log
+MINI_REDIS_JS_TEST_LOG ?= tmp/mini_redis_js_tests_$(shell date +%Y%m%d_%H%M%S).log
+MINI_REDIS_JS_FAITHFUL_TEST_LOG ?= tmp/mini_redis_js_faithful_tests_$(shell date +%Y%m%d_%H%M%S).log
 
 sync-version:
 	./scripts/sync_version.sh
@@ -205,6 +207,58 @@ redis-lua-benchmark:
 	@$(MAKE) -s redis-benchmark
 	@echo "Stopping redis"
 	@$(MAKE) -s redis-stop
+
+mini-redis-js-tests: sync-version
+	@set -e; \
+	port=$$(python3 scripts/pick_port.py); \
+	echo "Building mini-redis (release)"; \
+	$(CARGO) build --release --features mini-redis --bin mini_redis; \
+	echo "Starting mini-redis (release) on $(MINI_REDIS_HOST):$$port"; \
+	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port & \
+	server_pid=$$!; \
+	retries=80; \
+	while [ $$retries -gt 0 ]; do \
+		if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("$(MINI_REDIS_HOST)", int("'"$$port"'"))); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+			break; \
+		fi; \
+		retries=$$((retries-1)); \
+		sleep 0.25; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		kill $$server_pid 2>/dev/null || true; \
+		exit 1; \
+	fi; \
+	echo "Running mini-redis JS scripting tests (log: $(MINI_REDIS_JS_TEST_LOG))"; \
+	MINI_REDIS_HOST=$(MINI_REDIS_HOST) MINI_REDIS_PORT=$$port bash ./tests/scripting_js/run_js_scripting_tests.sh 2>&1 | tee $(MINI_REDIS_JS_TEST_LOG); \
+	echo "Stopping mini-redis"; \
+	kill $$server_pid 2>/dev/null || true
+
+mini-redis-js-tests-faithful: sync-version
+	@set -e; \
+	port=$$(python3 scripts/pick_port.py); \
+	echo "Building mini-redis (release)"; \
+	$(CARGO) build --release --features mini-redis --bin mini_redis; \
+	echo "Starting mini-redis (release) on $(MINI_REDIS_HOST):$$port"; \
+	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port & \
+	server_pid=$$!; \
+	retries=80; \
+	while [ $$retries -gt 0 ]; do \
+		if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("$(MINI_REDIS_HOST)", int("'"$$port"'"))); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+			break; \
+		fi; \
+		retries=$$((retries-1)); \
+		sleep 0.25; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		kill $$server_pid 2>/dev/null || true; \
+		exit 1; \
+	fi; \
+	echo "Running mini-redis JS scripting tests (faithful) (log: $(MINI_REDIS_JS_FAITHFUL_TEST_LOG))"; \
+	MINI_REDIS_HOST=$(MINI_REDIS_HOST) MINI_REDIS_PORT=$$port bash ./tests/scripting_js_faithful/run_js_scripting_tests.sh 2>&1 | tee $(MINI_REDIS_JS_FAITHFUL_TEST_LOG); \
+	echo "Stopping mini-redis"; \
+	kill $$server_pid 2>/dev/null || true
 
 mini-redis-parity: sync-version
 	@port=$$(python3 scripts/pick_port.py); \
