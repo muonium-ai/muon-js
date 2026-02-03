@@ -617,7 +617,7 @@ pub fn eval_array_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue>
         return None;
     }
     for (idx, item) in items.iter().enumerate() {
-        let val = eval_value(ctx, item)?;
+        let val = eval_expr(ctx, item)?;
         let res = js_set_property_uint32(ctx, arr, idx as u32, val);
         if res.is_exception() {
             return None;
