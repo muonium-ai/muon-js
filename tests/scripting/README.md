@@ -11,6 +11,9 @@ These tests validate basic Lua scripting semantics directly against Redis, using
 - 06_multi_keys.lua: multiple KEYS and array return
 - 07_lengths.lua: KEYS/ARGV length counts
 - 08_lrange.lua: LPUSH + LRANGE array return
+- 09_hash_sum.lua: hash populate + sum loop
+- 10_set_members.lua: set membership loop
+- 11_bulk_incr.lua: tight INCRBY loop
 
 ## Run
 Ensure a Redis server is running, then:

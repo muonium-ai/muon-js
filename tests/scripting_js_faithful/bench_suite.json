@@ -39,6 +39,30 @@
       "keys": ["bench:js:list"],
       "argv": ["a", "b"],
       "iterations": 1000
+    },
+    {
+      "name": "hash_sum",
+      "script": "tests/scripting_js_faithful/09_hash_sum.js",
+      "numkeys": 1,
+      "keys": ["bench:js:hash"],
+      "argv": ["100"],
+      "iterations": 300
+    },
+    {
+      "name": "set_members",
+      "script": "tests/scripting_js_faithful/10_set_members.js",
+      "numkeys": 1,
+      "keys": ["bench:js:set"],
+      "argv": ["100"],
+      "iterations": 300
+    },
+    {
+      "name": "bulk_incr",
+      "script": "tests/scripting_js_faithful/11_bulk_incr.js",
+      "numkeys": 1,
+      "keys": ["bench:js:bulk"],
+      "argv": ["100"],
+      "iterations": 300
     }
   ]
 }

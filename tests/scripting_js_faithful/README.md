@@ -11,6 +11,9 @@ These tests mirror the Lua scripts exactly, including array return values. They 
 - 06_multi_keys.js
 - 07_lengths.js
 - 08_lrange.js
+- 09_hash_sum.js
+- 10_set_members.js
+- 11_bulk_incr.js
 
 ## Run
 Start mini-redis and run:

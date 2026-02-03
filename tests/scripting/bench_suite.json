@@ -39,6 +39,30 @@
       "keys": ["bench:lua:list"],
       "argv": ["a", "b"],
       "iterations": 1000
+    },
+    {
+      "name": "hash_sum",
+      "script": "tests/scripting/09_hash_sum.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:hash"],
+      "argv": ["100"],
+      "iterations": 300
+    },
+    {
+      "name": "set_members",
+      "script": "tests/scripting/10_set_members.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:set"],
+      "argv": ["100"],
+      "iterations": 300
+    },
+    {
+      "name": "bulk_incr",
+      "script": "tests/scripting/11_bulk_incr.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:bulk"],
+      "argv": ["100"],
+      "iterations": 300
     }
   ]
 }

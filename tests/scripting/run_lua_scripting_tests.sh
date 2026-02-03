@@ -59,6 +59,15 @@ run_test "lengths" "$SCRIPT_DIR/07_lengths.lua" "2|3" 2 key1 key2 arg1 arg2 arg3
 echo "Test 8: LRANGE"
 run_test "lrange" "$SCRIPT_DIR/08_lrange.lua" $'b\na' 1 test:lua:list a b
 
+echo "Test 9: Hash sum"
+run_test "hash_sum" "$SCRIPT_DIR/09_hash_sum.lua" "5050" 1 test:lua:hash 100
+
+echo "Test 10: Set members"
+run_test "set_members" "$SCRIPT_DIR/10_set_members.lua" "100" 1 test:lua:set 100
+
+echo "Test 11: Bulk INCRBY"
+run_test "bulk_incr" "$SCRIPT_DIR/11_bulk_incr.lua" "100" 1 test:lua:bulk 100
+
 echo ""
 echo "Results: $PASS/$TOTAL passed, $FAIL failed"
 if [ $FAIL -ne 0 ]; then
