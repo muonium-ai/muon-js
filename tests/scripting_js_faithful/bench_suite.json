@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "name": "hello",
+      "script": "tests/scripting_js_faithful/01_hello.js",
+      "numkeys": 0,
+      "keys": [],
+      "argv": [],
+      "iterations": 2000
+    },
+    {
+      "name": "keys_argv",
+      "script": "tests/scripting_js_faithful/02_keys_argv.js",
+      "numkeys": 2,
+      "keys": ["key1", "key2"],
+      "argv": ["arg1", "arg2", "arg3"],
+      "iterations": 2000
+    },
+    {
+      "name": "redis_call",
+      "script": "tests/scripting_js_faithful/03_redis_call.js",
+      "numkeys": 1,
+      "keys": ["bench:js:key"],
+      "argv": ["bar"],
+      "iterations": 2000
+    },
+    {
+      "name": "incrby",
+      "script": "tests/scripting_js_faithful/05_incrby.js",
+      "numkeys": 1,
+      "keys": ["bench:js:counter"],
+      "argv": ["1"],
+      "iterations": 2000
+    },
+    {
+      "name": "lrange",
+      "script": "tests/scripting_js_faithful/08_lrange.js",
+      "numkeys": 1,
+      "keys": ["bench:js:list"],
+      "argv": ["a", "b"],
+      "iterations": 1000
+    }
+  ]
+}

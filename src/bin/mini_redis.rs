@@ -7,6 +7,8 @@ async fn main() -> std::io::Result<()> {
     let mut databases: usize = 16;
     let mut persist_path: Option<String> = None;
     let mut aof_enabled: bool = false;
+    let mut script_mem: Option<usize> = None;
+    let mut script_reset_threshold: Option<u8> = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -38,8 +40,30 @@ async fn main() -> std::io::Result<()> {
             "--aof" => {
                 aof_enabled = true;
             }
+            "--script-mem" => {
+                if let Some(v) = args.next() {
+                    if let Ok(bytes) = v.parse::<usize>() {
+                        script_mem = Some(bytes);
+                    }
+                }
+            }
+            "--script-reset-threshold" => {
+                if let Some(v) = args.next() {
+                    if let Ok(pct) = v.parse::<u8>() {
+                        script_reset_threshold = Some(pct);
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    let mut script_runtime = muon_js::mini_redis::server::ScriptRuntimeConfig::default();
+    if let Some(mem) = script_mem {
+        script_runtime.mem_size = mem;
+    }
+    if let Some(pct) = script_reset_threshold {
+        script_runtime.reset_threshold_pct = pct;
     }
 
     let config = muon_js::mini_redis::server::ServerConfig {
@@ -48,6 +72,7 @@ async fn main() -> std::io::Result<()> {
         databases,
         persist_path,
         aof_enabled,
+        script_runtime,
     };
     muon_js::mini_redis::server::run(config).await
 }

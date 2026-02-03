@@ -21,7 +21,23 @@ use crate::{
 use crate::{JSCFunctionDef, JSCFunctionDefEnum, JSCFunctionType, JSCStringBuf, JSValue};
 use crate::{JS_Eval, JS_ThrowInternalError};
 
-const SCRIPT_MEM_SIZE: usize = 256 * 1024;
+const DEFAULT_SCRIPT_MEM_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_SCRIPT_RESET_THRESHOLD_PCT: u8 = 90;
+
+#[derive(Clone, Debug)]
+pub struct ScriptRuntimeConfig {
+    pub mem_size: usize,
+    pub reset_threshold_pct: u8,
+}
+
+impl Default for ScriptRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            mem_size: DEFAULT_SCRIPT_MEM_SIZE,
+            reset_threshold_pct: DEFAULT_SCRIPT_RESET_THRESHOLD_PCT,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -30,6 +46,7 @@ pub struct ServerConfig {
     pub databases: usize,
     pub persist_path: Option<String>,
     pub aof_enabled: bool,
+    pub script_runtime: ScriptRuntimeConfig,
 }
 
 pub struct ServerState {
@@ -37,15 +54,17 @@ pub struct ServerState {
     persist: Option<Persist>,
     pubsub: std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>,
     script_cache: std::collections::HashMap<String, String>,
+    script_runtime: ScriptRuntimeConfig,
 }
 
 impl ServerState {
-    fn new(dbs: Vec<Db>, persist: Option<Persist>) -> Self {
+    fn new(dbs: Vec<Db>, persist: Option<Persist>, script_runtime: ScriptRuntimeConfig) -> Self {
         Self {
             dbs,
             persist,
             pubsub: std::collections::HashMap::new(),
             script_cache: std::collections::HashMap::new(),
+            script_runtime,
         }
     }
 }
@@ -74,7 +93,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     if let Some(p) = persist.as_ref() {
         let _ = p.load(&mut dbs).await;
     }
-    let state = Arc::new(Mutex::new(ServerState::new(dbs, persist)));
+    let state = Arc::new(Mutex::new(ServerState::new(dbs, persist, config.script_runtime)));
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
     let shutdown_state = state.clone();
     let shutdown_path = config.persist_path.clone();
@@ -1144,13 +1163,13 @@ async fn handle_command(
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
         "EVAL" => {
             if script.is_none() {
-                *script = Some(ScriptRuntime::new());
+                *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
             eval_script(state, db_index, script.as_mut().unwrap(), args, true)
         }
         "EVALSHA" => {
             if script.is_none() {
-                *script = Some(ScriptRuntime::new());
+                *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
             eval_script_sha(state, db_index, script.as_mut().unwrap(), args)
         }
@@ -1257,6 +1276,7 @@ fn eval_script(
     let argv = &args[2 + numkeys..];
     let keys_vec: Vec<Vec<u8>> = keys.iter().map(|v| v.as_ref().to_vec()).collect();
     let argv_vec: Vec<Vec<u8>> = argv.iter().map(|v| v.as_ref().to_vec()).collect();
+    script_runtime.maybe_reset();
     script_runtime.set_keys_argv(&keys_vec, &argv_vec);
     let mut exec = ScriptExec {
         state: state as *mut ServerState,
@@ -1397,6 +1417,8 @@ fn sha1_hex(input: &[u8]) -> String {
 
 struct ScriptRuntime {
     mem: Vec<u8>,
+    mem_size: usize,
+    reset_threshold_pct: u8,
     ctx: JSContextImpl,
     cfuncs: Vec<JSCFunctionDef>,
 }
@@ -1404,8 +1426,35 @@ struct ScriptRuntime {
 unsafe impl Send for ScriptRuntime {}
 
 impl ScriptRuntime {
-    fn new() -> Self {
-        let mut mem = vec![0u8; SCRIPT_MEM_SIZE];
+    fn new(config: &ScriptRuntimeConfig) -> Self {
+        let mem_size = config.mem_size.max(1024);
+        let (mem, ctx, cfuncs) = Self::build_ctx(mem_size);
+        Self {
+            mem,
+            mem_size,
+            reset_threshold_pct: config.reset_threshold_pct,
+            ctx,
+            cfuncs,
+        }
+    }
+
+    fn maybe_reset(&mut self) {
+        let (used, total) = self.ctx.memory_usage();
+        let threshold = (self.reset_threshold_pct as usize).min(100).max(1);
+        if total > 0 && used * 100 >= total * threshold {
+            self.reset();
+        }
+    }
+
+    fn reset(&mut self) {
+        let (mem, ctx, cfuncs) = Self::build_ctx(self.mem_size);
+        self.mem = mem;
+        self.ctx = ctx;
+        self.cfuncs = cfuncs;
+    }
+
+    fn build_ctx(mem_size: usize) -> (Vec<u8>, JSContextImpl, Vec<JSCFunctionDef>) {
+        let mut mem = vec![0u8; mem_size];
         let mut ctx = crate::JS_NewContext(&mut mem);
         let _ = JS_RegisterStdlibMinimal(&mut ctx);
         let cfuncs = vec![
@@ -1432,7 +1481,7 @@ impl ScriptRuntime {
         let _ = JS_SetPropertyStr(&mut ctx, redis_obj, "pcall", pcall_fn);
         let global = JS_GetGlobalObject(&mut ctx);
         let _ = JS_SetPropertyStr(&mut ctx, global, "redis", redis_obj);
-        Self { mem, ctx, cfuncs }
+        (mem, ctx, cfuncs)
     }
 
     fn set_keys_argv(&mut self, keys: &[Vec<u8>], argv: &[Vec<u8>]) {

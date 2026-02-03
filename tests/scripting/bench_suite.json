@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "name": "hello",
+      "script": "tests/scripting/01_hello.lua",
+      "numkeys": 0,
+      "keys": [],
+      "argv": [],
+      "iterations": 2000
+    },
+    {
+      "name": "keys_argv",
+      "script": "tests/scripting/02_keys_argv.lua",
+      "numkeys": 2,
+      "keys": ["key1", "key2"],
+      "argv": ["arg1", "arg2", "arg3"],
+      "iterations": 2000
+    },
+    {
+      "name": "redis_call",
+      "script": "tests/scripting/03_redis_call.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:key"],
+      "argv": ["bar"],
+      "iterations": 2000
+    },
+    {
+      "name": "incrby",
+      "script": "tests/scripting/05_incrby.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:counter"],
+      "argv": ["1"],
+      "iterations": 2000
+    },
+    {
+      "name": "lrange",
+      "script": "tests/scripting/08_lrange.lua",
+      "numkeys": 1,
+      "keys": ["bench:lua:list"],
+      "argv": ["a", "b"],
+      "iterations": 1000
+    }
+  ]
+}
