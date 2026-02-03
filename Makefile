@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -16,6 +16,7 @@ REDIS_PORT ?= 6379
 REDIS_PIDFILE ?= tmp/redis.pid
 REDIS_LOG ?= tmp/redis.log
 REDIS_BENCH_LOG ?= tmp/redis_benchmark_$(shell date +%Y%m%d_%H%M%S).log
+REDIS_LUA_TEST_LOG ?= tmp/redis_lua_tests_$(shell date +%Y%m%d_%H%M%S).log
 
 sync-version:
 	./scripts/sync_version.sh
@@ -184,6 +185,26 @@ redis-stop:
 		kill -KILL $$pid 2>/dev/null || true; \
 	fi; \
 	rm -f $(REDIS_PIDFILE)
+
+redis-lua-tests:
+	@mkdir -p tmp
+	@echo "Starting redis-server on port $(REDIS_PORT)"
+	@$(MAKE) -s redis-run
+	@echo "Running Lua scripting tests (log: $(REDIS_LUA_TEST_LOG))"
+	@REDIS_HOST=$(MINI_REDIS_HOST) REDIS_PORT=$(REDIS_PORT) bash ./tests/scripting/run_lua_scripting_tests.sh 2>&1 | tee $(REDIS_LUA_TEST_LOG)
+	@echo "Stopping redis"
+	@$(MAKE) -s redis-stop
+
+redis-lua-benchmark:
+	@mkdir -p tmp
+	@echo "Starting redis-server on port $(REDIS_PORT)"
+	@$(MAKE) -s redis-run
+	@echo "Running Lua scripting tests (log: $(REDIS_LUA_TEST_LOG))"
+	@REDIS_HOST=$(MINI_REDIS_HOST) REDIS_PORT=$(REDIS_PORT) bash ./tests/scripting/run_lua_scripting_tests.sh 2>&1 | tee $(REDIS_LUA_TEST_LOG)
+	@echo "Running redis-benchmark (log: $(REDIS_BENCH_LOG))"
+	@$(MAKE) -s redis-benchmark
+	@echo "Stopping redis"
+	@$(MAKE) -s redis-stop
 
 mini-redis-parity: sync-version
 	@port=$$(python3 scripts/pick_port.py); \
