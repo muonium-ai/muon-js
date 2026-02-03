@@ -9,6 +9,8 @@ These tests mirror the Lua scripts exactly, including array return values. They 
 - 04_argv_echo.js
 - 05_incrby.js
 - 06_multi_keys.js
+- 07_lengths.js
+- 08_lrange.js
 
 ## Run
 Start mini-redis and run:

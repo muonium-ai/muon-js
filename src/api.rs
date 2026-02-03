@@ -8970,6 +8970,25 @@ impl<'a> ArithParser<'a> {
                         return Ok(val);
                     }
                 }
+                if marker == "__builtin_String__" {
+                    if args.is_empty() {
+                        return Ok(js_new_string(ctx, ""));
+                    }
+                    return Ok(js_to_string(ctx, args[0]));
+                }
+                if marker == "__builtin_Number__" {
+                    if args.is_empty() {
+                        return Ok(Value::from_int32(0));
+                    }
+                    let n = js_to_number(ctx, args[0]).unwrap_or(f64::NAN);
+                    return Ok(number_to_value(ctx, n));
+                }
+                if marker == "__builtin_Boolean__" {
+                    if args.is_empty() {
+                        return Ok(Value::FALSE);
+                    }
+                    return Ok(Value::new_bool(crate::evals::is_truthy(ctx, args[0])));
+                }
                 if marker == "__builtin_Date_now__" {
                     return Ok(js_date_now(ctx));
                 }

@@ -53,6 +53,12 @@ run_test "incrby" "$SCRIPT_DIR/05_incrby.js" "15" 1 test:js:counter 5
 echo "Test 6: Multiple KEYS"
 run_test "multi_keys" "$SCRIPT_DIR/06_multi_keys.js" $'one\ntwo' 2 test:js:k1 test:js:k2 one two
 
+echo "Test 7: KEYS/ARGV lengths"
+run_test "lengths" "$SCRIPT_DIR/07_lengths.js" "2|3" 2 key1 key2 arg1 arg2 arg3
+
+echo "Test 8: LRANGE"
+run_test "lrange" "$SCRIPT_DIR/08_lrange.js" $'b\na' 1 test:js:list a b
+
 echo ""
 echo "Results: $PASS/$TOTAL passed, $FAIL failed"
 if [ $FAIL -ne 0 ]; then

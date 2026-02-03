@@ -9,6 +9,8 @@ These tests validate basic Lua scripting semantics directly against Redis, using
 - 04_argv_echo.lua: ARGV echo parameterization
 - 05_incrby.lua: redis.call with numeric return
 - 06_multi_keys.lua: multiple KEYS and array return
+- 07_lengths.lua: KEYS/ARGV length counts
+- 08_lrange.lua: LPUSH + LRANGE array return
 
 ## Run
 Ensure a Redis server is running, then:
