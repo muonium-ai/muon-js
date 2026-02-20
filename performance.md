@@ -77,6 +77,26 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Reduce logging verbosity on hot path.
 - Compare async vs sync server loop (if feasible) to isolate runtime overhead.
 
+## Scripting hotspot microbench workflow
+- Full faithful JS scripting suite:
+	- `make mini-redis-js-scripting-bench`
+- Hotspot-only suite (hash/set/incr density):
+	- `make mini-redis-js-scripting-bench-hotspots`
+
+### Hotspot benchmark defaults
+- `MINI_REDIS_JS_HOTSPOT_CASES` default: `hash_sum set_members bulk_incr`
+- `MINI_REDIS_JS_HOTSPOT_ITERS` default: `1000`
+- `MINI_REDIS_JS_HOTSPOT_WARMUP` default: `200`
+- Structured outputs:
+	- JSON: `MINI_REDIS_JS_HOTSPOT_JSON` (default `tmp/mini_redis_js_hotspots_<timestamp>.json`)
+	- CSV: `MINI_REDIS_JS_HOTSPOT_CSV` (default `tmp/mini_redis_js_hotspots_<timestamp>.csv`)
+
+### Script-level options
+- `scripts/bench_scripting.py` supports:
+	- `--cases <name ...>` to run selected benchmark cases only.
+	- `--out-json <path>` for machine-readable summary output.
+	- `--out-csv <path>` for per-case tabular output.
+
 ## Code review quick wins
 - Replace list storage with `VecDeque` to make LPUSH/LPOP $O(1)$ (currently `Vec` + `insert/remove` at index 0 is $O(n)$). See [src/mini_redis/store.rs](src/mini_redis/store.rs#L284-L337).
 - Optimize `LRANGE` to avoid index-heavy access patterns and reduce cloning overhead. See [src/mini_redis/store.rs](src/mini_redis/store.rs#L331-L370).

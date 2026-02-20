@@ -1527,7 +1527,8 @@ fn redis_call(
         }
         let exec = &mut *opaque;
         let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
-        let cmd = to_upper_ascii(JS_ToCString(ctx, *argv, &mut cmd_buf).as_bytes());
+        let cmd_bytes = JS_ToCString(ctx, *argv, &mut cmd_buf).as_bytes().to_vec();
+        let cmd = to_upper_ascii(&cmd_bytes);
         let mut args: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 1).max(0) as usize);
         for i in 1..argc {
             let val = *argv.add(i as usize);

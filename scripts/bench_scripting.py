@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import json
 import socket
 import time
@@ -109,11 +110,25 @@ def main():
     parser.add_argument("--suite", required=True, help="Path to bench suite JSON")
     parser.add_argument("--iterations", type=int, default=None, help="Override per-test iterations")
     parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        default=None,
+        help="Optional list of case names to run (default: all cases in suite)",
+    )
+    parser.add_argument("--out-json", default=None, help="Optional path to write summary JSON")
+    parser.add_argument("--out-csv", default=None, help="Optional path to write per-case CSV")
     args = parser.parse_args()
 
     suite_path = Path(args.suite)
     suite = json.loads(suite_path.read_text())
     cases = suite["cases"]
+    if args.cases:
+        selected = set(args.cases)
+        cases = [case for case in cases if case.get("name") in selected]
+        missing = selected - {case.get("name") for case in cases}
+        if missing:
+            raise ValueError(f"Unknown benchmark case(s): {', '.join(sorted(missing))}")
 
     sock = socket.create_connection((args.host, args.port))
 
@@ -129,8 +144,25 @@ def main():
         "host": args.host,
         "port": args.port,
         "suite": str(suite_path),
+        "warmup": args.warmup,
+        "iterations_override": args.iterations,
         "results": results,
     }
+
+    if args.out_json:
+        out_json_path = Path(args.out_json)
+        out_json_path.parent.mkdir(parents=True, exist_ok=True)
+        out_json_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+    if args.out_csv:
+        out_csv_path = Path(args.out_csv)
+        out_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_csv_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["name", "iterations", "seconds", "rps"])
+            for row in results:
+                writer.writerow([row["name"], row["iterations"], f"{row['seconds']:.9f}", f"{row['rps']:.6f}"])
+
     print("\nSUMMARY_JSON=" + json.dumps(summary))
 
 

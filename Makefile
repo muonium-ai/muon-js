@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -21,6 +21,11 @@ REDIS_LUA_SCRIPT_BENCH_LOG ?= tmp/redis_lua_script_bench_$(shell date +%Y%m%d_%H
 MINI_REDIS_JS_TEST_LOG ?= tmp/mini_redis_js_tests_$(shell date +%Y%m%d_%H%M%S).log
 MINI_REDIS_JS_FAITHFUL_TEST_LOG ?= tmp/mini_redis_js_faithful_tests_$(shell date +%Y%m%d_%H%M%S).log
 MINI_REDIS_JS_FAITHFUL_BENCH_LOG ?= tmp/mini_redis_js_faithful_bench_$(shell date +%Y%m%d_%H%M%S).log
+MINI_REDIS_JS_HOTSPOT_CASES ?= hash_sum set_members bulk_incr
+MINI_REDIS_JS_HOTSPOT_ITERS ?= 1000
+MINI_REDIS_JS_HOTSPOT_WARMUP ?= 200
+MINI_REDIS_JS_HOTSPOT_JSON ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).json
+MINI_REDIS_JS_HOTSPOT_CSV ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).csv
 JS_BENCH_ITERS ?= 5000
 JS_BENCH_WARMUP ?= 500
 JS_BENCH_RUNS ?= 5
@@ -324,6 +329,34 @@ mini-redis-js-scripting-bench: sync-version
 	fi; \
 	echo "Running mini-redis JS scripting benchmark (log: $(MINI_REDIS_JS_FAITHFUL_BENCH_LOG))"; \
 	python3 scripts/bench_scripting.py --host $(MINI_REDIS_HOST) --port $$port --suite tests/scripting_js_faithful/bench_suite.json | tee $(MINI_REDIS_JS_FAITHFUL_BENCH_LOG); \
+	echo "Stopping mini-redis"; \
+	kill $$server_pid 2>/dev/null || true
+
+mini-redis-js-scripting-bench-hotspots: sync-version
+	@set -e; \
+	port=$$(python3 scripts/pick_port.py); \
+	echo "Building mini-redis (release)"; \
+	$(CARGO) build --release --features mini-redis --bin mini_redis; \
+	echo "Starting mini-redis (release) on $(MINI_REDIS_HOST):$$port"; \
+	target/release/mini_redis --bind $(MINI_REDIS_HOST) --port $$port & \
+	server_pid=$$!; \
+	retries=80; \
+	while [ $$retries -gt 0 ]; do \
+		if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("$(MINI_REDIS_HOST)", int("'"$$port"'"))); s.close(); sys.exit(0 if rc==0 else 1)'; then \
+			break; \
+		fi; \
+		retries=$$((retries-1)); \
+		sleep 0.25; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		kill $$server_pid 2>/dev/null || true; \
+		exit 1; \
+	fi; \
+	echo "Running hotspot benchmark cases: $(MINI_REDIS_JS_HOTSPOT_CASES)"; \
+	echo "JSON output: $(MINI_REDIS_JS_HOTSPOT_JSON)"; \
+	echo "CSV output : $(MINI_REDIS_JS_HOTSPOT_CSV)"; \
+	python3 scripts/bench_scripting.py --host $(MINI_REDIS_HOST) --port $$port --suite tests/scripting_js_faithful/bench_suite.json --iterations $(MINI_REDIS_JS_HOTSPOT_ITERS) --warmup $(MINI_REDIS_JS_HOTSPOT_WARMUP) --cases $(MINI_REDIS_JS_HOTSPOT_CASES) --out-json $(MINI_REDIS_JS_HOTSPOT_JSON) --out-csv $(MINI_REDIS_JS_HOTSPOT_CSV); \
 	echo "Stopping mini-redis"; \
 	kill $$server_pid 2>/dev/null || true
 
