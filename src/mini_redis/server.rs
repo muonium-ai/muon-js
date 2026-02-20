@@ -52,17 +52,17 @@ pub struct ServerConfig {
 pub struct ServerState {
     dbs: Vec<Db>,
     persist: Option<Persist>,
-    pubsub: std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>,
     script_cache: std::collections::HashMap<String, String>,
     script_runtime: ScriptRuntimeConfig,
 }
+
+type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>;
 
 impl ServerState {
     fn new(dbs: Vec<Db>, persist: Option<Persist>, script_runtime: ScriptRuntimeConfig) -> Self {
         Self {
             dbs,
             persist,
-            pubsub: std::collections::HashMap::new(),
             script_cache: std::collections::HashMap::new(),
             script_runtime,
         }
@@ -94,6 +94,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         let _ = p.load(&mut dbs).await;
     }
     let state = Arc::new(Mutex::new(ServerState::new(dbs, persist, config.script_runtime)));
+    let pubsub_state = Arc::new(Mutex::new(PubSubState::new()));
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
     let shutdown_state = state.clone();
     let shutdown_path = config.persist_path.clone();
@@ -110,8 +111,9 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
+        let pubsub_state = pubsub_state.clone();
         task::spawn(async move {
-            let _ = handle_client(stream, state).await;
+            let _ = handle_client(stream, state, pubsub_state).await;
         });
     }
 }
@@ -150,7 +152,11 @@ async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<
     guard.persist = Some(persist);
 }
 
-async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Result<()> {
+async fn handle_client(
+    stream: TcpStream,
+    state: Arc<Mutex<ServerState>>,
+    pubsub_state: Arc<Mutex<PubSubState>>,
+) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.clone());
     let mut writer = BufWriter::new(stream);
@@ -201,9 +207,9 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             None
         };
         let resp = if cmd == "SUBSCRIBE" {
-            FastResponse::Value(handle_subscribe(&state, &pub_tx, &args[1..]).await)
+            FastResponse::Value(handle_subscribe(&pubsub_state, &pub_tx, &args[1..]).await)
         } else if cmd == "PUBLISH" {
-            FastResponse::Value(handle_publish(&state, &args[1..]).await)
+            FastResponse::Value(handle_publish(&pubsub_state, &args[1..]).await)
         } else if cmd == "LRANGE" && !in_multi {
             match handle_lrange_fast(&state, &mut current_db, &args[1..]).await {
                 Ok(items) => FastResponse::BlobArray(items),
@@ -309,17 +315,17 @@ async fn handle_lrange_fast(
 }
 
 async fn handle_subscribe(
-    state: &Arc<Mutex<ServerState>>,
+    pubsub_state: &Arc<Mutex<PubSubState>>,
     sender: &Sender<RespValue>,
     channels: &[Arc<[u8]>],
 ) -> RespValue {
     if channels.is_empty() {
         return RespValue::Error("ERR wrong number of arguments for 'SUBSCRIBE'".to_string());
     }
-    let mut guard = state.lock().await;
+    let mut guard = pubsub_state.lock().await;
     let mut count = 0;
     for channel in channels {
-        let entry = guard.pubsub.entry(channel.clone()).or_default();
+        let entry = guard.entry(channel.clone()).or_default();
         entry.push(sender.clone());
         count += 1;
     }
@@ -331,7 +337,7 @@ async fn handle_subscribe(
     ])
 }
 
-async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Arc<[u8]>]) -> RespValue {
+async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]>]) -> RespValue {
     if args.len() != 2 {
         return RespValue::Error("ERR wrong number of arguments for 'PUBLISH'".to_string());
     }
@@ -339,8 +345,8 @@ async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Arc<[u8]>]) -> 
     let message = args[1].clone();
     let mut receivers = Vec::new();
     {
-        let guard = state.lock().await;
-        if let Some(list) = guard.pubsub.get(&channel) {
+        let guard = pubsub_state.lock().await;
+        if let Some(list) = guard.get(&channel) {
             receivers.extend(list.iter().cloned());
         }
     }
