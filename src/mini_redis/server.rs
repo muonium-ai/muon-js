@@ -561,8 +561,8 @@ fn handle_command(
             let db = &mut state.dbs[*db_index];
             let mut idx = 1;
             while idx + 1 < args.len() {
-                let field = args[idx].as_ref().to_vec();
-                let value = args[idx + 1].as_ref().to_vec();
+                let field = args[idx].clone();
+                let value = args[idx + 1].clone();
                 match db.hash_set(key.as_ref(), field, value) {
                     Ok(is_new) => {
                         if is_new {
@@ -610,8 +610,8 @@ fn handle_command(
                     Ok(items) => {
                         let mut out = Vec::with_capacity(items.len() * 2);
                         for (field, value) in items {
-                            out.push(RespValue::Blob(field.into()));
-                            out.push(RespValue::Blob(value.into()));
+                            out.push(RespValue::Blob(field));
+                            out.push(RespValue::Blob(value));
                         }
                         RespValue::Array(out)
                     }

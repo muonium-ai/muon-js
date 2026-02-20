@@ -7,8 +7,8 @@ use std::sync::Arc;
 pub enum Value {
     String(Vec<u8>),
     List(VecDeque<Arc<[u8]>>),
-    Set(HashSet<Vec<u8>>),
-    Hash(HashMap<Vec<u8>, Vec<u8>>),
+    Set(HashSet<Arc<[u8]>>),
+    Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
     ZSet(HashMap<Vec<u8>, f64>),
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
@@ -572,7 +572,7 @@ impl Db {
         }
     }
 
-    pub fn hash_set(&mut self, key: &[u8], field: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+    pub fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -588,7 +588,7 @@ impl Db {
             self.remove(key);
         }
         match self.data.get(key) {
-            Some(Value::Hash(map)) => Ok(map.get(field).map(|v| Arc::from(v.as_slice()))),
+            Some(Value::Hash(map)) => Ok(map.get(field).cloned()),
             Some(_) => Err(()),
             None => Ok(None),
         }
@@ -639,7 +639,7 @@ impl Db {
         }
     }
 
-    pub fn hash_getall(&mut self, key: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ()> {
+    pub fn hash_getall(&mut self, key: &[u8]) -> Result<Vec<(Arc<[u8]>, Arc<[u8]>)>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -665,7 +665,7 @@ impl Db {
             Value::Set(set) => {
                 let mut added = 0;
                 for member in members {
-                    if set.insert(member.as_ref().to_vec()) {
+                    if set.insert(member.clone()) {
                         added += 1;
                     }
                 }
@@ -703,7 +703,7 @@ impl Db {
             self.remove(key);
         }
         match self.data.get(key) {
-            Some(Value::Set(set)) => Ok(set.iter().map(|m| Arc::from(m.as_slice())).collect()),
+            Some(Value::Set(set)) => Ok(set.iter().cloned().collect()),
             Some(_) => Err(()),
             None => Ok(Vec::new()),
         }
@@ -755,7 +755,7 @@ impl Db {
         let entry = self.data.entry(dest.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
         match entry {
             Value::Set(set) => {
-                set.insert(member.to_vec());
+                set.insert(Arc::from(member));
                 Ok(true)
             }
             _ => Err(()),

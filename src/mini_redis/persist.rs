@@ -244,7 +244,7 @@ impl LibsqlPersist {
                         for item in items.iter() {
                             self.conn.execute(
                                 "INSERT INTO set_items (db, key, value) VALUES (?, ?, ?)",
-                                (idx as i64, key.clone(), item.clone()),
+                                (idx as i64, key.clone(), item.as_ref().to_vec()),
                             ).await.map_err(to_io)?;
                         }
                     }
@@ -256,7 +256,12 @@ impl LibsqlPersist {
                         for (field, val) in items.iter() {
                             self.conn.execute(
                                 "INSERT INTO hash_items (db, key, field, value) VALUES (?, ?, ?, ?)",
-                                (idx as i64, key.clone(), field.clone(), val.clone()),
+                                (
+                                    idx as i64,
+                                    key.clone(),
+                                    field.as_ref().to_vec(),
+                                    val.as_ref().to_vec(),
+                                ),
                             ).await.map_err(to_io)?;
                         }
                     }
@@ -396,7 +401,7 @@ async fn load_list(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashSet<Vec<u8>>> {
+async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashSet<std::sync::Arc<[u8]>>> {
     let mut rows = conn
         .query("SELECT value FROM set_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
         .await
@@ -404,13 +409,13 @@ async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resul
     let mut out = std::collections::HashSet::new();
     while let Some(row) = rows.next().await.map_err(to_io)? {
         let value: Vec<u8> = row.get(0).map_err(to_io)?;
-        out.insert(value);
+        out.insert(std::sync::Arc::from(value));
     }
     Ok(out)
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashMap<Vec<u8>, Vec<u8>>> {
+async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashMap<std::sync::Arc<[u8]>, std::sync::Arc<[u8]>>> {
     let mut rows = conn
         .query("SELECT field, value FROM hash_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
         .await
@@ -419,7 +424,7 @@ async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
     while let Some(row) = rows.next().await.map_err(to_io)? {
         let field: Vec<u8> = row.get(0).map_err(to_io)?;
         let value: Vec<u8> = row.get(1).map_err(to_io)?;
-        out.insert(field, value);
+        out.insert(std::sync::Arc::from(field), std::sync::Arc::from(value));
     }
     Ok(out)
 }
