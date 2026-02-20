@@ -1,0 +1,98 @@
+{
+  "suite": "js-runtime-microbench",
+  "iterations": 2000,
+  "warmup": 200,
+  "runs": 3,
+  "results": [
+    {
+      "name": "parser_arithmetic",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.003869,
+      "mean_seconds": 0.003696,
+      "median_ops_per_sec": 516896.04,
+      "mean_ops_per_sec": 541184.50
+    },
+    {
+      "name": "parser_function_decl",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.010117,
+      "mean_seconds": 0.010308,
+      "median_ops_per_sec": 197696.01,
+      "mean_ops_per_sec": 194031.64
+    },
+    {
+      "name": "eval_for_loop",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.152560,
+      "mean_seconds": 0.152954,
+      "median_ops_per_sec": 13109.63,
+      "mean_ops_per_sec": 13075.80
+    },
+    {
+      "name": "builtin_identifier_lookup",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.014080,
+      "mean_seconds": 0.014014,
+      "median_ops_per_sec": 142042.51,
+      "mean_ops_per_sec": 142715.27
+    },
+    {
+      "name": "global_property_roundtrip",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.004211,
+      "mean_seconds": 0.004199,
+      "median_ops_per_sec": 474937.09,
+      "mean_ops_per_sec": 476324.34
+    },
+    {
+      "name": "vm_global_load_store",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.000150,
+      "mean_seconds": 0.000148,
+      "median_ops_per_sec": 13370503.33,
+      "mean_ops_per_sec": 13493243.26
+    },
+    {
+      "name": "string_replace_all",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.003295,
+      "mean_seconds": 0.003286,
+      "median_ops_per_sec": 607026.33,
+      "mean_ops_per_sec": 608663.29
+    },
+    {
+      "name": "string_replace_regex",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.056454,
+      "mean_seconds": 0.056414,
+      "median_ops_per_sec": 35427.31,
+      "mean_ops_per_sec": 35452.04
+    },
+    {
+      "name": "object_property_access",
+      "iterations": 2000,
+      "runs": 3,
+      "warmup": 200,
+      "median_seconds": 0.004817,
+      "mean_seconds": 0.004811,
+      "median_ops_per_sec": 415217.73,
+      "mean_ops_per_sec": 415684.01
+    }
+  ]
+}

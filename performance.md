@@ -49,6 +49,21 @@ Current benchmarks show mini-redis is between 9x and 300x slower than Redis (C) 
 - Save output JSON files under `tmp/comparison/` for local comparison.
 - Compare before/after numbers for each optimization ticket to avoid regressions.
 
+## Regression gate workflow
+- Create or refresh baseline (lightweight settings):
+	- `make js-runtime-bench-baseline`
+- Run regression check against baseline:
+	- `make js-runtime-bench-check`
+- Key settings:
+	- `JS_BENCH_BASELINE` (default `devdocs/js_runtime_benchmark_baseline.json`)
+	- `JS_BENCH_CHECK_ITERS` / `JS_BENCH_CHECK_WARMUP` / `JS_BENCH_CHECK_RUNS`
+	- `JS_BENCH_MAX_REGRESSION` (default `0.20`, i.e. max 20% slowdown per case)
+
+### Handling intentional changes
+- If performance changes are intentional and justified, regenerate baseline after review/approval:
+	- `make js-runtime-bench-baseline`
+- Keep rationale in PR/ticket notes when baseline is updated.
+
 ## Profiling results (CPU sampling)
 - Dominant time spent in persistence logging: `Persist::log_command` → libsql/sqlite `execute` → `sqlite3_step` → `vdbeCommit` → `fsync`.
 - Async runtime overhead visible: `async_global_executor` scheduling and `async_io::reactor` wait/park cycles.
