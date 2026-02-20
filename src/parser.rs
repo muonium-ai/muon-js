@@ -69,14 +69,7 @@ pub fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<
         return None;
     }
     let (params_str, after_params) = extract_paren(after_name)?;
-    let param_list = split_top_level(params_str)?;
-    let mut params = Vec::new();
-    for p in param_list {
-        let p = p.trim();
-        if !p.is_empty() {
-            params.push(p.to_string());
-        }
-    }
+    let params = parse_parameter_list(params_str)?;
     
     // Parse function body
     let after_params = after_params.trim_start();
@@ -93,6 +86,18 @@ pub fn parse_function_declaration(ctx: &mut JSContextImpl, src: &str) -> Option<
     js_set_property_str(ctx, env, name, func);
     
     Some(func)
+}
+
+pub fn parse_parameter_list(params_str: &str) -> Option<Vec<String>> {
+    let param_list = split_top_level(params_str)?;
+    let mut params = Vec::with_capacity(param_list.len());
+    for p in param_list {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            params.push(trimmed.to_owned());
+        }
+    }
+    Some(params)
 }
 
 /// Parse labeled statement: "label: statement"
@@ -1765,8 +1770,6 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     let params_val = js_get_property_str(ctx, func, "__params__");
     let body_val = js_get_property_str(ctx, func, "__body__");
 
-    let params_bytes = ctx.string_bytes(params_val)?;
-    let params_str = core::str::from_utf8(params_bytes).ok()?.to_string();
     #[derive(Clone)]
     struct ParamSpec {
         name: String,
@@ -1774,23 +1777,27 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
         rest: bool,
     }
     let mut param_specs: Vec<ParamSpec> = Vec::new();
-    if !params_str.is_empty() {
-        for raw in params_str.split(',') {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                continue;
-            }
-            if raw.starts_with("...") {
-                let name = raw[3..].trim().to_string();
-                param_specs.push(ParamSpec { name, default: None, rest: true });
-                break;
-            }
-            if let Some(eq_pos) = raw.find('=') {
-                let name = raw[..eq_pos].trim().to_string();
-                let default = raw[eq_pos + 1..].trim().to_string();
-                param_specs.push(ParamSpec { name, default: Some(default), rest: false });
-            } else {
-                param_specs.push(ParamSpec { name: raw.to_string(), default: None, rest: false });
+    {
+        let params_bytes = ctx.string_bytes(params_val)?;
+        let params_str = core::str::from_utf8(params_bytes).ok()?;
+        if !params_str.is_empty() {
+            for raw in params_str.split(',') {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                if raw.starts_with("...") {
+                    let name = raw[3..].trim().to_string();
+                    param_specs.push(ParamSpec { name, default: None, rest: true });
+                    break;
+                }
+                if let Some(eq_pos) = raw.find('=') {
+                    let name = raw[..eq_pos].trim().to_string();
+                    let default = raw[eq_pos + 1..].trim().to_string();
+                    param_specs.push(ParamSpec { name, default: Some(default), rest: false });
+                } else {
+                    param_specs.push(ParamSpec { name: raw.to_string(), default: None, rest: false });
+                }
             }
         }
     }

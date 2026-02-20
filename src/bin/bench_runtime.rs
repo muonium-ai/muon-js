@@ -263,6 +263,9 @@ fn main() {
             let c = ((i * 7) % 983) as i32;
             format!("({a} + {b}) * {c} - {a}")
         }),
+        run_case("parser_function_decl", &config, |_| {
+            "function add(a,b,c){ return a+b+c; } add(1,2,3)".to_string()
+        }),
         run_case("eval_for_loop", &config, |_| {
             "var s=0; for (var i=0; i<50; i++) { s = s + i; } s".to_string()
         }),

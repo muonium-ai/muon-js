@@ -85,15 +85,7 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             if !rest.trim().is_empty() {
                 return None;
             }
-            let parts = split_top_level(inside)?;
-            let mut out = Vec::new();
-            for p in parts {
-                let p = p.trim();
-                if !p.is_empty() {
-                    out.push(p.to_string());
-                }
-            }
-            out
+            crate::parser::parse_parameter_list(inside)?
         } else if is_identifier(params_src) {
             vec![params_src.to_string()]
         } else if params_src.is_empty() {
@@ -133,14 +125,7 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         if !tail.trim().is_empty() {
             return None;
         }
-        let param_list = split_top_level(params_str)?;
-        let mut params = Vec::new();
-        for p in param_list {
-            let p = p.trim();
-            if !p.is_empty() {
-                params.push(p.to_string());
-            }
-        }
+        let params = crate::parser::parse_parameter_list(params_str)?;
         let func = create_function(ctx, &params, body)?;
         if let Some(name) = name_opt {
             let name_val = js_new_string(ctx, &name);
