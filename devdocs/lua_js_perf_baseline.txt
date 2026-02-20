@@ -1,0 +1,27 @@
+Lua vs JavaScript scripting benchmark gate
+generated_at=2026-02-20 22:46:45
+rounds=3
+
+Round 1 (redis_port=6385): avg_ratio=1.2223x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round1_20260220_224637.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round1_20260220_224637.log
+Round 2 (redis_port=6386): avg_ratio=1.1830x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round2_20260220_224640.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round2_20260220_224640.log
+Round 3 (redis_port=6387): avg_ratio=1.2000x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round3_20260220_224643.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round3_20260220_224643.log
+
+CASE                     MEAN   MEDIAN      MIN      MAX
+--------------------------------------------------------
+bulk_incr                0.19     0.19     0.18     0.19
+hash_sum                 0.15     0.15     0.15     0.16
+hello                    2.07     2.15     1.91     2.16
+incrby                   1.87     1.83     1.80     1.99
+keys_argv                1.56     1.64     1.40     1.65
+lrange                   1.64     1.62     1.53     1.76
+redis_call               1.88     1.88     1.73     2.02
+set_members              0.25     0.25     0.24     0.25
+
+overall_mean=1.2018x
+overall_median=1.2000x

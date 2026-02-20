@@ -83,6 +83,25 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Hotspot-only suite (hash/set/incr density):
 	- `make mini-redis-js-scripting-bench-hotspots`
 
+## Lua-vs-JS performance gate
+- Generate/update baseline (3 rounds by default):
+	- `make lua-js-perf-baseline`
+- Run regression check against baseline:
+	- `make lua-js-perf-check`
+
+### Gate settings
+- `LUA_JS_GATE_ROUNDS` (default `3`)
+- `LUA_JS_GATE_REDIS_BASE_PORT` (default `6385`)
+- `LUA_JS_GATE_BASELINE` (default `devdocs/lua_js_perf_baseline.json`)
+- `LUA_JS_GATE_OUT` (default `tmp/comparison/lua_js_perf_gate_<timestamp>.json`)
+- `LUA_JS_GATE_MAX_REGRESSION` (default `0.10` = max 10% median-ratio regression)
+- `LUA_JS_GATE_CRITICAL_CASES` (default `hash_sum set_members bulk_incr`)
+
+### Gate outputs
+- JSON report (full per-round data + aggregates)
+- Text summary (same path, `.txt` extension)
+- Check mode exits non-zero when critical cases regress beyond threshold.
+
 ### Hotspot benchmark defaults
 - `MINI_REDIS_JS_HOTSPOT_CASES` default: `hash_sum set_members bulk_incr`
 - `MINI_REDIS_JS_HOTSPOT_ITERS` default: `1000`

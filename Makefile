@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -26,6 +26,13 @@ MINI_REDIS_JS_HOTSPOT_ITERS ?= 1000
 MINI_REDIS_JS_HOTSPOT_WARMUP ?= 200
 MINI_REDIS_JS_HOTSPOT_JSON ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).json
 MINI_REDIS_JS_HOTSPOT_CSV ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).csv
+LUA_JS_GATE_ROUNDS ?= 3
+LUA_JS_GATE_REDIS_BASE_PORT ?= 6385
+LUA_JS_GATE_OUT ?= tmp/comparison/lua_js_perf_gate_$(shell date +%Y%m%d_%H%M%S).json
+LUA_JS_GATE_BASELINE ?= devdocs/lua_js_perf_baseline.json
+LUA_JS_GATE_MAX_REGRESSION ?= 0.10
+LUA_JS_GATE_CRITICAL_CASES ?= hash_sum set_members bulk_incr
+LUA_JS_GATE_LOG_DIR ?= tmp/comparison/lua_js_gate
 JS_BENCH_ITERS ?= 5000
 JS_BENCH_WARMUP ?= 500
 JS_BENCH_RUNS ?= 5
@@ -359,6 +366,19 @@ mini-redis-js-scripting-bench-hotspots: sync-version
 	python3 scripts/bench_scripting.py --host $(MINI_REDIS_HOST) --port $$port --suite tests/scripting_js_faithful/bench_suite.json --iterations $(MINI_REDIS_JS_HOTSPOT_ITERS) --warmup $(MINI_REDIS_JS_HOTSPOT_WARMUP) --cases $(MINI_REDIS_JS_HOTSPOT_CASES) --out-json $(MINI_REDIS_JS_HOTSPOT_JSON) --out-csv $(MINI_REDIS_JS_HOTSPOT_CSV); \
 	echo "Stopping mini-redis"; \
 	kill $$server_pid 2>/dev/null || true
+
+lua-js-perf-baseline: sync-version
+	@mkdir -p tmp/comparison devdocs
+	@echo "Generating Lua-vs-JS performance baseline"
+	@echo "Baseline JSON: $(LUA_JS_GATE_BASELINE)"
+	python3 tools/lua_js_perf_gate.py --rounds $(LUA_JS_GATE_ROUNDS) --redis-base-port $(LUA_JS_GATE_REDIS_BASE_PORT) --log-dir $(LUA_JS_GATE_LOG_DIR) --out $(LUA_JS_GATE_BASELINE)
+
+lua-js-perf-check: sync-version
+	@mkdir -p tmp/comparison
+	@echo "Running Lua-vs-JS performance regression check"
+	@echo "Current output: $(LUA_JS_GATE_OUT)"
+	@echo "Baseline      : $(LUA_JS_GATE_BASELINE)"
+	python3 tools/lua_js_perf_gate.py --rounds $(LUA_JS_GATE_ROUNDS) --redis-base-port $(LUA_JS_GATE_REDIS_BASE_PORT) --log-dir $(LUA_JS_GATE_LOG_DIR) --out $(LUA_JS_GATE_OUT) --baseline $(LUA_JS_GATE_BASELINE) --max-regression $(LUA_JS_GATE_MAX_REGRESSION) --critical-cases $(LUA_JS_GATE_CRITICAL_CASES)
 
 mini-redis-parity: sync-version
 	@port=$$(python3 scripts/pick_port.py); \
