@@ -12,6 +12,13 @@ use crate::mini_redis::store::Db;
 #[cfg(feature = "mini-redis-libsql")]
 use crate::mini_redis::store::Value;
 
+#[cfg(feature = "mini-redis-libsql")]
+const AOF_QUEUE_CAPACITY: usize = 4_096;
+#[cfg(feature = "mini-redis-libsql")]
+const AOF_BATCH_MAX: usize = 256;
+#[cfg(feature = "mini-redis-libsql")]
+const AOF_BATCH_WAIT_MS: u64 = 2;
+
 pub enum Persist {
     Noop,
     #[cfg(feature = "mini-redis-libsql")]
@@ -63,6 +70,7 @@ pub struct LibsqlPersist {
 struct AofEntry {
     db: i64,
     cmd: Vec<u8>,
+    args: Vec<std::sync::Arc<[u8]>>,
 }
 
 #[cfg(feature = "mini-redis-libsql")]
@@ -72,7 +80,7 @@ impl LibsqlPersist {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
         let aof_tx = if aof_enabled {
-            let (tx, rx) = bounded::<AofEntry>(4096);
+            let (tx, rx) = bounded::<AofEntry>(AOF_QUEUE_CAPACITY);
             let path = path.to_string();
             task::spawn(async move {
                 run_aof_worker(path, rx).await;
@@ -166,18 +174,40 @@ impl LibsqlPersist {
         if !self.aof_enabled {
             return Ok(());
         }
-        let encoded = encode_cmd(cmd, args);
         if let Some(tx) = self.aof_tx.as_ref() {
-            let entry = AofEntry { db: db as i64, cmd: encoded };
-            tx.send(entry).await.map_err(to_io)?;
+            let entry = AofEntry {
+                db: db as i64,
+                cmd: cmd.as_bytes().to_vec(),
+                args: args.to_vec(),
+            };
+            match tx.try_send(entry) {
+                Ok(()) => {}
+                Err(async_std::channel::TrySendError::Full(entry)) => {
+                    tx.send(entry).await.map_err(to_io)?;
+                }
+                Err(async_std::channel::TrySendError::Closed(_)) => {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "AOF channel closed"));
+                }
+            }
             Ok(())
         } else {
+            let encoded = encode_cmd(cmd.as_bytes(), args);
             self.conn.execute("INSERT INTO aof_log (db, cmd) VALUES (?, ?)", (db as i64, encoded)).await.map_err(to_io)?;
             Ok(())
         }
     }
 
     async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
+        self.conn.execute("BEGIN", ()).await.map_err(to_io)?;
+        if let Err(err) = self.snapshot_inner(dbs).await {
+            let _ = self.conn.execute("ROLLBACK", ()).await;
+            return Err(err);
+        }
+        self.conn.execute("COMMIT", ()).await.map_err(to_io)?;
+        Ok(())
+    }
+
+    async fn snapshot_inner(&self, dbs: &mut [Db]) -> io::Result<()> {
         self.conn.execute("DELETE FROM kv", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM list_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM set_items", ()).await.map_err(to_io)?;
@@ -284,10 +314,10 @@ async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
             Ok(entry) => entry,
             Err(_) => break,
         };
-        let mut batch = Vec::with_capacity(256);
+        let mut batch = Vec::with_capacity(AOF_BATCH_MAX);
         batch.push(first);
-        while batch.len() < 256 {
-            match timeout(Duration::from_millis(2), rx.recv()).await {
+        while batch.len() < AOF_BATCH_MAX {
+            match timeout(Duration::from_millis(AOF_BATCH_WAIT_MS), rx.recv()).await {
                 Ok(Ok(entry)) => batch.push(entry),
                 Ok(Err(_)) => break,
                 Err(_) => break,
@@ -306,18 +336,26 @@ async fn flush_aof_batch(conn: &libsql::Connection, mut batch: Vec<AofEntry>) ->
     }
     conn.execute("BEGIN", ()).await.map_err(to_io)?;
     for entry in batch.drain(..) {
-        conn.execute(
+        let encoded = encode_cmd(entry.cmd.as_slice(), entry.args.as_slice());
+        if let Err(err) = conn.execute(
             "INSERT INTO aof_log (db, cmd) VALUES (?, ?)",
-            (entry.db, entry.cmd),
+            (entry.db, encoded),
         )
         .await
-        .map_err(to_io)?;
+        .map_err(to_io)
+        {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(err);
+        }
     }
-    conn.execute("COMMIT", ()).await.map_err(to_io)?;
+    if let Err(err) = conn.execute("COMMIT", ()).await.map_err(to_io) {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(err);
+    }
     Ok(())
 }
 
-fn encode_cmd(cmd: &str, args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
+fn encode_cmd(cmd: &[u8], args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
     let count = args.len() + 1;
     let capacity = 16 + cmd.len() + args.iter().map(|a| 16 + a.len()).sum::<usize>();
     let mut out = Vec::with_capacity(capacity);
@@ -326,7 +364,7 @@ fn encode_cmd(cmd: &str, args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
     out.extend_from_slice(b"\r\n$");
     out.extend_from_slice(cmd.len().to_string().as_bytes());
     out.extend_from_slice(b"\r\n");
-    out.extend_from_slice(cmd.as_bytes());
+    out.extend_from_slice(cmd);
     out.extend_from_slice(b"\r\n");
     for item in args {
         out.extend_from_slice(b"$");
