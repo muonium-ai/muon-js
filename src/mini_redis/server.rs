@@ -178,6 +178,10 @@ async fn handle_client(
     let mut queued: Vec<(String, Vec<Arc<[u8]>>)> = Vec::new();
     let (pub_tx, pub_rx) = async_std::channel::unbounded::<RespValue>();
     let mut script_runtime: Option<ScriptRuntime> = None;
+    let db_count = {
+        let guard = dbs_state.lock().await;
+        guard.len()
+    };
     let script_runtime_config = {
         let guard = state.lock().await;
         guard.script_runtime.clone()
@@ -266,6 +270,8 @@ async fn handle_client(
                     if let Some(resp) = handle_no_db_command(
                         &mut local_state,
                         &script_cache_state,
+                        &mut current_db,
+                        db_count,
                         &qcmd,
                         &qargs,
                     ) {
@@ -291,7 +297,14 @@ async fn handle_client(
             }
         } else if let Some(resp) = handle_save_like_command(&dbs_state, &persist_state, cmd, &args[1..]).await {
             FastResponse::Value(resp)
-        } else if let Some(resp) = handle_no_db_command(&mut local_state, &script_cache_state, cmd, &args[1..]) {
+        } else if let Some(resp) = handle_no_db_command(
+            &mut local_state,
+            &script_cache_state,
+            &mut current_db,
+            db_count,
+            cmd,
+            &args[1..],
+        ) {
             FastResponse::Value(resp)
         } else {
             let mut dbs_guard = dbs_state.lock().await;
@@ -419,6 +432,8 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
 fn handle_no_db_command(
     state: &mut ServerState,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    db_index: &mut usize,
+    db_count: usize,
     cmd: &str,
     args: &[Arc<[u8]>],
 ) -> Option<RespValue> {
@@ -433,6 +448,13 @@ fn handle_no_db_command(
         "ECHO" => match args.get(0) {
             Some(arg) => RespValue::Blob(arg.clone()),
             None => RespValue::Error("ERR wrong number of arguments for 'ECHO'".to_string()),
+        },
+        "SELECT" => match args.get(0).and_then(|v| parse_usize(v.as_ref())) {
+            Some(idx) if idx < db_count => {
+                *db_index = idx;
+                RespValue::Simple("OK".to_string())
+            }
+            _ => RespValue::Error("ERR invalid DB index".to_string()),
         },
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
         "SCRIPT" => handle_script_command(script_cache_state, args),
