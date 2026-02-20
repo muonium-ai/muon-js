@@ -273,6 +273,8 @@ async fn handle_client(
                 }
                 FastResponse::Value(RespValue::Array(results))
             }
+        } else if let Some(resp) = handle_no_db_command(&mut local_state, &script_cache_state, cmd, &args[1..]) {
+            FastResponse::Value(resp)
         } else {
             let mut dbs_guard = dbs_state.lock().await;
             let resp = handle_command(
@@ -394,6 +396,83 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
         }
     }
     RespValue::Integer(delivered)
+}
+
+fn handle_no_db_command(
+    state: &mut ServerState,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    cmd: &str,
+    args: &[Arc<[u8]>],
+) -> Option<RespValue> {
+    let resp = match cmd {
+        "PING" => {
+            if let Some(arg) = args.get(0) {
+                RespValue::Blob(arg.clone())
+            } else {
+                RespValue::Simple("PONG".to_string())
+            }
+        }
+        "ECHO" => match args.get(0) {
+            Some(arg) => RespValue::Blob(arg.clone()),
+            None => RespValue::Error("ERR wrong number of arguments for 'ECHO'".to_string()),
+        },
+        "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
+        "SCRIPT" => handle_script_command(script_cache_state, args),
+        "CONFIG" => {
+            if args.len() >= 1 && to_upper_ascii(args[0].as_ref()) == "GET" {
+                RespValue::Array(Vec::new())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
+        "FUNCTION" => {
+            if args.is_empty() {
+                return Some(RespValue::Error("ERR wrong number of arguments for 'FUNCTION'".to_string()));
+            }
+            let sub = to_upper_ascii(args[0].as_ref());
+            match sub.as_ref() {
+                "LIST" => RespValue::Array(Vec::new()),
+                "FLUSH" => {
+                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    cache.clear();
+                    RespValue::Simple("OK".to_string())
+                }
+                "LOAD" => {
+                    if args.len() != 2 {
+                        return Some(RespValue::Error("ERR wrong number of arguments for 'FUNCTION LOAD'".to_string()));
+                    }
+                    let script = match std::str::from_utf8(args[1].as_ref()) {
+                        Ok(s) => s,
+                        Err(_) => return Some(RespValue::Error("ERR invalid function".to_string())),
+                    };
+                    let sha = sha1_hex(script.as_bytes());
+                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    cache.insert(sha, script.to_string());
+                    RespValue::Simple("OK".to_string())
+                }
+                _ => RespValue::Error("ERR unknown subcommand for FUNCTION".to_string()),
+            }
+        }
+        "CLIENT" => {
+            if args.len() >= 1 && to_upper_ascii(args[0].as_ref()) == "LIST" {
+                RespValue::Blob(b"id=1 addr=127.0.0.1:0".to_vec().into())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
+        "SLOWLOG" => {
+            if args.len() >= 1 && to_upper_ascii(args[0].as_ref()) == "GET" {
+                RespValue::Array(Vec::new())
+            } else {
+                RespValue::Error("ERR syntax error".to_string())
+            }
+        }
+        "REPLICAOF" => RespValue::Error("ERR replication not implemented".to_string()),
+        "QUIT" => RespValue::Simple("OK".to_string()),
+        _ => return None,
+    };
+    let _ = state;
+    Some(resp)
 }
 
 fn handle_command(
