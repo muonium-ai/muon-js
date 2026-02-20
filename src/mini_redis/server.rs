@@ -182,25 +182,37 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             .await?;
             continue;
         }
-        let cmd = to_upper_ascii(args[0].as_ref());
+        let cmd = match parse_command(args[0].as_ref()) {
+            Some(cmd) => cmd,
+            None => {
+                let unknown = String::from_utf8_lossy(args[0].as_ref());
+                write_value_buf(
+                    &mut writer,
+                    &RespValue::Error(format!("ERR unknown command '{}'", unknown)),
+                    &mut resp_buf,
+                )
+                .await?;
+                continue;
+            }
+        };
         let timing = if timing_enabled() {
             Some(Instant::now())
         } else {
             None
         };
-        let resp = if cmd.as_ref() == "SUBSCRIBE" {
+        let resp = if cmd == "SUBSCRIBE" {
             FastResponse::Value(handle_subscribe(&state, &pub_tx, &args[1..]).await)
-        } else if cmd.as_ref() == "PUBLISH" {
+        } else if cmd == "PUBLISH" {
             FastResponse::Value(handle_publish(&state, &args[1..]).await)
-        } else if cmd.as_ref() == "LRANGE" && !in_multi {
+        } else if cmd == "LRANGE" && !in_multi {
             match handle_lrange_fast(&state, &mut current_db, &args[1..]).await {
                 Ok(items) => FastResponse::BlobArray(items),
                 Err(err) => FastResponse::Value(err),
             }
-        } else if in_multi && cmd.as_ref() != "EXEC" && cmd.as_ref() != "DISCARD" && cmd.as_ref() != "MULTI" {
-            queued.push((cmd.as_ref().to_string(), args[1..].to_vec()));
+        } else if in_multi && cmd != "EXEC" && cmd != "DISCARD" && cmd != "MULTI" {
+            queued.push((cmd.to_string(), args[1..].to_vec()));
             FastResponse::Value(RespValue::Simple("QUEUED".to_string()))
-        } else if cmd.as_ref() == "MULTI" {
+        } else if cmd == "MULTI" {
             if in_multi {
                 FastResponse::Value(RespValue::Error("ERR MULTI calls can not be nested".to_string()))
             } else {
@@ -208,7 +220,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 queued.clear();
                 FastResponse::Value(RespValue::Simple("OK".to_string()))
             }
-        } else if cmd.as_ref() == "DISCARD" {
+        } else if cmd == "DISCARD" {
             if !in_multi {
                 FastResponse::Value(RespValue::Error("ERR DISCARD without MULTI".to_string()))
             } else {
@@ -216,7 +228,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 queued.clear();
                 FastResponse::Value(RespValue::Simple("OK".to_string()))
             }
-        } else if cmd.as_ref() == "EXEC" {
+        } else if cmd == "EXEC" {
             if !in_multi {
                 FastResponse::Value(RespValue::Error("ERR EXEC without MULTI".to_string()))
             } else {
@@ -235,7 +247,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 &mut guard,
                 &mut current_db,
                 &mut script_runtime,
-                cmd.as_ref(),
+                cmd,
                 &args[1..],
             );
             FastResponse::Value(resp)
@@ -245,7 +257,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             let arg_count = args.len().saturating_sub(1);
             eprintln!(
                 "mini-redis: cmd={} args={} elapsed_us={}",
-                cmd.as_ref(),
+                cmd,
                 arg_count,
                 elapsed_us
             );
@@ -262,7 +274,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
             let _ = write_value_buf(&mut writer, &msg, &mut resp_buf).await;
         }
         writer.flush().await?;
-        if cmd.as_ref() == "QUIT" {
+        if cmd == "QUIT" {
             let _ = peer;
             return Ok(());
         }
@@ -1549,7 +1561,13 @@ fn redis_call(
         let exec = &mut *opaque;
         let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
         let cmd_bytes = JS_ToCString(ctx, *argv, &mut cmd_buf).as_bytes().to_vec();
-        let cmd = to_upper_ascii(&cmd_bytes);
+        let cmd = match parse_command(&cmd_bytes) {
+            Some(cmd) => cmd,
+            None => {
+                let msg = format!("ERR unknown command '{}'", String::from_utf8_lossy(&cmd_bytes));
+                return JS_ThrowInternalError(ctx, &msg);
+            }
+        };
         let mut args: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 1).max(0) as usize);
         for i in 1..argc {
             let val = *argv.add(i as usize);
@@ -1703,6 +1721,23 @@ fn parse_i64(input: &[u8]) -> Option<i64> {
 
 fn parse_f64(input: &[u8]) -> Option<f64> {
     core::str::from_utf8(input).ok()?.parse::<f64>().ok()
+}
+
+fn parse_command(input: &[u8]) -> Option<&'static str> {
+    const COMMANDS: &[&str] = &[
+        "PING", "ECHO", "SELECT", "DBSIZE", "GET", "SET", "SETNX", "MSET", "MGET", "GETSET",
+        "APPEND", "INCR", "INCRBY", "DECR", "DECRBY", "STRLEN", "HSET", "HGET", "HDEL", "HGETALL",
+        "HLEN", "HEXISTS", "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX", "LSET",
+        "LINSERT", "LREM", "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SCARD", "SMOVE", "ZADD", "ZRANGE",
+        "ZREM", "ZCARD", "XADD", "XRANGE", "DEL", "EXISTS", "EXPIRE", "PEXPIRE", "PERSIST", "TTL",
+        "PTTL", "TYPE", "KEYS", "SCAN", "FLUSHDB", "FLUSHALL", "INFO", "EVAL", "EVALSHA", "SCRIPT",
+        "CONFIG", "FUNCTION", "CLIENT", "SLOWLOG", "SAVE", "BGSAVE", "REPLICAOF", "QUIT", "MULTI",
+        "EXEC", "DISCARD", "SUBSCRIBE", "PUBLISH",
+    ];
+    COMMANDS
+        .iter()
+        .copied()
+        .find(|cmd| input.eq_ignore_ascii_case(cmd.as_bytes()))
 }
 
 fn to_upper_ascii(input: &[u8]) -> std::borrow::Cow<'_, str> {
