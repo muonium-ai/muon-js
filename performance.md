@@ -26,6 +26,25 @@ Current benchmarks show mini-redis is between 9x and 300x slower than Redis (C) 
 - Profile CPU (sampling) to confirm top hotspots.
 - Toggle persistence/logging to measure impact.
 
+## JS runtime microbenchmark harness
+- Command: `make js-runtime-bench`
+- Optional overrides:
+	- `JS_BENCH_ITERS` (default `5000`)
+	- `JS_BENCH_WARMUP` (default `500`)
+	- `JS_BENCH_RUNS` (default `5`)
+	- `JS_BENCH_OUT` (default `tmp/comparison/js_runtime_benchmark_<timestamp>.json`)
+- Workloads covered:
+	- parser arithmetic expression workload
+	- eval for-loop workload
+	- global property roundtrip workload
+	- string replaceAll workload
+	- object property access workload
+
+### Baseline capture policy
+- Run at least 3-5 runs per workload and use median ops/s as primary signal.
+- Save output JSON files under `tmp/comparison/` for local comparison.
+- Compare before/after numbers for each optimization ticket to avoid regressions.
+
 ## Profiling results (CPU sampling)
 - Dominant time spent in persistence logging: `Persist::log_command` → libsql/sqlite `execute` → `sqlite3_step` → `vdbeCommit` → `fsync`.
 - Async runtime overhead visible: `async_global_executor` scheduling and `async_io::reactor` wait/park cycles.

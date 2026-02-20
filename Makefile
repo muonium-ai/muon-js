@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -21,6 +21,10 @@ REDIS_LUA_SCRIPT_BENCH_LOG ?= tmp/redis_lua_script_bench_$(shell date +%Y%m%d_%H
 MINI_REDIS_JS_TEST_LOG ?= tmp/mini_redis_js_tests_$(shell date +%Y%m%d_%H%M%S).log
 MINI_REDIS_JS_FAITHFUL_TEST_LOG ?= tmp/mini_redis_js_faithful_tests_$(shell date +%Y%m%d_%H%M%S).log
 MINI_REDIS_JS_FAITHFUL_BENCH_LOG ?= tmp/mini_redis_js_faithful_bench_$(shell date +%Y%m%d_%H%M%S).log
+JS_BENCH_ITERS ?= 5000
+JS_BENCH_WARMUP ?= 500
+JS_BENCH_RUNS ?= 5
+JS_BENCH_OUT ?= tmp/comparison/js_runtime_benchmark_$(shell date +%Y%m%d_%H%M%S).json
 
 sync-version:
 	./scripts/sync_version.sh
@@ -47,6 +51,12 @@ test-all: test test-integration test-mquickjs-detailed
 
 release: sync-version
 	$(CARGO) build --release
+
+js-runtime-bench: sync-version
+	@mkdir -p tmp/comparison
+	@echo "Running JS runtime microbenchmarks"
+	@echo "Output: $(JS_BENCH_OUT)"
+	$(CARGO) run --release --bin bench_runtime -- --iterations $(JS_BENCH_ITERS) --warmup $(JS_BENCH_WARMUP) --runs $(JS_BENCH_RUNS) --out $(JS_BENCH_OUT)
 
 mini-redis: sync-version
 	@echo "Running mini-redis on $(MINI_REDIS_HOST):$(MINI_REDIS_PORT)"
