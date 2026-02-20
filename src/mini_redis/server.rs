@@ -257,11 +257,23 @@ async fn handle_client(
             } else {
                 in_multi = false;
                 let mut results = Vec::with_capacity(queued.len());
-                let mut dbs_guard = dbs_state.lock().await;
+                let mut dbs_guard = None;
                 for (qcmd, qargs) in queued.drain(..) {
+                    if let Some(resp) = handle_no_db_command(
+                        &mut local_state,
+                        &script_cache_state,
+                        &qcmd,
+                        &qargs,
+                    ) {
+                        results.push(resp);
+                        continue;
+                    }
+                    if dbs_guard.is_none() {
+                        dbs_guard = Some(dbs_state.lock().await);
+                    }
                     let resp = handle_command(
                         &mut local_state,
-                        &mut dbs_guard,
+                        dbs_guard.as_mut().expect("db lock initialized for DB commands"),
                         &persist_state,
                         &script_cache_state,
                         &mut current_db,
