@@ -2746,14 +2746,8 @@ fn regexp_parts(ctx: &mut JSContextImpl, val: JSValue) -> Option<(String, String
     }
     let source_val = js_get_property_str(ctx, val, "source");
     let flags_val = js_get_property_str(ctx, val, "flags");
-    let source = ctx
-        .string_bytes(source_val)
-        .map(|bytes| core::str::from_utf8(bytes).unwrap_or("").to_string())
-        .unwrap_or_default();
-    let flags = ctx
-        .string_bytes(flags_val)
-        .map(|bytes| core::str::from_utf8(bytes).unwrap_or("").to_string())
-        .unwrap_or_default();
+    let source = value_to_string(ctx, source_val);
+    let flags = value_to_string(ctx, flags_val);
     Some((source, flags))
 }
 
@@ -2786,7 +2780,7 @@ fn expand_replace_substitutions(
             out.push(ch);
             continue;
         }
-        match chars.peek() {
+        match chars.peek().copied() {
             Some('$') => {
                 chars.next();
                 out.push('$');
@@ -2804,18 +2798,18 @@ fn expand_replace_substitutions(
                 out.push_str(after);
             }
             Some(d) if d.is_ascii_digit() => {
-                let mut digits = String::new();
-                if let Some(d1) = chars.next() {
-                    digits.push(d1);
-                }
+                let d1 = chars.next().unwrap_or(d);
+                let mut idx = (d1 as u8 - b'0') as usize;
+                let mut d2_opt = None;
                 if let Some(d2) = chars.peek().copied() {
                     if d2.is_ascii_digit() {
-                        digits.push(d2);
+                        idx = idx * 10 + (d2 as u8 - b'0') as usize;
+                        d2_opt = Some(d2);
                         chars.next();
                     }
                 }
-                let idx = digits.parse::<usize>().ok();
-                if let (Some(caps), Some(i)) = (captures, idx) {
+                if let Some(caps) = captures {
+                    let i = idx;
                     if i < caps.len() {
                         if let Some(val) = &caps[i] {
                             out.push_str(val);
@@ -2824,7 +2818,10 @@ fn expand_replace_substitutions(
                     }
                 }
                 out.push('$');
-                out.push_str(&digits);
+                out.push(d1);
+                if let Some(d2) = d2_opt {
+                    out.push(d2);
+                }
             }
             _ => out.push('$'),
         }
@@ -2865,8 +2862,14 @@ fn string_replace_nonregex(
 
     let is_func = js_is_function(ctx, replacement) != 0;
     let replacement_str = if is_func { String::new() } else { value_to_string(ctx, replacement) };
+    if !is_func && !replacement_str.contains('$') {
+        if replace_all {
+            return input.replace(search, &replacement_str);
+        }
+        return input.replacen(search, &replacement_str, 1);
+    }
     let input_val = if is_func { Some(js_new_string(ctx, input)) } else { None };
-    let mut result = String::new();
+    let mut result = String::with_capacity(input.len());
     let mut search_start = 0usize;
     let mut last_end = 0usize;
 
@@ -2911,7 +2914,7 @@ fn string_replace_regex(
     let is_func = js_is_function(ctx, replacement) != 0;
     let replacement_str = if is_func { String::new() } else { value_to_string(ctx, replacement) };
     let input_val = js_new_string(ctx, input);
-    let mut result = String::new();
+    let mut result = String::with_capacity(input.len());
     let mut last_end = 0usize;
 
     let mut iter = re.captures_iter(input);
@@ -2927,13 +2930,6 @@ fn string_replace_regex(
         let start = m.start();
         let end = m.end();
         result.push_str(&input[last_end..start]);
-
-        let mut captures: Vec<Option<String>> = vec![None; caps.len()];
-        for i in 0..caps.len() {
-            if let Some(cm) = caps.get(i) {
-                captures[i] = Some(cm.as_str().to_string());
-            }
-        }
 
         let rep = if is_func {
             let mut call_args: Vec<JSValue> = Vec::with_capacity(caps.len() + 2);
@@ -2954,6 +2950,12 @@ fn string_replace_regex(
         } else {
             let before = &input[..start];
             let after = &input[end..];
+            let mut captures: Vec<Option<String>> = vec![None; caps.len()];
+            for i in 0..caps.len() {
+                if let Some(cm) = caps.get(i) {
+                    captures[i] = Some(cm.as_str().to_string());
+                }
+            }
             expand_replace_substitutions(&replacement_str, m.as_str(), before, after, Some(&captures))
         };
         result.push_str(&rep);

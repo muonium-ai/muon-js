@@ -39,6 +39,7 @@ Current benchmarks show mini-redis is between 9x and 300x slower than Redis (C) 
 	- global property roundtrip workload
 	- VM global load/store workload (`x = x + 1` bytecode path)
 	- string replaceAll workload
+	- string regex replace workload
 	- object property access workload
 
 ### Baseline capture policy

@@ -273,6 +273,9 @@ fn main() {
         run_case("string_replace_all", &config, |_| {
             "\"abcabcabcabc\".replaceAll(\"ab\", \"xy\")".to_string()
         }),
+        run_case("string_replace_regex", &config, |_| {
+            "\"a1b2c3d4\".replace(/[0-9]/g, \"x\")".to_string()
+        }),
         run_case("object_property_access", &config, |_| {
             "var o={a:1,b:2,c:3,d:4}; o.a + o.b + o.c + o.d".to_string()
         }),
