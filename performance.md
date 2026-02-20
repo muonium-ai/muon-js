@@ -102,6 +102,16 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Text summary (same path, `.txt` extension)
 - Check mode exits non-zero when critical cases regress beyond threshold.
 
+### Latest 3-run comparison snapshot (2026-02-21)
+- Command run: `python3 tmp/run_lua_js_3rounds.py`
+- Report: `tmp/lua_js_comparison_3runs_20260221_001157.txt`
+- Aggregate ratios (mini-redis JS / Redis Lua):
+	- `overall_avg_ratio_mean=1.2152x`
+	- `overall_avg_ratio_median=1.2202x`
+- Per-case mean ratios:
+	- Faster than Redis Lua: `hello=1.90x`, `incrby=2.05x`, `keys_argv=1.64x`, `lrange=1.65x`, `redis_call=1.89x`
+	- Slower than Redis Lua: `hash_sum=0.16x`, `set_members=0.24x`, `bulk_incr=0.19x`
+
 ### Hotspot benchmark defaults
 - `MINI_REDIS_JS_HOTSPOT_CASES` default: `hash_sum set_members bulk_incr`
 - `MINI_REDIS_JS_HOTSPOT_ITERS` default: `1000`
