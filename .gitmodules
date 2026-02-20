@@ -4,3 +4,6 @@
 [submodule "vendor/redis"]
 	path = vendor/redis
 	url = https://github.com/redis/redis.git
+[submodule "tickets/mt/muontickets"]
+	path = tickets/mt/muontickets
+	url = https://github.com/muonium-ai/muontickets.git
