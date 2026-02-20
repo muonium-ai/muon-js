@@ -571,7 +571,7 @@ async fn handle_command(
             (Some(key), Some(field)) => {
                 let db = &mut state.dbs[*db_index];
                 match db.hash_get(key.as_ref(), field.as_ref()) {
-                    Ok(Some(v)) => RespValue::Blob(v.into()),
+                    Ok(Some(v)) => RespValue::Blob(v),
                     Ok(None) => RespValue::Null,
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                 }
@@ -583,9 +583,8 @@ async fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'HDEL'".to_string());
             }
             let key = &args[0];
-            let fields: Vec<Vec<u8>> = args[1..].iter().map(|f| f.as_ref().to_vec()).collect();
             let db = &mut state.dbs[*db_index];
-            match db.hash_del(key.as_ref(), &fields) {
+            match db.hash_del(key.as_ref(), &args[1..]) {
                 Ok(removed) => {
                     log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(removed)
@@ -790,9 +789,8 @@ async fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'SADD'".to_string());
             }
             let key = &args[0];
-            let members: Vec<Vec<u8>> = args[1..].iter().map(|m| m.as_ref().to_vec()).collect();
             let db = &mut state.dbs[*db_index];
-            match db.set_add(key.as_ref(), &members) {
+            match db.set_add(key.as_ref(), &args[1..]) {
                 Ok(added) => {
                     log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(added)
@@ -805,9 +803,8 @@ async fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'SREM'".to_string());
             }
             let key = &args[0];
-            let members: Vec<Vec<u8>> = args[1..].iter().map(|m| m.as_ref().to_vec()).collect();
             let db = &mut state.dbs[*db_index];
-            match db.set_remove(key.as_ref(), &members) {
+            match db.set_remove(key.as_ref(), &args[1..]) {
                 Ok(removed) => {
                     log_cmd!(state, *db_index, cmd, args);
                     RespValue::Integer(removed)
@@ -822,7 +819,7 @@ async fn handle_command(
                     Ok(members) => {
                         let mut out = Vec::with_capacity(members.len());
                         for member in members {
-                            out.push(RespValue::Blob(member.into()));
+                            out.push(RespValue::Blob(member));
                         }
                         RespValue::Array(out)
                     }

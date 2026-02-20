@@ -583,18 +583,18 @@ impl Db {
         }
     }
 
-    pub fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    pub fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
         match self.data.get(key) {
-            Some(Value::Hash(map)) => Ok(map.get(field).cloned()),
+            Some(Value::Hash(map)) => Ok(map.get(field).map(|v| Arc::from(v.as_slice()))),
             Some(_) => Err(()),
             None => Ok(None),
         }
     }
 
-    pub fn hash_del(&mut self, key: &[u8], fields: &[Vec<u8>]) -> Result<i64, ()> {
+    pub fn hash_del(&mut self, key: &[u8], fields: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -602,7 +602,7 @@ impl Db {
             Some(Value::Hash(map)) => {
                 let mut removed = 0;
                 for field in fields {
-                    if map.remove(field).is_some() {
+                    if map.remove(field.as_ref()).is_some() {
                         removed += 1;
                     }
                 }
@@ -656,7 +656,7 @@ impl Db {
         }
     }
 
-    pub fn set_add(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+    pub fn set_add(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -665,7 +665,7 @@ impl Db {
             Value::Set(set) => {
                 let mut added = 0;
                 for member in members {
-                    if set.insert(member.clone()) {
+                    if set.insert(member.as_ref().to_vec()) {
                         added += 1;
                     }
                 }
@@ -675,7 +675,7 @@ impl Db {
         }
     }
 
-    pub fn set_remove(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+    pub fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -683,7 +683,7 @@ impl Db {
             Some(Value::Set(set)) => {
                 let mut removed = 0;
                 for member in members {
-                    if set.remove(member) {
+                    if set.remove(member.as_ref()) {
                         removed += 1;
                     }
                 }
@@ -698,12 +698,12 @@ impl Db {
         }
     }
 
-    pub fn set_members(&mut self, key: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+    pub fn set_members(&mut self, key: &[u8]) -> Result<Vec<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
         match self.data.get(key) {
-            Some(Value::Set(set)) => Ok(set.iter().cloned().collect()),
+            Some(Value::Set(set)) => Ok(set.iter().map(|m| Arc::from(m.as_slice())).collect()),
             Some(_) => Err(()),
             None => Ok(Vec::new()),
         }
