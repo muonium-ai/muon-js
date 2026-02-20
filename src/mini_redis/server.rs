@@ -178,6 +178,11 @@ async fn handle_client(
     let mut queued: Vec<(String, Vec<Arc<[u8]>>)> = Vec::new();
     let (pub_tx, pub_rx) = async_std::channel::unbounded::<RespValue>();
     let mut script_runtime: Option<ScriptRuntime> = None;
+    let script_runtime_config = {
+        let guard = state.lock().await;
+        guard.script_runtime.clone()
+    };
+    let mut local_state = ServerState::new(script_runtime_config);
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -252,11 +257,10 @@ async fn handle_client(
             } else {
                 in_multi = false;
                 let mut results = Vec::with_capacity(queued.len());
-                let mut state_guard = state.lock().await;
                 let mut dbs_guard = dbs_state.lock().await;
                 for (qcmd, qargs) in queued.drain(..) {
                     let resp = handle_command(
-                        &mut state_guard,
+                        &mut local_state,
                         &mut dbs_guard,
                         &persist_state,
                         &script_cache_state,
@@ -270,10 +274,9 @@ async fn handle_client(
                 FastResponse::Value(RespValue::Array(results))
             }
         } else {
-            let mut state_guard = state.lock().await;
             let mut dbs_guard = dbs_state.lock().await;
             let resp = handle_command(
-                &mut state_guard,
+                &mut local_state,
                 &mut dbs_guard,
                 &persist_state,
                 &script_cache_state,
