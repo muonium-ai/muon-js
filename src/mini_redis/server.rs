@@ -1262,27 +1262,45 @@ fn eval_script(
         let sha = sha1_hex(script.as_bytes());
         state.script_cache.insert(sha, script.to_string());
     }
-    let numkeys = match parse_usize(args[1].as_ref()) {
+    eval_script_source(state, db_index, script_runtime, script, &args[1..])
+}
+
+fn eval_script_source(
+    state: &mut ServerState,
+    db_index: &mut usize,
+    script_runtime: &mut ScriptRuntime,
+    script: &str,
+    args: &[Arc<[u8]>],
+) -> RespValue {
+    let wrapped = wrap_eval_script(script);
+    eval_wrapped_script(state, db_index, script_runtime, &wrapped, args)
+}
+
+fn eval_wrapped_script(
+    state: &mut ServerState,
+    db_index: &mut usize,
+    script_runtime: &mut ScriptRuntime,
+    wrapped_script: &str,
+    args: &[Arc<[u8]>],
+) -> RespValue {
+    let numkeys = match args.first().and_then(|n| parse_usize(n.as_ref())) {
         Some(n) => n,
         None => return RespValue::Error("ERR invalid number of keys".to_string()),
     };
-    if args.len() < 2 + numkeys {
+    if args.len() < 1 + numkeys {
         return RespValue::Error("ERR invalid number of keys".to_string());
     }
-    let keys = &args[2..2 + numkeys];
-    let argv = &args[2 + numkeys..];
-    let keys_vec: Vec<Vec<u8>> = keys.iter().map(|v| v.as_ref().to_vec()).collect();
-    let argv_vec: Vec<Vec<u8>> = argv.iter().map(|v| v.as_ref().to_vec()).collect();
+    let keys = &args[1..1 + numkeys];
+    let argv = &args[1 + numkeys..];
     script_runtime.maybe_reset();
-    script_runtime.set_keys_argv(&keys_vec, &argv_vec);
+    script_runtime.set_keys_argv(keys, argv);
     let mut exec = ScriptExec {
         state: state as *mut ServerState,
         db_index: db_index as *mut usize,
     };
     let ctx = &mut script_runtime.ctx;
     JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
-    let wrapped = format!("function __redis_script__(){{\n{}\n}}\n__redis_script__()", script);
-    let result = JS_Eval(ctx, &wrapped, "<eval>", JS_EVAL_RETVAL);
+    let result = JS_Eval(ctx, wrapped_script, "<eval>", JS_EVAL_RETVAL);
     JS_SetContextOpaque(ctx, std::ptr::null_mut());
     if result.is_exception() {
         let exc = JS_GetException(ctx);
@@ -1305,14 +1323,21 @@ fn eval_script_sha(
         Ok(s) => s,
         Err(_) => return RespValue::Error("ERR invalid script".to_string()),
     };
-    let script = match state.script_cache.get(sha) {
-        Some(s) => s.clone(),
-        None => return RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string()),
+    let wrapped = match state.script_cache.get(sha) {
+        Some(s) => wrap_eval_script(s),
+        None => {
+            return RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string())
+        }
     };
-    let mut new_args: Vec<Arc<[u8]>> = Vec::with_capacity(args.len());
-    new_args.push(Arc::from(script.into_bytes()));
-    new_args.extend_from_slice(&args[1..]);
-    eval_script(state, db_index, script_runtime, &new_args, false)
+    eval_wrapped_script(state, db_index, script_runtime, &wrapped, &args[1..])
+}
+
+fn wrap_eval_script(script: &str) -> String {
+    let mut wrapped = String::with_capacity(script.len() + 48);
+    wrapped.push_str("function __redis_script__(){\n");
+    wrapped.push_str(script);
+    wrapped.push_str("\n}\n__redis_script__()");
+    wrapped
 }
 
 fn handle_script_command(state: &mut ServerState, args: &[Arc<[u8]>]) -> RespValue {
@@ -1481,16 +1506,16 @@ impl ScriptRuntime {
         (mem, ctx, cfuncs)
     }
 
-    fn set_keys_argv(&mut self, keys: &[Vec<u8>], argv: &[Vec<u8>]) {
+    fn set_keys_argv(&mut self, keys: &[Arc<[u8]>], argv: &[Arc<[u8]>]) {
         let global = JS_GetGlobalObject(&mut self.ctx);
         let keys_arr = JS_NewArray(&mut self.ctx, keys.len() as i32);
         for (idx, key) in keys.iter().enumerate() {
-            let v = JS_NewStringLen(&mut self.ctx, key);
+            let v = JS_NewStringLen(&mut self.ctx, key.as_ref());
             let _ = JS_SetPropertyUint32(&mut self.ctx, keys_arr, idx as u32, v);
         }
         let argv_arr = JS_NewArray(&mut self.ctx, argv.len() as i32);
         for (idx, arg) in argv.iter().enumerate() {
-            let v = JS_NewStringLen(&mut self.ctx, arg);
+            let v = JS_NewStringLen(&mut self.ctx, arg.as_ref());
             let _ = JS_SetPropertyUint32(&mut self.ctx, argv_arr, idx as u32, v);
         }
         let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
