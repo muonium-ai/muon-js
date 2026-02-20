@@ -438,7 +438,7 @@ fn handle_command(
             _ => RespValue::Error("ERR invalid DB index".to_string()),
         },
         "DBSIZE" => {
-            let db = &mut dbs_guard[*db_index];
+            let db = &mut dbs[*db_index];
             RespValue::Integer(db.len() as i64)
         }
         "GET" => match args.get(0) {
