@@ -1526,17 +1526,17 @@ fn redis_call(
             return JS_ThrowInternalError(ctx, "redis.call missing context");
         }
         let exec = &mut *opaque;
-        let mut args: Vec<Arc<[u8]>> = Vec::with_capacity(argc as usize);
-        for i in 0..argc {
+        let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
+        let cmd = to_upper_ascii(JS_ToCString(ctx, *argv, &mut cmd_buf).as_bytes());
+        let mut args: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 1).max(0) as usize);
+        for i in 1..argc {
             let val = *argv.add(i as usize);
-            let s = js_value_to_string(ctx, val);
-            args.push(Arc::from(s.into_bytes()));
+            args.push(js_value_to_arc_bytes(ctx, val));
         }
-        let cmd = to_upper_ascii(args[0].as_ref());
         let state = &mut *exec.state;
         let db_index = &mut *exec.db_index;
         let mut script = None;
-        let resp = async_std::task::block_on(handle_command(state, db_index, &mut script, &cmd, &args[1..]));
+        let resp = async_std::task::block_on(handle_command(state, db_index, &mut script, &cmd, &args));
         resp_to_js(ctx, resp, magic == 1)
     }
 }
@@ -1614,6 +1614,11 @@ fn js_to_resp(ctx: &mut JSContextImpl, val: JSValue) -> RespValue {
 fn js_value_to_string(ctx: &mut JSContextImpl, val: JSValue) -> String {
     let mut buf = JSCStringBuf { buf: [0u8; 5] };
     JS_ToCString(ctx, val, &mut buf).to_string()
+}
+
+fn js_value_to_arc_bytes(ctx: &mut JSContextImpl, val: JSValue) -> Arc<[u8]> {
+    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+    Arc::from(JS_ToCString(ctx, val, &mut buf).as_bytes())
 }
 
 fn value_to_args(val: RespValue) -> Result<Vec<Arc<[u8]>>, String> {
