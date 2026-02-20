@@ -224,7 +224,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 let mut results = Vec::with_capacity(queued.len());
                 let mut guard = state.lock().await;
                 for (qcmd, qargs) in queued.drain(..) {
-                    let resp = handle_command(&mut guard, &mut current_db, &mut script_runtime, &qcmd, &qargs).await;
+                    let resp = handle_command(&mut guard, &mut current_db, &mut script_runtime, &qcmd, &qargs);
                     results.push(resp);
                 }
                 FastResponse::Value(RespValue::Array(results))
@@ -237,8 +237,7 @@ async fn handle_client(stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io:
                 &mut script_runtime,
                 cmd.as_ref(),
                 &args[1..],
-            )
-            .await;
+            );
             FastResponse::Value(resp)
         };
         if let Some(start) = timing {
@@ -350,7 +349,7 @@ async fn handle_publish(state: &Arc<Mutex<ServerState>>, args: &[Arc<[u8]>]) -> 
     RespValue::Integer(delivered)
 }
 
-async fn handle_command(
+fn handle_command(
     state: &mut ServerState,
     db_index: &mut usize,
     script: &mut Option<ScriptRuntime>,
@@ -361,7 +360,7 @@ async fn handle_command(
         ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
             if let Some(p) = $state.persist.as_ref() {
                 if p.aof_enabled() {
-                    let _ = p.log_command($db, $cmd, $args).await;
+                    let _ = async_std::task::block_on(p.log_command($db, $cmd, $args));
                 }
             }
         };
@@ -1220,7 +1219,7 @@ async fn handle_command(
         }
         "SAVE" => {
             if let Some(p) = state.persist.as_ref() {
-                match p.snapshot(&mut state.dbs).await {
+                match async_std::task::block_on(p.snapshot(&mut state.dbs)) {
                     Ok(()) => RespValue::Simple("OK".to_string()),
                     Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
                 }
@@ -1230,7 +1229,7 @@ async fn handle_command(
         }
         "BGSAVE" => {
             if let Some(p) = state.persist.as_ref() {
-                match p.snapshot(&mut state.dbs).await {
+                match async_std::task::block_on(p.snapshot(&mut state.dbs)) {
                     Ok(()) => RespValue::Simple("OK".to_string()),
                     Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
                 }
@@ -1559,7 +1558,7 @@ fn redis_call(
         let state = &mut *exec.state;
         let db_index = &mut *exec.db_index;
         let mut script = None;
-        let resp = async_std::task::block_on(handle_command(state, db_index, &mut script, &cmd, &args));
+        let resp = handle_command(state, db_index, &mut script, &cmd, &args);
         resp_to_js(ctx, resp, magic == 1)
     }
 }
