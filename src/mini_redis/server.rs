@@ -52,18 +52,17 @@ pub struct ServerConfig {
 pub struct ServerState {
     dbs: Vec<Db>,
     persist: Option<Persist>,
-    script_cache: std::collections::HashMap<String, String>,
     script_runtime: ScriptRuntimeConfig,
 }
 
 type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>;
+type ScriptCacheState = std::collections::HashMap<String, String>;
 
 impl ServerState {
     fn new(dbs: Vec<Db>, persist: Option<Persist>, script_runtime: ScriptRuntimeConfig) -> Self {
         Self {
             dbs,
             persist,
-            script_cache: std::collections::HashMap::new(),
             script_runtime,
         }
     }
@@ -95,6 +94,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     }
     let state = Arc::new(Mutex::new(ServerState::new(dbs, persist, config.script_runtime)));
     let pubsub_state = Arc::new(Mutex::new(PubSubState::new()));
+    let script_cache_state = Arc::new(Mutex::new(ScriptCacheState::new()));
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
     let shutdown_state = state.clone();
     let shutdown_path = config.persist_path.clone();
@@ -112,8 +112,9 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
         let pubsub_state = pubsub_state.clone();
+        let script_cache_state = script_cache_state.clone();
         task::spawn(async move {
-            let _ = handle_client(stream, state, pubsub_state).await;
+            let _ = handle_client(stream, state, pubsub_state, script_cache_state).await;
         });
     }
 }
@@ -156,6 +157,7 @@ async fn handle_client(
     stream: TcpStream,
     state: Arc<Mutex<ServerState>>,
     pubsub_state: Arc<Mutex<PubSubState>>,
+    script_cache_state: Arc<Mutex<ScriptCacheState>>,
 ) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.clone());
@@ -242,7 +244,14 @@ async fn handle_client(
                 let mut results = Vec::with_capacity(queued.len());
                 let mut guard = state.lock().await;
                 for (qcmd, qargs) in queued.drain(..) {
-                    let resp = handle_command(&mut guard, &mut current_db, &mut script_runtime, &qcmd, &qargs);
+                    let resp = handle_command(
+                        &mut guard,
+                        &script_cache_state,
+                        &mut current_db,
+                        &mut script_runtime,
+                        &qcmd,
+                        &qargs,
+                    );
                     results.push(resp);
                 }
                 FastResponse::Value(RespValue::Array(results))
@@ -251,6 +260,7 @@ async fn handle_client(
             let mut guard = state.lock().await;
             let resp = handle_command(
                 &mut guard,
+                &script_cache_state,
                 &mut current_db,
                 &mut script_runtime,
                 cmd,
@@ -369,6 +379,7 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
 
 fn handle_command(
     state: &mut ServerState,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script: &mut Option<ScriptRuntime>,
     cmd: &str,
@@ -1179,15 +1190,15 @@ fn handle_command(
             if script.is_none() {
                 *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
-            eval_script(state, db_index, script.as_mut().unwrap(), args, true)
+            eval_script(state, script_cache_state, db_index, script.as_mut().unwrap(), args, true)
         }
         "EVALSHA" => {
             if script.is_none() {
                 *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
-            eval_script_sha(state, db_index, script.as_mut().unwrap(), args)
+            eval_script_sha(state, script_cache_state, db_index, script.as_mut().unwrap(), args)
         }
-        "SCRIPT" => handle_script_command(state, args),
+        "SCRIPT" => handle_script_command(script_cache_state, args),
         "CONFIG" => {
             if args.len() >= 1 && to_upper_ascii(args[0].as_ref()) == "GET" {
                 RespValue::Array(Vec::new())
@@ -1203,7 +1214,8 @@ fn handle_command(
             match sub.as_ref() {
                 "LIST" => RespValue::Array(Vec::new()),
                 "FLUSH" => {
-                    state.script_cache.clear();
+                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    cache.clear();
                     RespValue::Simple("OK".to_string())
                 }
                 "LOAD" => {
@@ -1215,7 +1227,8 @@ fn handle_command(
                         Err(_) => return RespValue::Error("ERR invalid function".to_string()),
                     };
                     let sha = sha1_hex(script.as_bytes());
-                    state.script_cache.insert(sha, script.to_string());
+                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    cache.insert(sha, script.to_string());
                     RespValue::Simple("OK".to_string())
                 }
                 _ => RespValue::Error("ERR unknown subcommand for FUNCTION".to_string()),
@@ -1263,6 +1276,7 @@ fn handle_command(
 
 fn eval_script(
     state: &mut ServerState,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     args: &[Arc<[u8]>],
@@ -1277,7 +1291,8 @@ fn eval_script(
     };
     if cache {
         let sha = sha1_hex(script.as_bytes());
-        state.script_cache.insert(sha, script.to_string());
+        let mut cache = async_std::task::block_on(script_cache_state.lock());
+        cache.insert(sha, script.to_string());
     }
     eval_script_source(state, db_index, script_runtime, script, &args[1..])
 }
@@ -1329,6 +1344,7 @@ fn eval_wrapped_script(
 
 fn eval_script_sha(
     state: &mut ServerState,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     args: &[Arc<[u8]>],
@@ -1340,7 +1356,8 @@ fn eval_script_sha(
         Ok(s) => s,
         Err(_) => return RespValue::Error("ERR invalid script".to_string()),
     };
-    let wrapped = match state.script_cache.get(sha) {
+    let cache = async_std::task::block_on(script_cache_state.lock());
+    let wrapped = match cache.get(sha) {
         Some(s) => wrap_eval_script(s),
         None => {
             return RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string())
@@ -1357,7 +1374,7 @@ fn wrap_eval_script(script: &str) -> String {
     wrapped
 }
 
-fn handle_script_command(state: &mut ServerState, args: &[Arc<[u8]>]) -> RespValue {
+fn handle_script_command(script_cache_state: &Arc<Mutex<ScriptCacheState>>, args: &[Arc<[u8]>]) -> RespValue {
     if args.len() < 1 {
         return RespValue::Error("ERR wrong number of arguments for 'SCRIPT'".to_string());
     }
@@ -1372,26 +1389,29 @@ fn handle_script_command(state: &mut ServerState, args: &[Arc<[u8]>]) -> RespVal
                 Err(_) => return RespValue::Error("ERR invalid script".to_string()),
             };
             let sha = sha1_hex(script.as_bytes());
-            state.script_cache.insert(sha.clone(), script.to_string());
+            let mut cache = async_std::task::block_on(script_cache_state.lock());
+            cache.insert(sha.clone(), script.to_string());
             RespValue::Blob(sha.into_bytes().into())
         }
         "EXISTS" => {
             if args.len() < 2 {
                 return RespValue::Error("ERR wrong number of arguments for 'SCRIPT EXISTS'".to_string());
             }
+            let cache = async_std::task::block_on(script_cache_state.lock());
             let mut out = Vec::with_capacity(args.len() - 1);
             for sha in &args[1..] {
                 let s = match std::str::from_utf8(sha.as_ref()) {
                     Ok(v) => v,
                     Err(_) => "",
                 };
-                let exists = state.script_cache.contains_key(s);
+                let exists = cache.contains_key(s);
                 out.push(RespValue::Integer(if exists { 1 } else { 0 }));
             }
             RespValue::Array(out)
         }
         "FLUSH" => {
-            state.script_cache.clear();
+            let mut cache = async_std::task::block_on(script_cache_state.lock());
+            cache.clear();
             RespValue::Simple("OK".to_string())
         }
         _ => RespValue::Error("ERR unknown subcommand for SCRIPT".to_string()),
