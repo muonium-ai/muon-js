@@ -37,6 +37,7 @@ Current benchmarks show mini-redis is between 9x and 300x slower than Redis (C) 
 	- parser arithmetic expression workload
 	- parser function declaration workload
 	- eval for-loop workload
+	- builtin identifier lookup workload
 	- global property roundtrip workload
 	- VM global load/store workload (`x = x + 1` bytecode path)
 	- string replaceAll workload

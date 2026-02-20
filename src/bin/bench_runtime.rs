@@ -269,6 +269,9 @@ fn main() {
         run_case("eval_for_loop", &config, |_| {
             "var s=0; for (var i=0; i<50; i++) { s = s + i; } s".to_string()
         }),
+        run_case("builtin_identifier_lookup", &config, |_| {
+            "Math; Object; Array; JSON; Number; String; RegExp; Date; console; parseInt; parseFloat; isNaN; isFinite; Function; TypeError; ReferenceError; SyntaxError; RangeError".to_string()
+        }),
         run_case("global_property_roundtrip", &config, |_| {
             "globalThis.counter = (globalThis.counter || 0) + 1; globalThis.counter".to_string()
         }),

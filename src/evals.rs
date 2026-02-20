@@ -9,6 +9,46 @@ use crate::value::*;
 use crate::helpers::*;
 use crate::parser::{create_function, extract_braces, extract_paren, parse_identifier};
 
+const BUILTIN_DISPATCH: [(&str, &str); 30] = [
+    ("Array", "__builtin_Array__"),
+    ("ArrayBuffer", "__builtin_ArrayBuffer__"),
+    ("Date", "__builtin_Date__"),
+    ("Error", "__builtin_Error__"),
+    ("Float32Array", "__builtin_Float32Array__"),
+    ("Float64Array", "__builtin_Float64Array__"),
+    ("Function", "__builtin_Function__"),
+    ("Int16Array", "__builtin_Int16Array__"),
+    ("Int32Array", "__builtin_Int32Array__"),
+    ("Int8Array", "__builtin_Int8Array__"),
+    ("JSON", "__builtin_JSON__"),
+    ("Math", "__builtin_Math__"),
+    ("Number", "__builtin_Number__"),
+    ("Object", "__builtin_Object__"),
+    ("RangeError", "__builtin_RangeError__"),
+    ("ReferenceError", "__builtin_ReferenceError__"),
+    ("RegExp", "__builtin_RegExp__"),
+    ("String", "__builtin_String__"),
+    ("SyntaxError", "__builtin_SyntaxError__"),
+    ("TypeError", "__builtin_TypeError__"),
+    ("Uint16Array", "__builtin_Uint16Array__"),
+    ("Uint32Array", "__builtin_Uint32Array__"),
+    ("Uint8Array", "__builtin_Uint8Array__"),
+    ("Uint8ClampedArray", "__builtin_Uint8ClampedArray__"),
+    ("console", "__builtin_console__"),
+    ("eval", "__builtin_eval__"),
+    ("isFinite", "__builtin_isFinite__"),
+    ("isNaN", "__builtin_isNaN__"),
+    ("parseFloat", "__builtin_parseFloat__"),
+    ("parseInt", "__builtin_parseInt__"),
+];
+
+fn lookup_builtin_dispatch(name: &str) -> Option<(&'static str, &'static str)> {
+    BUILTIN_DISPATCH
+        .binary_search_by_key(&name, |(builtin_name, _)| *builtin_name)
+        .ok()
+        .map(|idx| BUILTIN_DISPATCH[idx])
+}
+
 fn find_arrow_top_level(src: &str) -> Option<usize> {
     let bytes = src.as_bytes();
     let mut depth = 0i32;
@@ -154,77 +194,8 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             val
         }
     };
-    if s == "Math" {
-        return Some(builtin_or_global("Math", "__builtin_Math__"));
-    }
-    if s == "Object" {
-        return Some(builtin_or_global("Object", "__builtin_Object__"));
-    }
-    if s == "Array" {
-        return Some(builtin_or_global("Array", "__builtin_Array__"));
-    }
-    if s == "JSON" {
-        return Some(builtin_or_global("JSON", "__builtin_JSON__"));
-    }
-    if s == "Number" {
-        return Some(builtin_or_global("Number", "__builtin_Number__"));
-    }
-    if s == "String" {
-        return Some(builtin_or_global("String", "__builtin_String__"));
-    }
-    if s == "ArrayBuffer" {
-        return Some(builtin_or_global("ArrayBuffer", "__builtin_ArrayBuffer__"));
-    }
-    if s == "Uint8Array" {
-        return Some(builtin_or_global("Uint8Array", "__builtin_Uint8Array__"));
-    }
-    if s == "Uint8ClampedArray" {
-        return Some(builtin_or_global("Uint8ClampedArray", "__builtin_Uint8ClampedArray__"));
-    }
-    if s == "Int8Array" {
-        return Some(builtin_or_global("Int8Array", "__builtin_Int8Array__"));
-    }
-    if s == "Int16Array" {
-        return Some(builtin_or_global("Int16Array", "__builtin_Int16Array__"));
-    }
-    if s == "Uint16Array" {
-        return Some(builtin_or_global("Uint16Array", "__builtin_Uint16Array__"));
-    }
-    if s == "Int32Array" {
-        return Some(builtin_or_global("Int32Array", "__builtin_Int32Array__"));
-    }
-    if s == "Uint32Array" {
-        return Some(builtin_or_global("Uint32Array", "__builtin_Uint32Array__"));
-    }
-    if s == "Float32Array" {
-        return Some(builtin_or_global("Float32Array", "__builtin_Float32Array__"));
-    }
-    if s == "Float64Array" {
-        return Some(builtin_or_global("Float64Array", "__builtin_Float64Array__"));
-    }
-    if s == "RegExp" {
-        return Some(builtin_or_global("RegExp", "__builtin_RegExp__"));
-    }
-    if s == "Date" {
-        return Some(builtin_or_global("Date", "__builtin_Date__"));
-    }
-    if s == "console" {
-        return Some(builtin_or_global("console", "__builtin_console__"));
-    }
-    if s == "parseInt" {
-        return Some(builtin_or_global("parseInt", "__builtin_parseInt__"));
-    }
-    if s == "parseFloat" {
-        return Some(builtin_or_global("parseFloat", "__builtin_parseFloat__"));
-    }
-    if s == "eval" {
-        return Some(builtin_or_global("eval", "__builtin_eval__"));
-    }
-    if s == "isNaN" {
-        return Some(builtin_or_global("isNaN", "__builtin_isNaN__"));
-    }
-    if s == "isFinite" {
-        return Some(builtin_or_global("isFinite", "__builtin_isFinite__"));
+    if let Some((builtin_name, marker)) = lookup_builtin_dispatch(s) {
+        return Some(builtin_or_global(builtin_name, marker));
     }
     if s == "globalThis" {
         let val = js_get_property_str(ctx, global, "globalThis");
@@ -232,25 +203,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             return Some(global);
         }
         return Some(val);
-    }
-    // Error constructors
-    if s == "Error" {
-        return Some(builtin_or_global("Error", "__builtin_Error__"));
-    }
-    if s == "TypeError" {
-        return Some(builtin_or_global("TypeError", "__builtin_TypeError__"));
-    }
-    if s == "ReferenceError" {
-        return Some(builtin_or_global("ReferenceError", "__builtin_ReferenceError__"));
-    }
-    if s == "SyntaxError" {
-        return Some(builtin_or_global("SyntaxError", "__builtin_SyntaxError__"));
-    }
-    if s == "RangeError" {
-        return Some(builtin_or_global("RangeError", "__builtin_RangeError__"));
-    }
-    if s == "Function" {
-        return Some(builtin_or_global("Function", "__builtin_Function__"));
     }
     if s == "NaN" {
         return Some(number_to_value(ctx, f64::NAN));
