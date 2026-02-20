@@ -15,7 +15,9 @@ mod value;
 pub mod mini_redis;
 
 pub use api::*;
+pub use compiler::Compiler;
 pub use types::*;
+pub use vm::VM;
 
 #[cfg(test)]
 mod tests {

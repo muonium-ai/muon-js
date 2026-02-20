@@ -650,6 +650,26 @@ impl Context {
         Some(Value::UNDEFINED)
     }
 
+    pub fn get_property_atom_id(&mut self, val: Value, atom: u32) -> Option<Value> {
+        let mut cur = val;
+        let mut depth = 0;
+        while depth < PROTO_SEARCH_LIMIT {
+            let obj = self.object_ptr(cur)?;
+            unsafe {
+                if let Some(found) = self.find_prop_value(obj, PROP_KEY_ATOM, atom) {
+                    return Some(found);
+                }
+                let proto = (*obj).proto;
+                if proto.is_null() || proto.is_undefined() {
+                    break;
+                }
+                cur = proto;
+            }
+            depth += 1;
+        }
+        Some(Value::UNDEFINED)
+    }
+
     pub fn get_property_index(&mut self, val: Value, idx: u32) -> Option<Value> {
         let mut cur = val;
         let mut depth = 0;
@@ -690,6 +710,14 @@ impl Context {
         }
         let atom = match self.intern_string(name) {
             Some(atom) => atom,
+            None => return false,
+        };
+        unsafe { self.set_prop_value(obj, PROP_KEY_ATOM, atom, value) }
+    }
+
+    pub fn set_property_atom_id(&mut self, val: Value, atom: u32, value: Value) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(obj) => obj,
             None => return false,
         };
         unsafe { self.set_prop_value(obj, PROP_KEY_ATOM, atom, value) }

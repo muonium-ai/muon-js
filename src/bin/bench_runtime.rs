@@ -1,6 +1,6 @@
 use muon_js::{
-    JSCStringBuf, JS_EVAL_RETVAL, JS_Eval, JS_GetException, JS_NewContext, JS_ToCString,
-    JS_ToString, JSValue,
+    Compiler, JSCStringBuf, JS_EVAL_RETVAL, JS_Eval, JS_GetException, JS_NewContext, JS_ToCString,
+    JS_ToString, JSValue, VM,
 };
 use std::env;
 use std::fs;
@@ -142,6 +142,70 @@ where
     }
 }
 
+fn run_vm_global_case(config: &BenchConfig) -> CaseResult {
+    let mut per_run_seconds = Vec::with_capacity(config.runs);
+
+    for _ in 0..config.runs {
+        let mut mem = vec![0u8; 64 * 1024 * 1024];
+        let mut ctx = JS_NewContext(&mut mem);
+        let _ = eval_checked(&mut ctx, "var x = 0; x");
+
+        let mut compiler = Compiler::new();
+        let module = compiler
+            .compile_program(&mut ctx, "x = x + 1")
+            .expect("failed to compile VM benchmark program");
+        let mut vm = VM::new();
+
+        for _ in 0..config.warmup {
+            let _ = vm.run_module(&mut ctx, &module);
+        }
+
+        let start = Instant::now();
+        for _ in 0..config.iterations {
+            let _ = vm.run_module(&mut ctx, &module);
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        per_run_seconds.push(elapsed);
+    }
+
+    let mut sorted = per_run_seconds.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_seconds = if sorted.is_empty() {
+        0.0
+    } else if sorted.len() % 2 == 1 {
+        sorted[sorted.len() / 2]
+    } else {
+        let i = sorted.len() / 2;
+        (sorted[i - 1] + sorted[i]) / 2.0
+    };
+    let mean_seconds = if per_run_seconds.is_empty() {
+        0.0
+    } else {
+        per_run_seconds.iter().sum::<f64>() / per_run_seconds.len() as f64
+    };
+    let median_ops_per_sec = if median_seconds > 0.0 {
+        config.iterations as f64 / median_seconds
+    } else {
+        0.0
+    };
+    let mean_ops_per_sec = if mean_seconds > 0.0 {
+        config.iterations as f64 / mean_seconds
+    } else {
+        0.0
+    };
+
+    CaseResult {
+        name: "vm_global_load_store",
+        iterations: config.iterations,
+        runs: config.runs,
+        warmup: config.warmup,
+        median_seconds,
+        mean_seconds,
+        median_ops_per_sec,
+        mean_ops_per_sec,
+    }
+}
+
 fn default_output_path() -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -205,6 +269,7 @@ fn main() {
         run_case("global_property_roundtrip", &config, |_| {
             "globalThis.counter = (globalThis.counter || 0) + 1; globalThis.counter".to_string()
         }),
+        run_vm_global_case(&config),
         run_case("string_replace_all", &config, |_| {
             "\"abcabcabcabc\".replaceAll(\"ab\", \"xy\")".to_string()
         }),
