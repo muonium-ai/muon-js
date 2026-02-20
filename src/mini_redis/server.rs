@@ -259,6 +259,10 @@ async fn handle_client(
                 let mut results = Vec::with_capacity(queued.len());
                 let mut dbs_guard = None;
                 for (qcmd, qargs) in queued.drain(..) {
+                    if let Some(resp) = handle_save_like_command(&dbs_state, &persist_state, &qcmd, &qargs).await {
+                        results.push(resp);
+                        continue;
+                    }
                     if let Some(resp) = handle_no_db_command(
                         &mut local_state,
                         &script_cache_state,
@@ -285,6 +289,8 @@ async fn handle_client(
                 }
                 FastResponse::Value(RespValue::Array(results))
             }
+        } else if let Some(resp) = handle_save_like_command(&dbs_state, &persist_state, cmd, &args[1..]).await {
+            FastResponse::Value(resp)
         } else if let Some(resp) = handle_no_db_command(&mut local_state, &script_cache_state, cmd, &args[1..]) {
             FastResponse::Value(resp)
         } else {
@@ -485,6 +491,51 @@ fn handle_no_db_command(
     };
     let _ = state;
     Some(resp)
+}
+
+async fn handle_save_like_command(
+    dbs_state: &Arc<Mutex<DbsState>>,
+    persist_state: &Arc<Mutex<PersistState>>,
+    cmd: &str,
+    args: &[Arc<[u8]>],
+) -> Option<RespValue> {
+    if cmd != "SAVE" && cmd != "BGSAVE" {
+        return None;
+    }
+    if !args.is_empty() {
+        return Some(RespValue::Error(format!(
+            "ERR wrong number of arguments for '{}'",
+            cmd
+        )));
+    }
+
+    let mut snapshot_dbs = snapshot_dbs_for_persistence(dbs_state).await;
+    let persist_guard = persist_state.lock().await;
+    let resp = if let Some(p) = persist_guard.as_ref() {
+        match p.snapshot(&mut snapshot_dbs).await {
+            Ok(_) => RespValue::Simple("OK".to_string()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                RespValue::Error("ERR persistence not configured".to_string())
+            }
+            Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+        }
+    } else {
+        RespValue::Error("ERR persistence not configured".to_string())
+    };
+    Some(resp)
+}
+
+async fn snapshot_dbs_for_persistence(dbs_state: &Arc<Mutex<DbsState>>) -> Vec<Db> {
+    let mut dbs_guard = dbs_state.lock().await;
+    let mut snapshot = Vec::with_capacity(dbs_guard.len());
+    for db in dbs_guard.iter_mut() {
+        let mut cloned = Db::new();
+        for (key, value, expires_at) in db.snapshot_items() {
+            cloned.set_with_expire_at(key, value, expires_at);
+        }
+        snapshot.push(cloned);
+    }
+    snapshot
 }
 
 fn handle_command(
