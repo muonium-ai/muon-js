@@ -51,18 +51,17 @@ pub struct ServerConfig {
 
 pub struct ServerState {
     dbs: Vec<Db>,
-    persist: Option<Persist>,
     script_runtime: ScriptRuntimeConfig,
 }
 
 type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>;
 type ScriptCacheState = std::collections::HashMap<String, String>;
+type PersistState = Option<Persist>;
 
 impl ServerState {
-    fn new(dbs: Vec<Db>, persist: Option<Persist>, script_runtime: ScriptRuntimeConfig) -> Self {
+    fn new(dbs: Vec<Db>, script_runtime: ScriptRuntimeConfig) -> Self {
         Self {
             dbs,
-            persist,
             script_runtime,
         }
     }
@@ -92,11 +91,13 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     if let Some(p) = persist.as_ref() {
         let _ = p.load(&mut dbs).await;
     }
-    let state = Arc::new(Mutex::new(ServerState::new(dbs, persist, config.script_runtime)));
+    let state = Arc::new(Mutex::new(ServerState::new(dbs, config.script_runtime)));
+    let persist_state = Arc::new(Mutex::new(persist));
     let pubsub_state = Arc::new(Mutex::new(PubSubState::new()));
     let script_cache_state = Arc::new(Mutex::new(ScriptCacheState::new()));
     let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
     let shutdown_state = state.clone();
+    let shutdown_persist_state = persist_state.clone();
     let shutdown_path = config.persist_path.clone();
     if let Err(err) = ctrlc::set_handler(move || {
         let _ = shutdown_tx.try_send(());
@@ -105,21 +106,26 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     }
     task::spawn(async move {
         let _ = shutdown_rx.recv().await;
-        graceful_shutdown(shutdown_state, shutdown_path).await;
+        graceful_shutdown(shutdown_state, shutdown_persist_state, shutdown_path).await;
         std::process::exit(0);
     });
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
+        let persist_state = persist_state.clone();
         let pubsub_state = pubsub_state.clone();
         let script_cache_state = script_cache_state.clone();
         task::spawn(async move {
-            let _ = handle_client(stream, state, pubsub_state, script_cache_state).await;
+            let _ = handle_client(stream, state, persist_state, pubsub_state, script_cache_state).await;
         });
     }
 }
 
-async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<String>) {
+async fn graceful_shutdown(
+    state: Arc<Mutex<ServerState>>,
+    persist_state: Arc<Mutex<PersistState>>,
+    persist_path: Option<String>,
+) {
     let mut guard = state.lock().await;
     eprintln!("mini-redis: shutdown requested");
     if let Some(db) = guard.dbs.get_mut(0) {
@@ -142,20 +148,22 @@ async fn graceful_shutdown(state: Arc<Mutex<ServerState>>, persist_path: Option<
         );
     }
     let _path_msg = persist_path.as_deref().unwrap_or("<unknown>");
-    if guard.persist.is_none() {
+    let persist_guard = persist_state.lock().await;
+    if persist_guard.is_none() {
         eprintln!("mini-redis: persistence not configured; skipping snapshot");
         return;
     }
-    let persist = guard.persist.take().unwrap();
-    if let Err(err) = persist.snapshot(&mut guard.dbs).await {
-        eprintln!("mini-redis: persistence failed: {}", err);
+    if let Some(persist) = persist_guard.as_ref() {
+        if let Err(err) = persist.snapshot(&mut guard.dbs).await {
+            eprintln!("mini-redis: persistence failed: {}", err);
+        }
     }
-    guard.persist = Some(persist);
 }
 
 async fn handle_client(
     stream: TcpStream,
     state: Arc<Mutex<ServerState>>,
+    persist_state: Arc<Mutex<PersistState>>,
     pubsub_state: Arc<Mutex<PubSubState>>,
     script_cache_state: Arc<Mutex<ScriptCacheState>>,
 ) -> io::Result<()> {
@@ -246,6 +254,7 @@ async fn handle_client(
                 for (qcmd, qargs) in queued.drain(..) {
                     let resp = handle_command(
                         &mut guard,
+                        &persist_state,
                         &script_cache_state,
                         &mut current_db,
                         &mut script_runtime,
@@ -260,6 +269,7 @@ async fn handle_client(
             let mut guard = state.lock().await;
             let resp = handle_command(
                 &mut guard,
+                &persist_state,
                 &script_cache_state,
                 &mut current_db,
                 &mut script_runtime,
@@ -379,6 +389,7 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
 
 fn handle_command(
     state: &mut ServerState,
+    persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script: &mut Option<ScriptRuntime>,
@@ -387,10 +398,16 @@ fn handle_command(
 ) -> RespValue {
     macro_rules! log_cmd {
         ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
-            if let Some(p) = $state.persist.as_ref() {
-                if p.aof_enabled() {
-                    let _ = async_std::task::block_on(p.log_command($db, $cmd, $args));
-                }
+            {
+                let _ = &$state;
+                let _ = async_std::task::block_on(async {
+                    let persist_guard = persist_state.lock().await;
+                    if let Some(p) = persist_guard.as_ref() {
+                        if p.aof_enabled() {
+                            let _ = p.log_command($db, $cmd, $args).await;
+                        }
+                    }
+                });
             }
         };
     }
@@ -1190,13 +1207,28 @@ fn handle_command(
             if script.is_none() {
                 *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
-            eval_script(state, script_cache_state, db_index, script.as_mut().unwrap(), args, true)
+            eval_script(
+                state,
+                persist_state,
+                script_cache_state,
+                db_index,
+                script.as_mut().unwrap(),
+                args,
+                true,
+            )
         }
         "EVALSHA" => {
             if script.is_none() {
                 *script = Some(ScriptRuntime::new(&state.script_runtime));
             }
-            eval_script_sha(state, script_cache_state, db_index, script.as_mut().unwrap(), args)
+            eval_script_sha(
+                state,
+                persist_state,
+                script_cache_state,
+                db_index,
+                script.as_mut().unwrap(),
+                args,
+            )
         }
         "SCRIPT" => handle_script_command(script_cache_state, args),
         "CONFIG" => {
@@ -1249,23 +1281,37 @@ fn handle_command(
             }
         }
         "SAVE" => {
-            if let Some(p) = state.persist.as_ref() {
-                match async_std::task::block_on(p.snapshot(&mut state.dbs)) {
-                    Ok(()) => RespValue::Simple("OK".to_string()),
-                    Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+            match async_std::task::block_on(async {
+                let persist_guard = persist_state.lock().await;
+                if let Some(p) = persist_guard.as_ref() {
+                    p.snapshot(&mut state.dbs).await.map(|_| ())
                 }
-            } else {
-                RespValue::Error("ERR persistence not configured".to_string())
+                else {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "persistence not configured"))
+                }
+            }) {
+                Ok(()) => RespValue::Simple("OK".to_string()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    RespValue::Error("ERR persistence not configured".to_string())
+                }
+                Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
             }
         }
         "BGSAVE" => {
-            if let Some(p) = state.persist.as_ref() {
-                match async_std::task::block_on(p.snapshot(&mut state.dbs)) {
-                    Ok(()) => RespValue::Simple("OK".to_string()),
-                    Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+            match async_std::task::block_on(async {
+                let persist_guard = persist_state.lock().await;
+                if let Some(p) = persist_guard.as_ref() {
+                    p.snapshot(&mut state.dbs).await.map(|_| ())
                 }
-            } else {
-                RespValue::Error("ERR persistence not configured".to_string())
+                else {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "persistence not configured"))
+                }
+            }) {
+                Ok(()) => RespValue::Simple("OK".to_string()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    RespValue::Error("ERR persistence not configured".to_string())
+                }
+                Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
             }
         }
         "REPLICAOF" => RespValue::Error("ERR replication not implemented".to_string()),
@@ -1276,6 +1322,7 @@ fn handle_command(
 
 fn eval_script(
     state: &mut ServerState,
+    persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
@@ -1294,22 +1341,42 @@ fn eval_script(
         let mut cache = async_std::task::block_on(script_cache_state.lock());
         cache.insert(sha, script.to_string());
     }
-    eval_script_source(state, db_index, script_runtime, script, &args[1..])
+    eval_script_source(
+        state,
+        persist_state,
+        script_cache_state,
+        db_index,
+        script_runtime,
+        script,
+        &args[1..],
+    )
 }
 
 fn eval_script_source(
     state: &mut ServerState,
+    persist_state: &Arc<Mutex<PersistState>>,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     script: &str,
     args: &[Arc<[u8]>],
 ) -> RespValue {
     let wrapped = wrap_eval_script(script);
-    eval_wrapped_script(state, db_index, script_runtime, &wrapped, args)
+    eval_wrapped_script(
+        state,
+        persist_state,
+        script_cache_state,
+        db_index,
+        script_runtime,
+        &wrapped,
+        args,
+    )
 }
 
 fn eval_wrapped_script(
     state: &mut ServerState,
+    persist_state: &Arc<Mutex<PersistState>>,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     wrapped_script: &str,
@@ -1329,6 +1396,8 @@ fn eval_wrapped_script(
     let mut exec = ScriptExec {
         state: state as *mut ServerState,
         db_index: db_index as *mut usize,
+        persist_state: persist_state as *const Arc<Mutex<PersistState>>,
+        script_cache_state: script_cache_state as *const Arc<Mutex<ScriptCacheState>>,
     };
     let ctx = &mut script_runtime.ctx;
     JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
@@ -1344,6 +1413,7 @@ fn eval_wrapped_script(
 
 fn eval_script_sha(
     state: &mut ServerState,
+    persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
@@ -1363,7 +1433,15 @@ fn eval_script_sha(
             return RespValue::Error("NOSCRIPT No matching script. Please use EVAL.".to_string())
         }
     };
-    eval_wrapped_script(state, db_index, script_runtime, &wrapped, &args[1..])
+    eval_wrapped_script(
+        state,
+        persist_state,
+        script_cache_state,
+        db_index,
+        script_runtime,
+        &wrapped,
+        &args[1..],
+    )
 }
 
 fn wrap_eval_script(script: &str) -> String {
@@ -1563,6 +1641,8 @@ impl ScriptRuntime {
 struct ScriptExec {
     state: *mut ServerState,
     db_index: *mut usize,
+    persist_state: *const Arc<Mutex<PersistState>>,
+    script_cache_state: *const Arc<Mutex<ScriptCacheState>>,
 }
 
 fn redis_call(
@@ -1600,9 +1680,19 @@ fn redis_call(
             args.push(js_value_to_arc_bytes(ctx, val));
         }
         let state = &mut *exec.state;
+        let persist_state = &*exec.persist_state;
+        let script_cache_state = &*exec.script_cache_state;
         let db_index = &mut *exec.db_index;
         let mut script = None;
-        let resp = handle_command(state, db_index, &mut script, &cmd, &args);
+        let resp = handle_command(
+            state,
+            persist_state,
+            script_cache_state,
+            db_index,
+            &mut script,
+            &cmd,
+            &args,
+        );
         resp_to_js(ctx, resp, magic == 1)
     }
 }
