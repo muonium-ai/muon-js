@@ -1,6 +1,8 @@
 use crate::types::{JSObjectClassEnum, JSWord, JSSTDLibraryDef};
 use crate::value::Value;
 
+use std::collections::HashMap;
+
 const PROTO_SEARCH_LIMIT: usize = 64;
 const MAX_ROM_ATOM_TABLES: usize = 8;
 
@@ -50,6 +52,8 @@ pub struct Context {
     current_line_starts: Vec<usize>,
     current_error_offset: Option<usize>,
     current_stmt_offset: usize,
+    /// Cache of parsed function bodies: body Value raw bits → pre-split statements.
+    body_cache: HashMap<u64, Vec<String>>,
 }
 
 impl Context {
@@ -89,6 +93,7 @@ impl Context {
             current_line_starts: Vec::new(),
             current_error_offset: None,
             current_stmt_offset: 0,
+            body_cache: HashMap::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -186,6 +191,16 @@ impl Context {
 
     pub fn current_stmt_offset(&self) -> usize {
         self.current_stmt_offset
+    }
+
+    /// Look up cached parsed statements for a function body Value.
+    pub fn get_body_cache(&self, body_val_bits: u64) -> Option<&Vec<String>> {
+        self.body_cache.get(&body_val_bits)
+    }
+
+    /// Store cached parsed statements for a function body Value.
+    pub fn set_body_cache(&mut self, body_val_bits: u64, stmts: Vec<String>) {
+        self.body_cache.insert(body_val_bits, stmts);
     }
 
     pub fn compute_line_col(&self, offset: usize) -> (usize, usize) {

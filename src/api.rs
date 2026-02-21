@@ -23,6 +23,7 @@ use crate::json::parse_json;
 use crate::evals::{
     eval_value,
     split_top_level,
+    has_top_level_comma,
     split_statements,
     normalize_line_continuations,
     is_truthy,
@@ -3044,6 +3045,24 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.is_empty() {
         return None;
     }
+
+    // Fast path: simple identifiers and pure integers skip all operator/keyword scans.
+    let bytes = s.as_bytes();
+    let first = bytes[0];
+    if bytes.len() <= 20 {
+        if first.is_ascii_digit() && bytes.iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(n) = s.parse::<i32>() {
+                return Some(js_new_int32(ctx, n));
+            }
+        }
+        if (first.is_ascii_alphabetic() || first == b'_' || first == b'$')
+            && bytes.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+        {
+            // Simple identifier — delegate to eval_value which handles scope chain
+            return eval_value(ctx, s);
+        }
+    }
+
     let stmt_offset = ctx.current_stmt_offset();
     // Handle var/let/const declarations: var x = expr OR var x
     if s.starts_with("var ") || s.starts_with("let ") || s.starts_with("const ") {
@@ -3091,7 +3110,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return Some(Value::UNDEFINED);
     }
     // Comma operator (lowest precedence)
-    if s.contains(',') {
+    if s.contains(',') && has_top_level_comma(s) {
         if let Some(parts) = split_top_level(s) {
             if parts.len() > 1 {
                 let mut last = Value::UNDEFINED;
@@ -7730,6 +7749,23 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 // - create_function() - Extracted and public in parser.rs
 
 /// Execute a function body and handle return statements
+/// Pre-parse a function/loop body into a list of trimmed statement strings.
+/// Returns None on parse error (e.g. unclosed comment).
+pub fn parse_body_to_stmts(body: &str) -> Option<Vec<String>> {
+    let cleaned = match crate::evals::strip_comments_checked(body) {
+        Ok(s) => normalize_line_continuations(&s),
+        Err(_) => return None,
+    };
+    let stmts = split_statements(&cleaned)?;
+    Some(
+        stmts
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
 pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
     let cleaned = match crate::evals::strip_comments_checked(body) {
         Ok(s) => normalize_line_continuations(&s),
@@ -7923,6 +7959,217 @@ pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue
         }
     }
     
+    Some(last)
+}
+
+/// Execute a function body from pre-parsed cached statements.
+/// Skips strip_comments, normalize_line_continuations, and split_statements.
+pub fn eval_function_body_cached(ctx: &mut JSContextImpl, stmts: &[String]) -> Option<JSValue> {
+    let mut last = Value::UNDEFINED;
+
+    for stmt in stmts {
+        let trimmed = stmt.as_str();
+        if trimmed.is_empty() {
+            continue;
+        }
+        ctx.set_current_stmt_offset(0);
+        ctx.clear_error_offset();
+
+        // Fast dispatch: use first byte to skip impossible keyword checks.
+        // For first bytes that can't start any keyword, go directly to eval_expr.
+        // For 'r' (could be "return" but also "redis.call(...)"), check "return" and skip to eval_expr if not.
+        let first = trimmed.as_bytes()[0];
+        let is_keyword_possible = match first {
+            b'b' | b'c' | b't' | b'f' | b'i' | b'w' | b'd' | b's' | b'{' | b'v' | b'l' => true,
+            b'r' => {
+                // Only "return" starts with 'r'; if it's not "return", go to eval_expr
+                if trimmed == "return" || trimmed.starts_with("return ") {
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if !is_keyword_possible {
+            // Simple expression statement — go directly to eval_expr
+            match eval_expr(ctx, trimmed) {
+                Some(val) => {
+                    last = val;
+                    if last.is_exception() {
+                        return Some(last);
+                    }
+                    if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                        return Some(last);
+                    }
+                    continue;
+                }
+                None => {
+                    return None;
+                }
+            }
+        }
+
+        // Check for break/continue (with optional label)
+        if trimmed == "break" {
+            ctx.set_loop_control(crate::context::LoopControl::Break);
+            return Some(Value::UNDEFINED);
+        }
+        if trimmed.starts_with("break ") {
+            let label = trimmed[6..].trim();
+            if is_identifier(label) {
+                ctx.set_loop_control(crate::context::LoopControl::BreakLabel(label.to_string()));
+                return Some(Value::UNDEFINED);
+            }
+        }
+        if trimmed == "continue" {
+            ctx.set_loop_control(crate::context::LoopControl::Continue);
+            return Some(Value::UNDEFINED);
+        }
+        if trimmed.starts_with("continue ") {
+            let label = trimmed[9..].trim();
+            if is_identifier(label) {
+                ctx.set_loop_control(crate::context::LoopControl::ContinueLabel(label.to_string()));
+                return Some(Value::UNDEFINED);
+            }
+        }
+
+        // Check for return statement
+        if trimmed.starts_with("return ") {
+            let expr = &trimmed[7..]; // skip "return "
+            if let Some(val) = eval_expr(ctx, expr.trim()) {
+                ctx.set_return_value(val);
+                ctx.set_loop_control(crate::context::LoopControl::Return);
+                return Some(val);
+            }
+            return None;
+        }
+        if trimmed == "return" {
+            ctx.set_return_value(Value::UNDEFINED);
+            ctx.set_loop_control(crate::context::LoopControl::Return);
+            return Some(Value::UNDEFINED);
+        }
+
+        // Check for throw statement
+        if trimmed.starts_with("throw ") {
+            let expr = &trimmed[6..]; // skip "throw "
+            if let Some(val) = eval_expr(ctx, expr.trim()) {
+                ctx.set_exception(val);
+                return Some(Value::EXCEPTION);
+            }
+            return None;
+        }
+        if trimmed == "throw" {
+            ctx.set_exception(Value::UNDEFINED);
+            return Some(Value::EXCEPTION);
+        }
+
+        // Check for try/catch/finally
+        if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
+            if let Some(val) = parse_try_catch(ctx, trimmed) {
+                last = val;
+                if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                    return Some(last);
+                }
+                continue;
+            }
+            return None;
+        }
+
+        // Check for function declaration
+        if trimmed.starts_with("function ") {
+            if let Some(val) = parse_function_declaration(ctx, trimmed) {
+                last = val;
+                continue;
+            }
+            return None;
+        }
+
+        // Check for labeled statement (label: statement) BEFORE loop/switch checks
+        if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+            last = label_result?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for if statement
+        if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
+            last = parse_if_statement(ctx, trimmed)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for while loop
+        if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
+            last = parse_while_loop(ctx, trimmed, None)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for for loop
+        if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
+            last = parse_for_loop(ctx, trimmed, None)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for do...while loop
+        if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
+            last = parse_do_while_loop(ctx, trimmed, None)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for switch statement
+        if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
+            last = parse_switch_statement(ctx, trimmed)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Check for bare block statement: { ... }
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            let (block_content, _) = extract_braces(trimmed)?;
+            last = eval_block(ctx, block_content)?;
+            if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                return Some(last);
+            }
+            continue;
+        }
+
+        // Execute statement
+        match eval_expr(ctx, trimmed) {
+            Some(val) => {
+                last = val;
+            }
+            None => {
+                let pos = find_syntax_error_offset(trimmed);
+                ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+                return None;
+            }
+        }
+        if last.is_exception() {
+            return Some(last);
+        }
+
+        // Check if break/continue was set during statement execution
+        if *ctx.get_loop_control() != crate::context::LoopControl::None {
+            return Some(last);
+        }
+    }
+
     Some(last)
 }
 

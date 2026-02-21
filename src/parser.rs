@@ -26,14 +26,32 @@ pub fn eval_block(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
     result
 }
 
+/// Execute a block from pre-parsed cached statements (avoids re-parsing).
+fn eval_block_cached(ctx: &mut JSContextImpl, stmts: &[String]) -> Option<JSValue> {
+    let parent = ctx.current_env();
+    let env = js_new_object(ctx);
+    js_set_property_str(ctx, env, "__parent__", parent);
+    js_set_property_str(ctx, env, "__block__", Value::TRUE);
+    ctx.push_env(env);
+    predeclare_block_bindings_from_stmts(ctx, stmts);
+    let result = eval_function_body_cached(ctx, stmts);
+    ctx.pop_env();
+    result
+}
+
 fn predeclare_block_bindings(ctx: &mut JSContextImpl, body: &str) {
     let stmts = match split_statements(body) {
         Some(s) => s,
         None => return,
     };
+    predeclare_block_bindings_from_stmts(ctx, &stmts);
+}
+
+/// Pre-declare let/const bindings from already-parsed statement list.
+fn predeclare_block_bindings_from_stmts(ctx: &mut JSContextImpl, stmts: &[impl AsRef<str>]) {
     let env = ctx.current_env();
     for stmt in stmts {
-        let trimmed = stmt.trim();
+        let trimmed = stmt.as_ref().trim();
         let (kind, rest) = if trimmed.starts_with("let ") {
             ("let", trimmed[4..].trim())
         } else if trimmed.starts_with("const ") {
@@ -504,6 +522,13 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>)
         (stmt, false)
     };
     
+    // Pre-parse the loop body once to avoid re-parsing on every iteration
+    let cached_stmts = parse_body_to_stmts(body);
+    // Skip block scope creation when body has no let/const declarations
+    let needs_block_scope = body_is_block && cached_stmts.as_ref().map_or(true, |stmts| {
+        stmts.iter().any(|s| s.starts_with("let ") || s.starts_with("const "))
+    });
+
     // Execute loop
     let mut last = Value::UNDEFINED;
     loop {
@@ -522,7 +547,13 @@ pub fn parse_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>)
         }
         
         // Execute body
-        last = if body_is_block {
+        last = if let Some(ref stmts) = cached_stmts {
+            if needs_block_scope {
+                eval_block_cached(ctx, stmts)?
+            } else {
+                eval_function_body_cached(ctx, stmts)?
+            }
+        } else if body_is_block {
             eval_block(ctx, body)?
         } else {
             eval_function_body(ctx, body)?
@@ -641,6 +672,13 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
         (stmt, false)
     };
 
+    // Pre-parse the loop body once to avoid re-parsing on every iteration
+    let cached_stmts = parse_body_to_stmts(body);
+    // Skip block scope creation when body has no let/const declarations
+    let needs_block_scope = body_is_block && cached_stmts.as_ref().map_or(true, |stmts| {
+        stmts.iter().any(|s| s.starts_with("let ") || s.starts_with("const "))
+    });
+
     let loop_parent = ctx.current_env();
     let loop_env = js_new_object(ctx);
     js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
@@ -663,7 +701,13 @@ pub fn parse_for_of_loop(ctx: &mut JSContextImpl, header: &str, of_pos: usize, a
                     for i in 0..len {
                         let elem = js_get_property_uint32(ctx, iter_val, i as u32);
                         js_set_property_str(ctx, env, var_name, elem);
-                        last = if body_is_block {
+                        last = if let Some(ref stmts) = cached_stmts {
+                            if needs_block_scope {
+                                eval_block_cached(ctx, stmts)?
+                            } else {
+                                eval_function_body_cached(ctx, stmts)?
+                            }
+                        } else if body_is_block {
                             eval_block(ctx, body)?
                         } else {
                             eval_function_body(ctx, body)?
@@ -731,6 +775,13 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
     }
     let (body, _) = extract_braces(after_header)?;
 
+    // Pre-parse the loop body once to avoid re-parsing on every iteration
+    let cached_stmts = parse_body_to_stmts(body);
+    // for-in body is always a block; skip scope if no let/const
+    let needs_block_scope_forin = cached_stmts.as_ref().map_or(true, |stmts| {
+        stmts.iter().any(|s| s.starts_with("let ") || s.starts_with("const "))
+    });
+
     let loop_parent = ctx.current_env();
     let loop_env = js_new_object(ctx);
     js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
@@ -767,7 +818,15 @@ pub fn parse_for_in_loop(ctx: &mut JSContextImpl, header: &str, in_pos: usize, a
             }
         }
 
-        last = eval_block(ctx, body)?;
+        last = if let Some(ref stmts) = cached_stmts {
+            if needs_block_scope_forin {
+                eval_block_cached(ctx, stmts)?
+            } else {
+                eval_function_body_cached(ctx, stmts)?
+            }
+        } else {
+            eval_block(ctx, body)?
+        };
 
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -855,14 +914,21 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>) -
     let update = parts[2].trim();
     
     // Extract body - can be either { block } or single statement
-    let body = if after_header.starts_with('{') {
+    let (body, body_is_block) = if after_header.starts_with('{') {
         let (b, _) = extract_braces(after_header)?;
-        b.to_string()
+        (b.to_string(), true)
     } else {
         // Single statement body (e.g., "for(...) statement;")
-        after_header.to_string()
+        (after_header.to_string(), false)
     };
     
+    // Pre-parse the loop body once to avoid re-parsing on every iteration
+    let cached_stmts = parse_body_to_stmts(&body);
+    // Skip block scope creation when body has no let/const declarations
+    let needs_block_scope = body_is_block && cached_stmts.as_ref().map_or(true, |stmts| {
+        stmts.iter().any(|s| s.starts_with("let ") || s.starts_with("const "))
+    });
+
     let loop_parent = ctx.current_env();
     let loop_env = js_new_object(ctx);
     js_set_property_str(ctx, loop_env, "__parent__", loop_parent);
@@ -890,7 +956,17 @@ pub fn parse_for_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&str>) -
             }
         }
         
-        last = eval_function_body(ctx, &body)?;
+        last = if let Some(ref stmts) = cached_stmts {
+            if needs_block_scope {
+                eval_block_cached(ctx, stmts)?
+            } else {
+                eval_function_body_cached(ctx, stmts)?
+            }
+        } else if body_is_block {
+            eval_block(ctx, &body)?
+        } else {
+            eval_function_body(ctx, &body)?
+        };
         
         match ctx.get_loop_control() {
             crate::context::LoopControl::Break => {
@@ -964,7 +1040,20 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&st
     }
     let (condition, _) = extract_paren(after_while)?;
 
-    let mut last = if body_is_block {
+    // Pre-parse the loop body once to avoid re-parsing on every iteration
+    let cached_stmts = parse_body_to_stmts(body);
+    // Skip block scope creation when body has no let/const declarations
+    let needs_block_scope = body_is_block && cached_stmts.as_ref().map_or(true, |stmts| {
+        stmts.iter().any(|s| s.starts_with("let ") || s.starts_with("const "))
+    });
+
+    let mut last = if let Some(ref stmts) = cached_stmts {
+        if needs_block_scope {
+            eval_block_cached(ctx, stmts)?
+        } else {
+            eval_function_body_cached(ctx, stmts)?
+        }
+    } else if body_is_block {
         eval_block(ctx, body)?
     } else {
         eval_function_body(ctx, body)?
@@ -1005,7 +1094,13 @@ pub fn parse_do_while_loop(ctx: &mut JSContextImpl, src: &str, label: Option<&st
         if !is_truthy(cond_val) {
             break;
         }
-        last = if body_is_block {
+        last = if let Some(ref stmts) = cached_stmts {
+            if needs_block_scope {
+                eval_block_cached(ctx, stmts)?
+            } else {
+                eval_function_body_cached(ctx, stmts)?
+            }
+        } else if body_is_block {
             eval_block(ctx, body)?
         } else {
             eval_function_body(ctx, body)?
@@ -1802,8 +1897,29 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
         }
     }
 
-    let body_bytes = ctx.string_bytes(body_val)?;
-    let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
+    // --- Body cache: parse once, reuse on subsequent calls ---
+    let body_key = body_val.0 as u64;
+    let use_cached = ctx.get_body_cache(body_key).is_some();
+
+    if !use_cached {
+        // First call: parse body and store in cache
+        let body_bytes = ctx.string_bytes(body_val)?;
+        let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
+        let cleaned = match crate::evals::strip_comments_checked(&body_str) {
+            Ok(s) => crate::evals::normalize_line_continuations(&s),
+            Err(_) => body_str.clone(),
+        };
+        let stmts = crate::evals::split_statements(&cleaned)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>();
+        ctx.set_body_cache(body_key, stmts);
+    }
+
+    // Retrieve cached statements (borrow from cache, clone to own them for execution)
+    let cached_stmts = ctx.get_body_cache(body_key)?.clone();
 
     // Check if function has a name (for recursive named function expressions)
     let func_name_val = js_get_property_str(ctx, func, "name");
@@ -1824,7 +1940,7 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     js_set_property_str(ctx, env, "this", this_val);
 
     ctx.push_env(env);
-    predeclare_block_bindings(ctx, &body_str);
+    predeclare_block_bindings_from_stmts(ctx, &cached_stmts);
 
     // Bind function name in local scope for recursive calls
     if let Some(name) = func_name {
@@ -1861,7 +1977,7 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
         arg_index += 1;
     }
 
-    let result = eval_function_body(ctx, &body_str);
+    let result = eval_function_body_cached(ctx, &cached_stmts);
 
     if *ctx.get_loop_control() == crate::context::LoopControl::Return {
         ctx.set_loop_control(crate::context::LoopControl::None);

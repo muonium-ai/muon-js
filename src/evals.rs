@@ -90,6 +90,71 @@ fn find_arrow_top_level(src: &str) -> Option<usize> {
 /// Evaluate a simple value expression (literals, identifiers, etc.)
 pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     let s = src.trim();
+
+    // Fast path for very common cases: simple identifiers and small integers.
+    // This avoids ~10+ checks for the most frequent eval_value calls in loops.
+    let bytes = s.as_bytes();
+    if !bytes.is_empty() {
+        let first = bytes[0];
+        // Fast integer: all digits (no sign, no dots, no hex prefix)
+        if first.is_ascii_digit() && bytes.len() <= 10 && bytes.iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(n) = s.parse::<i32>() {
+                return Some(js_new_int32(ctx, n));
+            }
+        }
+        // Fast single-word identifier: [a-zA-Z_$][a-zA-Z0-9_$]*
+        if (first.is_ascii_alphabetic() || first == b'_' || first == b'$')
+            && bytes.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+        {
+            // Check keyword literals first (match original eval_value order)
+            match s {
+                "null" => return Some(Value::NULL),
+                "undefined" => return Some(Value::UNDEFINED),
+                "true" => return Some(Value::TRUE),
+                "false" => return Some(Value::FALSE),
+                "this" => {
+                    if let Some((_, val)) = ctx.resolve_binding("this") {
+                        return Some(val);
+                    }
+                    return Some(js_get_global_object(ctx));
+                }
+                "NaN" => return Some(number_to_value(ctx, f64::NAN)),
+                "Infinity" => return Some(number_to_value(ctx, f64::INFINITY)),
+                _ => {
+                    // Pure identifier — resolve from scope chain
+                    if let Some((_, val)) = ctx.resolve_binding(s) {
+                        if val == Value::UNINITIALIZED {
+                            return Some(js_throw_error(
+                                ctx,
+                                JSObjectClassEnum::ReferenceError,
+                                "cannot access before initialization",
+                            ));
+                        }
+                        return Some(val);
+                    }
+                    // Builtin/global lookup
+                    let global = js_get_global_object(ctx);
+                    if let Some((builtin_name, marker)) = lookup_builtin_dispatch(s) {
+                        let val = js_get_property_str(ctx, global, builtin_name);
+                        if val.is_undefined() && !ctx.has_property_str(global, builtin_name.as_bytes()) {
+                            return Some(js_new_string(ctx, marker));
+                        }
+                        return Some(val);
+                    }
+                    if s == "globalThis" {
+                        let val = js_get_property_str(ctx, global, "globalThis");
+                        if val.is_undefined() && !ctx.has_property_str(global, b"globalThis") {
+                            return Some(global);
+                        }
+                        return Some(val);
+                    }
+                    let v = js_get_property_str(ctx, global, s);
+                    return Some(v);
+                }
+            }
+        }
+    }
+
     if s.starts_with('[') && s.ends_with(']') {
         return eval_array_literal(ctx, s);
     }
@@ -706,6 +771,29 @@ pub fn eval_object_literal(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue
         }
     }
     Some(obj)
+}
+
+/// Quick check for top-level comma (depth 0, outside strings).
+/// Returns true only if there's a comma that's not inside parens/brackets/braces/strings.
+pub fn has_top_level_comma(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut string_delim = 0u8;
+    for &b in bytes {
+        if in_string {
+            if b == string_delim { in_string = false; }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => { in_string = true; string_delim = b; }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Split a comma-separated list at top level (respecting nesting)
