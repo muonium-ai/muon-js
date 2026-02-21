@@ -298,6 +298,7 @@ async fn handle_client(
                         &mut script_runtime,
                         &qcmd,
                         &qargs,
+                        false,
                     );
                     results.push(resp);
                 }
@@ -334,6 +335,7 @@ async fn handle_client(
                 &mut script_runtime,
                 cmd,
                 &args[1..],
+                false,
             );
             FastResponse::Value(resp)
         };
@@ -631,10 +633,11 @@ fn handle_command(
     script: &mut Option<ScriptRuntime>,
     cmd: &str,
     args: &[Arc<[u8]>],
+    skip_aof: bool,
 ) -> RespValue {
     macro_rules! log_cmd {
         ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
-            {
+            if !skip_aof {
                 let _ = &$state;
                 let _ = async_std::task::block_on(async {
                     let persist_guard = persist_state.lock().await;
@@ -1597,6 +1600,11 @@ fn eval_wrapped_script(
     let argv = &args[1 + numkeys..];
     script_runtime.maybe_reset();
     script_runtime.set_keys_argv(keys, argv);
+    // Acquire the DB lock for the entire script execution (matches Redis atomic semantics).
+    // This eliminates per-redis.call() lock acquire/release overhead.
+    let mut db_guard = async_std::task::block_on(dbs_state[*db_index].lock());
+    let db_ptr: *mut Db = &mut *db_guard;
+    let held_idx = *db_index as isize;
     let mut exec = ScriptExec {
         state: state as *mut ServerState,
         dbs_state: dbs_state as *const Arc<DbsState>,
@@ -1604,11 +1612,14 @@ fn eval_wrapped_script(
         db_index: db_index as *mut usize,
         persist_state: persist_state as *const Arc<Mutex<PersistState>>,
         script_cache_state: script_cache_state as *const Arc<Mutex<ScriptCacheState>>,
+        held_db: db_ptr,
+        held_db_index: held_idx,
     };
     let ctx = &mut script_runtime.ctx;
     JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
     let result = JS_Eval(ctx, wrapped_script, "<eval>", JS_EVAL_RETVAL);
     JS_SetContextOpaque(ctx, std::ptr::null_mut());
+    drop(db_guard);
     if result.is_exception() {
         let exc = JS_GetException(ctx);
         let msg = js_value_to_string(ctx, exc);
@@ -1855,6 +1866,210 @@ struct ScriptExec {
     db_index: *mut usize,
     persist_state: *const Arc<Mutex<PersistState>>,
     script_cache_state: *const Arc<Mutex<ScriptCacheState>>,
+    /// Raw pointer to the DB locked for the script's lifetime.
+    /// Valid only while the MutexGuard in eval_wrapped_script is alive.
+    held_db: *mut Db,
+    /// Which DB index is held by the script-level lock (-1 = none).
+    held_db_index: isize,
+}
+
+/// Fast-path dispatch for common commands inside scripts.
+/// Returns Some(JSValue) if handled, None to fall through to the generic path.
+/// Bypasses parse_command, handle_command dispatch, log_cmd!, RespValue, and resp_to_js.
+#[inline]
+unsafe fn redis_call_fast(
+    ctx: &mut JSContextImpl,
+    db: &mut Db,
+    cmd_bytes: &[u8],
+    argc: i32,
+    argv: *mut JSValue,
+    magic: i32,
+) -> Option<JSValue> {
+    match cmd_bytes.len() {
+        3 => {
+            // GET, SET, DEL
+            if cmd_bytes.eq_ignore_ascii_case(b"GET") && argc == 2 {
+                let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
+                return Some(match db.get_string(key.as_bytes()) {
+                    Ok(Some(v)) => JS_NewStringLen(ctx, &v),
+                    Ok(None) => JSValue::NULL,
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+                    },
+                });
+            }
+            if cmd_bytes.eq_ignore_ascii_case(b"SET") && argc == 3 {
+                let key = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
+                };
+                let val = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    JS_ToCString(ctx, *argv.add(2), &mut buf).as_bytes().to_vec()
+                };
+                db.set_string(key, val, None);
+                return Some(JS_NewString(ctx, "OK"));
+            }
+            if cmd_bytes.eq_ignore_ascii_case(b"DEL") && argc >= 2 {
+                let mut removed: i64 = 0;
+                for i in 1..argc {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    let key = JS_ToCString(ctx, *argv.add(i as usize), &mut buf);
+                    if db.remove(key.as_bytes()) {
+                        removed += 1;
+                    }
+                }
+                return Some(JS_NewInt64(ctx, removed));
+            }
+        }
+        4 => {
+            // HSET, HGET, INCR, SADD, SREM
+            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 4 && argc % 2 == 0 {
+                let key = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
+                };
+                let mut added: i64 = 0;
+                let mut idx = 2;
+                while idx + 1 < argc as usize {
+                    let field: Arc<[u8]> = {
+                        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                        Arc::from(JS_ToCString(ctx, *argv.add(idx), &mut buf).as_bytes())
+                    };
+                    let value: Arc<[u8]> = {
+                        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                        Arc::from(JS_ToCString(ctx, *argv.add(idx + 1), &mut buf).as_bytes())
+                    };
+                    match db.hash_set(&key, field, value) {
+                        Ok(is_new) => { if is_new { added += 1; } }
+                        Err(_) => return Some(if magic == 1 {
+                            let obj = JS_NewObject(ctx);
+                            let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                            let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                            obj
+                        } else {
+                            JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+                        }),
+                    }
+                    idx += 2;
+                }
+                return Some(JS_NewInt64(ctx, added));
+            }
+            if cmd_bytes.eq_ignore_ascii_case(b"HGET") && argc == 3 {
+                let mut kbuf = JSCStringBuf { buf: [0u8; 5] };
+                let key = JS_ToCString(ctx, *argv.add(1), &mut kbuf).as_bytes().to_vec();
+                let mut fbuf = JSCStringBuf { buf: [0u8; 5] };
+                let field = JS_ToCString(ctx, *argv.add(2), &mut fbuf);
+                return Some(match db.hash_get(&key, field.as_bytes()) {
+                    Ok(Some(v)) => JS_NewStringLen(ctx, v.as_ref()),
+                    Ok(None) => JSValue::NULL,
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+                    },
+                });
+            }
+            if cmd_bytes.eq_ignore_ascii_case(b"INCR") && argc == 2 {
+                let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
+                return Some(match db.incr_by(key.as_bytes(), 1) {
+                    Ok(val) => JS_NewInt64(ctx, val),
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "ERR value is not an integer or out of range");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "ERR value is not an integer or out of range")
+                    },
+                });
+            }
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 3 {
+                let key = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
+                };
+                let mut members: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 2) as usize);
+                for i in 2..argc {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    members.push(Arc::from(JS_ToCString(ctx, *argv.add(i as usize), &mut buf).as_bytes()));
+                }
+                return Some(match db.set_add(&key, &members) {
+                    Ok(added) => JS_NewInt64(ctx, added),
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+                    },
+                });
+            }
+        }
+        6 => {
+            // INCRBY
+            if cmd_bytes.eq_ignore_ascii_case(b"INCRBY") && argc == 3 {
+                let key = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
+                };
+                let delta = {
+                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                    let s = JS_ToCString(ctx, *argv.add(2), &mut buf);
+                    s.parse::<i64>().unwrap_or(0)
+                };
+                return Some(match db.incr_by(&key, delta) {
+                    Ok(val) => JS_NewInt64(ctx, val),
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "ERR value is not an integer or out of range");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "ERR value is not an integer or out of range")
+                    },
+                });
+            }
+        }
+        8 => {
+            // SMEMBERS
+            if cmd_bytes.eq_ignore_ascii_case(b"SMEMBERS") && argc == 2 {
+                let mut buf = JSCStringBuf { buf: [0u8; 5] };
+                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
+                return Some(match db.set_members(key.as_bytes()) {
+                    Ok(members) => {
+                        let arr = JS_NewArray(ctx, members.len() as i32);
+                        for (idx, member) in members.iter().enumerate() {
+                            let v = JS_NewStringLen(ctx, member.as_ref());
+                            let _ = JS_SetPropertyUint32(ctx, arr, idx as u32, v);
+                        }
+                        arr
+                    }
+                    Err(_) => if magic == 1 {
+                        let obj = JS_NewObject(ctx);
+                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+                        obj
+                    } else {
+                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+                    },
+                });
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 fn redis_call(
@@ -1877,8 +2092,27 @@ fn redis_call(
             return JS_ThrowInternalError(ctx, "redis.call missing context");
         }
         let exec = &mut *opaque;
+        // Read command name to a stack buffer to avoid heap allocation.
         let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
-        let cmd_bytes = JS_ToCString(ctx, *argv, &mut cmd_buf).as_bytes().to_vec();
+        let cmd_str = JS_ToCString(ctx, *argv, &mut cmd_buf);
+        let cmd_len = cmd_str.len();
+        let mut cmd_stack = [0u8; 16];
+        let cmd_bytes: &[u8] = if cmd_len <= 16 {
+            cmd_stack[..cmd_len].copy_from_slice(cmd_str.as_bytes());
+            &cmd_stack[..cmd_len]
+        } else {
+            // Fallback for unusually long command names (shouldn't happen).
+            &[]
+        };
+
+        // Try direct fast-path dispatch (no parse_command, no handle_command, no RespValue).
+        if *exec.db_index as isize == exec.held_db_index && !exec.held_db.is_null() {
+            if let Some(result) = redis_call_fast(ctx, &mut *exec.held_db, &cmd_bytes, argc, argv, magic) {
+                return result;
+            }
+        }
+
+        // Slow path: full parse + dispatch through handle_command.
         let cmd = match parse_command(&cmd_bytes) {
             Some(cmd) => cmd,
             None => {
@@ -1898,19 +2132,22 @@ fn redis_call(
         let script_cache_state = &*exec.script_cache_state;
         let db_index = &mut *exec.db_index;
         let mut script = None;
-        let mut db_guard = async_std::task::block_on((*dbs_state)[*db_index].lock());
-        let resp = handle_command(
-            state,
-            &mut *db_guard,
-            db_count,
-            persist_state,
-            script_cache_state,
-            db_index,
-            &mut script,
-            &cmd,
-            &args,
-        );
-        resp_to_js(ctx, resp, magic == 1)
+        // skip_aof=true: Redis logs EVAL, not individual redis.call() commands.
+        if *db_index as isize == exec.held_db_index && !exec.held_db.is_null() {
+            let db = &mut *exec.held_db;
+            let resp = handle_command(
+                state, db, db_count, persist_state, script_cache_state,
+                db_index, &mut script, &cmd, &args, true,
+            );
+            resp_to_js(ctx, resp, magic == 1)
+        } else {
+            let mut db_guard = async_std::task::block_on((*dbs_state)[*db_index].lock());
+            let resp = handle_command(
+                state, &mut *db_guard, db_count, persist_state, script_cache_state,
+                db_index, &mut script, &cmd, &args, true,
+            );
+            resp_to_js(ctx, resp, magic == 1)
+        }
     }
 }
 
