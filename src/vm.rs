@@ -343,8 +343,10 @@ impl VM {
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
                     if let Some(key_bytes) = ctx.string_bytes(key) {
-                        let key_str = core::str::from_utf8(key_bytes).unwrap_or("").to_string();
-                        let val = js_get_property_str(ctx, obj, &key_str);
+                        // Copy bytes once to release the ctx borrow before property lookup.
+                        let key_buf = key_bytes.to_vec();
+                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
+                        let val = js_get_property_str(ctx, obj, key_str);
                         stack.push(val);
                     } else if key.is_int() {
                         let idx = key.int32().unwrap_or(0) as u32;
@@ -352,9 +354,9 @@ impl VM {
                         stack.push(val);
                     } else {
                         let key_s = js_to_string(ctx, key);
-                        let key_bytes = ctx.string_bytes(key_s).unwrap_or(b"").to_vec();
-                        let key_str = core::str::from_utf8(&key_bytes).unwrap_or("").to_string();
-                        let val = js_get_property_str(ctx, obj, &key_str);
+                        let key_buf = ctx.string_bytes(key_s).unwrap_or(b"").to_vec();
+                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
+                        let val = js_get_property_str(ctx, obj, key_str);
                         stack.push(val);
                     }
                 }
@@ -364,8 +366,10 @@ impl VM {
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
                     if let Some(key_bytes) = ctx.string_bytes(key) {
-                        let key_str = core::str::from_utf8(key_bytes).unwrap_or("").to_string();
-                        crate::api::js_set_property_str(ctx, obj, &key_str, value);
+                        // Copy bytes once to release the ctx borrow before property set.
+                        let key_buf = key_bytes.to_vec();
+                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
+                        crate::api::js_set_property_str(ctx, obj, key_str, value);
                     }
                     stack.push(value);
                 }
@@ -378,8 +382,10 @@ impl VM {
                         let val = js_get_property_uint32(ctx, obj, i);
                         stack.push(val);
                     } else if let Some(idx_bytes) = ctx.string_bytes(idx) {
-                        let idx_str = core::str::from_utf8(idx_bytes).unwrap_or("").to_string();
-                        let val = js_get_property_str(ctx, obj, &idx_str);
+                        // Copy bytes once to release the ctx borrow before property lookup.
+                        let idx_buf = idx_bytes.to_vec();
+                        let idx_str = core::str::from_utf8(&idx_buf).unwrap_or("");
+                        let val = js_get_property_str(ctx, obj, idx_str);
                         stack.push(val);
                     } else {
                         let n = match js_to_number(ctx, idx) { Ok(n) => n, Err(e) => return e };
