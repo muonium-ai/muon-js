@@ -360,7 +360,11 @@ async fn handle_client(
         while let Ok(msg) = pub_rx.try_recv() {
             let _ = write_value_buf(&mut writer, &msg, &mut resp_buf).await;
         }
-        writer.flush().await?;
+        // Only flush when no more pipelined commands are buffered.
+        // This coalesces multiple responses into a single write syscall.
+        if reader.buffer().is_empty() {
+            writer.flush().await?;
+        }
         if cmd == "QUIT" {
             let _ = peer;
             return Ok(());
