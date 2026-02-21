@@ -2003,7 +2003,56 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
         arg_index += 1;
     }
 
-    let result = eval_function_body_cached(ctx, &cached_stmts);
+    // -- Bytecode fast path: compile once, then run via VM ---
+    // Only attempt bytecode for top-level functions (parent_env is global).
+    // Closures (parent_env != global) reference variables from outer scopes
+    // that the bytecode VM cannot resolve.
+    let global = crate::api::js_get_global_object(ctx);
+    let try_bytecode = parent_env.is_undefined() || parent_env.0 == global.0;
+    // Collect non-rest param names for bytecode compiler
+    let param_names: Vec<String> = param_specs.iter()
+        .filter(|s| !s.rest)
+        .map(|s| s.name.clone())
+        .collect();
+    let bc_cached = if try_bytecode {
+        ctx.get_bytecode_cache(body_key).cloned()
+    } else {
+        Some(None) // skip bytecode for closures
+    };
+    let result = match bc_cached {
+        Some(Some(ref module)) => {
+            // Already compiled — run via VM
+            let mut vm = crate::vm::VM::new();
+            Some(vm.run_module_with_locals(ctx, module, args))
+        }
+        Some(None) => {
+            // Previously tried and failed to compile — fall back
+            None
+        }
+        None => {
+            // First attempt: try to compile with params as locals
+            let mut sc = crate::compiler::StmtCompiler::new(ctx);
+            sc.add_params(&param_names);
+            match sc.compile_stmts(&cached_stmts) {
+                Ok(module) => {
+                    let mut vm = crate::vm::VM::new();
+                    let result = vm.run_module_with_locals(ctx, &module, args);
+                    ctx.set_bytecode_cache(body_key, Some(module));
+                    Some(result)
+                }
+                Err(_) => {
+                    ctx.set_bytecode_cache(body_key, None);
+                    None
+                }
+            }
+        }
+    };
+
+    let result = if let Some(r) = result {
+        Some(r)
+    } else {
+        eval_function_body_cached(ctx, &cached_stmts)
+    };
 
     if *ctx.get_loop_control() == crate::context::LoopControl::Return {
         ctx.set_loop_control(crate::context::LoopControl::None);

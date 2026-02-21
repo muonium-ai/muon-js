@@ -77,6 +77,8 @@ pub struct Context {
     param_cache: HashMap<u64, Vec<CachedParamSpec>>,
     /// Stack of call frames for fast local variable access.
     call_frames: Vec<CallFrame>,
+    /// Bytecode cache: body Value raw bits → compiled BytecodeModule (None = not compilable).
+    bytecode_cache: HashMap<u64, Option<crate::bytecode::BytecodeModule>>,
     /// Overflow hash maps for objects with >8 properties.
     /// Keyed by HeapObject raw pointer (as usize). Only populated when prop_count > 8.
     prop_maps: HashMap<usize, HashMap<u64, Value>>,
@@ -122,6 +124,7 @@ impl Context {
             body_cache: HashMap::new(),
             param_cache: HashMap::new(),
             call_frames: Vec::new(),
+            bytecode_cache: HashMap::new(),
             prop_maps: HashMap::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
@@ -230,6 +233,17 @@ impl Context {
     /// Store cached parsed statements for a function body Value.
     pub fn set_body_cache(&mut self, body_val_bits: u64, stmts: Vec<String>) {
         self.body_cache.insert(body_val_bits, stmts);
+    }
+
+    /// Get cached bytecode module for a function body. Returns Some(Some(module)) if cached and compilable,
+    /// Some(None) if cached but not compilable, None if not cached yet.
+    pub fn get_bytecode_cache(&self, body_val_bits: u64) -> Option<&Option<crate::bytecode::BytecodeModule>> {
+        self.bytecode_cache.get(&body_val_bits)
+    }
+
+    /// Store compiled bytecode (or None if not compilable) for a function body.
+    pub fn set_bytecode_cache(&mut self, body_val_bits: u64, module: Option<crate::bytecode::BytecodeModule>) {
+        self.bytecode_cache.insert(body_val_bits, module);
     }
 
     /// Retrieve cached parameter specs for a function.

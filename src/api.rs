@@ -1804,7 +1804,7 @@ fn call_builtin_global_marker(
     }
 }
 
-fn call_function_value(
+pub fn call_function_value(
     ctx: &mut JSContextImpl,
     func: JSValue,
     this_val: JSValue,
