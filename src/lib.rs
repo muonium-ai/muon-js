@@ -159,6 +159,48 @@ mod tests {
     }
 
     #[test]
+    fn do_while_with_labeled_block_break() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(&mut ctx, "var i=0; do x: { i=1; break x; } while(0); i");
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn labeled_statement_in_cached_loop_body_any_identifier() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "var n=0; while (n < 1) xyz: { n = n + 1; break xyz; } n",
+        );
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn bytecode_function_call_builtin_global() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(&mut ctx, "function f(){ return parseInt('42'); } f()");
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 42);
+    }
+
+    #[test]
+    fn closure_property_call_falls_back_from_bytecode() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function run_test(name, fn){ console.log('x'); return fn(); } function t(){ return 7; } run_test('t', t)",
+        );
+        let v = JS_ToInt32(&mut ctx, res).unwrap();
+        assert_eq!(v, 7);
+    }
+
+    #[test]
     fn tdz_access_before_let() {
         let mut mem = vec![0u8; 4096];
         let mut ctx = JS_NewContext(&mut mem);
@@ -191,6 +233,19 @@ mod tests {
         let mut ctx = JS_NewContext(&mut mem);
         let res2 = eval_ret(&mut ctx, "function outer(){ var x=1; return function(){ return function(){ return x; }; }; } outer()()()");
         assert_eq!(JS_ToInt32(&mut ctx, res2).unwrap(), 1);
+    }
+
+    #[test]
+    fn closure_mutates_outer_binding() {
+        let mut mem = vec![0u8; 4096];
+        let mut ctx = JS_NewContext(&mut mem);
+        let res = eval_ret(
+            &mut ctx,
+            "function outer(){ var x=''; function add(v){ x += v; } add('a'); return x; } outer()",
+        );
+        let mut out = JSCStringBuf { buf: [0u8; 5] };
+        let s = JS_ToCString(&mut ctx, res, &mut out);
+        assert_eq!(s, "a");
     }
 
     #[test]
