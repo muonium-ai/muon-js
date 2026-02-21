@@ -1,6 +1,6 @@
 //! RESP3 parser/encoder (minimal subset for commands).
 
-use async_std::io::{self, BufReadExt, ReadExt, WriteExt};
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, AsyncWrite, AsyncBufRead};
 use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
@@ -91,13 +91,13 @@ impl RespValue {
     }
 }
 
-pub async fn write_value<W: io::Write + Unpin>(writer: &mut W, val: &RespValue) -> io::Result<()> {
+pub async fn write_value<W: AsyncWrite + Unpin>(writer: &mut W, val: &RespValue) -> io::Result<()> {
     let mut buf = Vec::with_capacity(estimate_encoded_len(val));
     val.encode(&mut buf);
     writer.write_all(&buf).await
 }
 
-pub async fn write_value_buf<W: io::Write + Unpin>(
+pub async fn write_value_buf<W: AsyncWrite + Unpin>(
     writer: &mut W,
     val: &RespValue,
     buf: &mut Vec<u8>,
@@ -108,7 +108,7 @@ pub async fn write_value_buf<W: io::Write + Unpin>(
     writer.write_all(buf).await
 }
 
-pub async fn write_array_of_blobs_buf<W: io::Write + Unpin>(
+pub async fn write_array_of_blobs_buf<W: AsyncWrite + Unpin>(
     writer: &mut W,
     items: &[Arc<[u8]>],
     buf: &mut Vec<u8>,
@@ -150,7 +150,7 @@ pub fn read_value<'a, R>(
     reader: &'a mut R,
 ) -> Pin<Box<dyn Future<Output = io::Result<Option<RespValue>>> + Send + 'a>>
 where
-    R: io::BufRead + Unpin + Send + 'a,
+    R: AsyncBufRead + Unpin + Send + 'a,
 {
     Box::pin(async move {
         let mut line_buf = Vec::with_capacity(128);
@@ -163,7 +163,7 @@ fn read_value_inner<'a, R>(
     line_buf: &'a mut Vec<u8>,
 ) -> Pin<Box<dyn Future<Output = io::Result<Option<RespValue>>> + Send + 'a>>
 where
-    R: io::BufRead + Unpin + Send + 'a,
+    R: AsyncBufRead + Unpin + Send + 'a,
 {
     Box::pin(async move {
         let mut prefix = [0u8; 1];
@@ -223,7 +223,7 @@ where
     })
 }
 
-async fn read_line_bytes<'a, R: io::BufRead + Unpin>(
+async fn read_line_bytes<'a, R: AsyncBufRead + Unpin>(
     reader: &'a mut R,
     line_buf: &'a mut Vec<u8>,
 ) -> io::Result<&'a [u8]> {

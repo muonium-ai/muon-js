@@ -1,13 +1,11 @@
 //! Persistence layer for mini-redis (snapshot + AOF).
 #![allow(dead_code)]
 
-use async_std::io;
+use std::io;
 #[cfg(feature = "mini-redis-libsql")]
-use async_std::channel::{bounded, Sender, Receiver};
+use tokio::sync::mpsc::{self, Sender, Receiver};
 #[cfg(feature = "mini-redis-libsql")]
-use async_std::future::timeout;
-#[cfg(feature = "mini-redis-libsql")]
-use async_std::task;
+use tokio::time::timeout;
 #[cfg(feature = "mini-redis-libsql")]
 use std::time::Duration;
 
@@ -84,9 +82,9 @@ impl LibsqlPersist {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
         let aof_tx = if aof_enabled {
-            let (tx, rx) = bounded::<AofEntry>(AOF_QUEUE_CAPACITY);
+            let (tx, rx) = mpsc::channel::<AofEntry>(AOF_QUEUE_CAPACITY);
             let path = path.to_string();
-            task::spawn(async move {
+            tokio::spawn(async move {
                 run_aof_worker(path, rx).await;
             });
             Some(tx)
@@ -186,10 +184,10 @@ impl LibsqlPersist {
             };
             match tx.try_send(entry) {
                 Ok(()) => {}
-                Err(async_std::channel::TrySendError::Full(entry)) => {
+                Err(mpsc::error::TrySendError::Full(entry)) => {
                     tx.send(entry).await.map_err(to_io)?;
                 }
-                Err(async_std::channel::TrySendError::Closed(_)) => {
+                Err(mpsc::error::TrySendError::Closed(_)) => {
                     return Err(io::Error::new(io::ErrorKind::BrokenPipe, "AOF channel closed"));
                 }
             }
@@ -303,7 +301,7 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
+async fn run_aof_worker(path: String, mut rx: Receiver<AofEntry>) {
     let db = match libsql::Database::open(&path) {
         Ok(db) => db,
         Err(err) => {
@@ -320,15 +318,15 @@ async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
     };
     loop {
         let first = match rx.recv().await {
-            Ok(entry) => entry,
-            Err(_) => break,
+            Some(entry) => entry,
+            None => break,
         };
         let mut batch = Vec::with_capacity(AOF_BATCH_MAX);
         batch.push(first);
         while batch.len() < AOF_BATCH_MAX {
             match timeout(Duration::from_millis(AOF_BATCH_WAIT_MS), rx.recv()).await {
-                Ok(Ok(entry)) => batch.push(entry),
-                Ok(Err(_)) => break,
+                Ok(Some(entry)) => batch.push(entry),
+                Ok(None) => break,
                 Err(_) => break,
             }
         }

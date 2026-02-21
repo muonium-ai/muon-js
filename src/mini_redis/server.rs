@@ -1,10 +1,10 @@
 //! RESP3 server and command dispatcher.
 
-use async_std::io::{self, BufReader, BufWriter, WriteExt};
-use async_std::net::{TcpListener, TcpStream};
-use async_std::sync::{Arc, Mutex};
-use async_std::task;
-use async_std::channel::{Sender, bounded};
+use tokio::io::{self, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpListener;
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -53,10 +53,11 @@ pub struct ServerState {
     script_runtime: ScriptRuntimeConfig,
 }
 
-type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>;
+type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<mpsc::UnboundedSender<RespValue>>>;
 type ScriptCacheState = std::collections::HashMap<String, String>;
 type PersistState = Option<Persist>;
 type DbsState = Vec<Db>;
+type SharedScriptCache = Arc<StdMutex<ScriptCacheState>>;
 
 impl ServerState {
     fn new(script_runtime: ScriptRuntimeConfig) -> Self {
@@ -91,11 +92,11 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         let _ = p.load(&dbs).await;
     }
     let dbs_state: Arc<DbsState> = Arc::new(dbs);
-    let state = Arc::new(Mutex::new(ServerState::new(config.script_runtime)));
-    let persist_state = Arc::new(Mutex::new(persist));
+    let state = Arc::new(ServerState::new(config.script_runtime));
+    let persist_state: Arc<PersistState> = Arc::new(persist);
     let pubsub_state = Arc::new(Mutex::new(PubSubState::new()));
-    let script_cache_state = Arc::new(Mutex::new(ScriptCacheState::new()));
-    let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
+    let script_cache_state: SharedScriptCache = Arc::new(StdMutex::new(ScriptCacheState::new()));
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
     let shutdown_dbs_state = dbs_state.clone();
     let shutdown_persist_state = persist_state.clone();
     let shutdown_path = config.persist_path.clone();
@@ -104,7 +105,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     }) {
         eprintln!("mini-redis: failed to install ctrl+c handler: {}", err);
     }
-    task::spawn(async move {
+    tokio::spawn(async move {
         let _ = shutdown_rx.recv().await;
         graceful_shutdown(shutdown_dbs_state, shutdown_persist_state, shutdown_path).await;
         std::process::exit(0);
@@ -116,7 +117,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         let persist_state = persist_state.clone();
         let pubsub_state = pubsub_state.clone();
         let script_cache_state = script_cache_state.clone();
-        task::spawn(async move {
+        tokio::spawn(async move {
             let _ = handle_client(stream, state, dbs_state, persist_state, pubsub_state, script_cache_state).await;
         });
     }
@@ -124,7 +125,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
 
 async fn graceful_shutdown(
     dbs_state: Arc<DbsState>,
-    persist_state: Arc<Mutex<PersistState>>,
+    persist_state: Arc<PersistState>,
     persist_path: Option<String>,
 ) {
     eprintln!("mini-redis: shutdown requested");
@@ -148,12 +149,11 @@ async fn graceful_shutdown(
         );
     }
     let _path_msg = persist_path.as_deref().unwrap_or("<unknown>");
-    let persist_guard = persist_state.lock().await;
-    if persist_guard.is_none() {
+    if persist_state.is_none() {
         eprintln!("mini-redis: persistence not configured; skipping snapshot");
         return;
     }
-    if let Some(persist) = persist_guard.as_ref() {
+    if let Some(persist) = persist_state.as_ref() {
         let snapshot = snapshot_dbs_for_persistence(&dbs_state).await;
         if let Err(err) = persist.snapshot(&snapshot).await {
             eprintln!("mini-redis: persistence failed: {}", err);
@@ -162,35 +162,30 @@ async fn graceful_shutdown(
 }
 
 async fn handle_client(
-    stream: TcpStream,
-    state: Arc<Mutex<ServerState>>,
+    stream: tokio::net::TcpStream,
+    state: Arc<ServerState>,
     dbs_state: Arc<DbsState>,
-    persist_state: Arc<Mutex<PersistState>>,
+    persist_state: Arc<PersistState>,
     pubsub_state: Arc<Mutex<PubSubState>>,
-    script_cache_state: Arc<Mutex<ScriptCacheState>>,
+    script_cache_state: SharedScriptCache,
 ) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
-    let mut reader = BufReader::new(stream.clone());
-    let mut writer = BufWriter::new(stream);
+    let (read_half, write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut writer = BufWriter::new(write_half);
     let mut resp_buf: Vec<u8> = Vec::with_capacity(1024);
     let mut current_db: usize = 0;
     let mut in_multi = false;
     let mut queued: Vec<(String, Vec<Arc<[u8]>>)> = Vec::new();
-    let (pub_tx, pub_rx) = async_std::channel::unbounded::<RespValue>();
+    let (pub_tx, mut pub_rx) = mpsc::unbounded_channel::<RespValue>();
     let mut script_runtime: Option<ScriptRuntime> = None;
     let db_count = dbs_state.len();
-    let script_runtime_config = {
-        let guard = state.lock().await;
-        guard.script_runtime.clone()
-    };
+    let script_runtime_config = state.script_runtime.clone();
     let mut local_state = ServerState::new(script_runtime_config);
     // Check once at connection start whether AOF is configured.
     // When no persistence is configured, skip_aof=true avoids the
-    // block_on(persist_state.lock()) on every mutating command.
-    let no_persist = {
-        let guard = persist_state.lock().await;
-        guard.is_none()
-    };
+    // persist log_command calls on every mutating command.
+    let no_persist = persist_state.is_none();
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -404,7 +399,7 @@ async fn handle_lrange_fast(
 
 async fn handle_subscribe(
     pubsub_state: &Arc<Mutex<PubSubState>>,
-    sender: &Sender<RespValue>,
+    sender: &mpsc::UnboundedSender<RespValue>,
     channels: &[Arc<[u8]>],
 ) -> RespValue {
     if channels.is_empty() {
@@ -446,7 +441,6 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
                 RespValue::Blob(channel.clone().into()),
                 RespValue::Blob(message.clone().into()),
             ]))
-            .await
             .is_ok()
         {
             delivered += 1;
@@ -457,7 +451,7 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
 
 fn handle_no_db_command(
     state: &mut ServerState,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     db_count: usize,
     cmd: &str,
@@ -499,7 +493,7 @@ fn handle_no_db_command(
             match sub.as_ref() {
                 "LIST" => RespValue::Array(Vec::new()),
                 "FLUSH" => {
-                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    let mut cache = script_cache_state.lock().unwrap();
                     cache.clear();
                     RespValue::Simple("OK".to_string())
                 }
@@ -512,7 +506,7 @@ fn handle_no_db_command(
                         Err(_) => return Some(RespValue::Error("ERR invalid function".to_string())),
                     };
                     let sha = sha1_hex(script.as_bytes());
-                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    let mut cache = script_cache_state.lock().unwrap();
                     cache.insert(sha, script.to_string());
                     RespValue::Simple("OK".to_string())
                 }
@@ -543,7 +537,7 @@ fn handle_no_db_command(
 
 async fn handle_save_like_command(
     dbs_state: &Arc<DbsState>,
-    persist_state: &Arc<Mutex<PersistState>>,
+    persist_state: &Arc<PersistState>,
     cmd: &str,
     args: &[Arc<[u8]>],
 ) -> Option<RespValue> {
@@ -558,8 +552,7 @@ async fn handle_save_like_command(
     }
 
     let snapshot_dbs = snapshot_dbs_for_persistence(dbs_state).await;
-    let persist_guard = persist_state.lock().await;
-    let resp = if let Some(p) = persist_guard.as_ref() {
+    let resp = if let Some(p) = persist_state.as_ref() {
         match p.snapshot(&snapshot_dbs).await {
             Ok(_) => RespValue::Simple("OK".to_string()),
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -575,7 +568,7 @@ async fn handle_save_like_command(
 
 async fn handle_flushall_command(
     dbs_state: &Arc<DbsState>,
-    persist_state: &Arc<Mutex<PersistState>>,
+    persist_state: &Arc<PersistState>,
     args: &[Arc<[u8]>],
     skip_aof: bool,
 ) -> RespValue {
@@ -586,14 +579,11 @@ async fn handle_flushall_command(
         db.flush();
     }
     if !skip_aof {
-        let _ = async_std::task::block_on(async {
-            let persist_guard = persist_state.lock().await;
-            if let Some(p) = persist_guard.as_ref() {
-                if p.aof_enabled() {
-                    let _ = p.log_command(0, "FLUSHALL", args).await;
-                }
+        if let Some(p) = persist_state.as_ref() {
+            if p.aof_enabled() {
+                let _ = p.log_command(0, "FLUSHALL", args).await;
             }
-        });
+        }
     }
     RespValue::Simple("OK".to_string())
 }
@@ -614,8 +604,8 @@ fn handle_eval_command(
     state: &mut ServerState,
     dbs_state: &Arc<DbsState>,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     script: &mut Option<ScriptRuntime>,
     cmd: &str,
@@ -635,8 +625,8 @@ fn handle_command(
     state: &mut ServerState,
     db: &Db,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     _script: &mut Option<ScriptRuntime>,
     cmd: &str,
@@ -647,14 +637,20 @@ fn handle_command(
         ($state:expr, $db:expr, $cmd:expr, $args:expr) => {
             if !skip_aof {
                 let _ = &$state;
-                let _ = async_std::task::block_on(async {
-                    let persist_guard = persist_state.lock().await;
-                    if let Some(p) = persist_guard.as_ref() {
-                        if p.aof_enabled() {
-                            let _ = p.log_command($db, $cmd, $args).await;
-                        }
+                if let Some(p) = persist_state.as_ref() {
+                    if p.aof_enabled() {
+                        // Fire-and-forget: AOF channel is bounded, try_send or enqueue.
+                        let args_clone: Vec<std::sync::Arc<[u8]>> = $args.to_vec();
+                        let cmd_str = $cmd.to_string();
+                        let db_idx = $db;
+                        let persist = Arc::clone(persist_state);
+                        tokio::spawn(async move {
+                            if let Some(ref p) = *persist {
+                                let _ = p.log_command(db_idx, &cmd_str, &args_clone).await;
+                            }
+                        });
                     }
-                });
+                }
             }
         };
     }
@@ -1415,7 +1411,7 @@ fn handle_command(
             match sub.as_ref() {
                 "LIST" => RespValue::Array(Vec::new()),
                 "FLUSH" => {
-                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    let mut cache = script_cache_state.lock().unwrap();
                     cache.clear();
                     RespValue::Simple("OK".to_string())
                 }
@@ -1428,7 +1424,7 @@ fn handle_command(
                         Err(_) => return RespValue::Error("ERR invalid function".to_string()),
                     };
                     let sha = sha1_hex(script.as_bytes());
-                    let mut cache = async_std::task::block_on(script_cache_state.lock());
+                    let mut cache = script_cache_state.lock().unwrap();
                     cache.insert(sha, script.to_string());
                     RespValue::Simple("OK".to_string())
                 }
@@ -1455,18 +1451,10 @@ fn handle_command(
         }
         "BGSAVE" => {
             // Handled by handle_save_like_command before reaching here
-            match async_std::task::block_on(async {
-                let persist_guard = persist_state.lock().await;
-                if persist_guard.is_some() { Ok(()) }
-                else {
-                    Err(io::Error::new(io::ErrorKind::NotFound, "persistence not configured"))
-                }
-            }) {
-                Ok(()) => RespValue::Simple("Background saving started".to_string()),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    RespValue::Error("ERR persistence not configured".to_string())
-                }
-                Err(err) => RespValue::Error(format!("ERR persistence failed: {}", err)),
+            if persist_state.is_some() {
+                RespValue::Simple("Background saving started".to_string())
+            } else {
+                RespValue::Error("ERR persistence not configured".to_string())
             }
         }
         "REPLICAOF" => RespValue::Error("ERR replication not implemented".to_string()),
@@ -1479,8 +1467,8 @@ fn eval_script(
     state: &mut ServerState,
     dbs_state: &Arc<DbsState>,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     args: &[Arc<[u8]>],
@@ -1495,7 +1483,7 @@ fn eval_script(
     };
     if cache {
         let sha = sha1_hex(script.as_bytes());
-        let mut cache = async_std::task::block_on(script_cache_state.lock());
+        let mut cache = script_cache_state.lock().unwrap();
         cache.insert(sha, script.to_string());
     }
     eval_script_source(
@@ -1515,8 +1503,8 @@ fn eval_script_source(
     state: &mut ServerState,
     dbs_state: &Arc<DbsState>,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     script: &str,
@@ -1540,8 +1528,8 @@ fn eval_wrapped_script(
     state: &mut ServerState,
     dbs_state: &Arc<DbsState>,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     wrapped_script: &str,
@@ -1567,8 +1555,8 @@ fn eval_wrapped_script(
         dbs_state: dbs_state as *const Arc<DbsState>,
         db_count,
         db_index: db_index as *mut usize,
-        persist_state: persist_state as *const Arc<Mutex<PersistState>>,
-        script_cache_state: script_cache_state as *const Arc<Mutex<ScriptCacheState>>,
+        persist_state: persist_state as *const Arc<PersistState>,
+        script_cache_state: script_cache_state as *const SharedScriptCache,
         held_db: db_ptr,
         held_db_index: held_idx,
     };
@@ -1588,8 +1576,8 @@ fn eval_script_sha(
     state: &mut ServerState,
     dbs_state: &Arc<DbsState>,
     db_count: usize,
-    persist_state: &Arc<Mutex<PersistState>>,
-    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    persist_state: &Arc<PersistState>,
+    script_cache_state: &SharedScriptCache,
     db_index: &mut usize,
     script_runtime: &mut ScriptRuntime,
     args: &[Arc<[u8]>],
@@ -1601,7 +1589,7 @@ fn eval_script_sha(
         Ok(s) => s,
         Err(_) => return RespValue::Error("ERR invalid script".to_string()),
     };
-    let cache = async_std::task::block_on(script_cache_state.lock());
+    let cache = script_cache_state.lock().unwrap();
     let wrapped = match cache.get(sha) {
         Some(s) => wrap_eval_script(s),
         None => {
@@ -1629,7 +1617,7 @@ fn wrap_eval_script(script: &str) -> String {
     wrapped
 }
 
-fn handle_script_command(script_cache_state: &Arc<Mutex<ScriptCacheState>>, args: &[Arc<[u8]>]) -> RespValue {
+fn handle_script_command(script_cache_state: &SharedScriptCache, args: &[Arc<[u8]>]) -> RespValue {
     if args.len() < 1 {
         return RespValue::Error("ERR wrong number of arguments for 'SCRIPT'".to_string());
     }
@@ -1644,7 +1632,7 @@ fn handle_script_command(script_cache_state: &Arc<Mutex<ScriptCacheState>>, args
                 Err(_) => return RespValue::Error("ERR invalid script".to_string()),
             };
             let sha = sha1_hex(script.as_bytes());
-            let mut cache = async_std::task::block_on(script_cache_state.lock());
+            let mut cache = script_cache_state.lock().unwrap();
             cache.insert(sha.clone(), script.to_string());
             RespValue::Blob(sha.into_bytes().into())
         }
@@ -1652,7 +1640,7 @@ fn handle_script_command(script_cache_state: &Arc<Mutex<ScriptCacheState>>, args
             if args.len() < 2 {
                 return RespValue::Error("ERR wrong number of arguments for 'SCRIPT EXISTS'".to_string());
             }
-            let cache = async_std::task::block_on(script_cache_state.lock());
+            let cache = script_cache_state.lock().unwrap();
             let mut out = Vec::with_capacity(args.len() - 1);
             for sha in &args[1..] {
                 let s = match std::str::from_utf8(sha.as_ref()) {
@@ -1665,7 +1653,7 @@ fn handle_script_command(script_cache_state: &Arc<Mutex<ScriptCacheState>>, args
             RespValue::Array(out)
         }
         "FLUSH" => {
-            let mut cache = async_std::task::block_on(script_cache_state.lock());
+            let mut cache = script_cache_state.lock().unwrap();
             cache.clear();
             RespValue::Simple("OK".to_string())
         }
@@ -1820,8 +1808,8 @@ struct ScriptExec {
     dbs_state: *const Arc<DbsState>,
     db_count: usize,
     db_index: *mut usize,
-    persist_state: *const Arc<Mutex<PersistState>>,
-    script_cache_state: *const Arc<Mutex<ScriptCacheState>>,
+    persist_state: *const Arc<PersistState>,
+    script_cache_state: *const SharedScriptCache,
     /// Raw pointer to the Db for the script's database.
     /// Valid for the lifetime of the dbs_state Arc.
     held_db: *const Db,
