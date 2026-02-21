@@ -547,6 +547,207 @@ impl Shard {
         }
     }
 
+    /// LPUSHX / RPUSHX: push only if the list already exists.
+    fn list_push_x(&mut self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                if left {
+                    for value in values {
+                        list.push_front(value.clone());
+                    }
+                } else {
+                    for value in values {
+                        list.push_back(value.clone());
+                    }
+                }
+                Ok(list.len() as i64)
+            }
+            Some(_) => Err(()),
+            None => Ok(0), // key doesn't exist → return 0 per Redis spec
+        }
+    }
+
+    /// LTRIM: trim list to [start..=stop] range
+    fn list_trim(&mut self, key: &[u8], start: i64, stop: i64) -> Result<(), ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                let len = list.len() as i64;
+                let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                let e = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+                if s > e || s >= list.len() {
+                    list.clear();
+                } else {
+                    // Drain from back first, then front, to keep indices valid
+                    list.truncate(e + 1);
+                    list.drain(..s);
+                }
+                if list.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(())
+            }
+            Some(_) => Err(()),
+            None => Ok(()), // non-existent key → treat as empty list, no-op
+        }
+    }
+
+    /// HINCRBY: increment hash field by delta
+    fn hash_incr_by(&mut self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
+        match entry {
+            Value::Hash(map) => {
+                let field_key: Arc<[u8]> = Arc::from(field);
+                let current = match map.get(&field_key) {
+                    Some(val) => {
+                        let s = std::str::from_utf8(val.as_ref()).map_err(|_| ())?;
+                        s.parse::<i64>().map_err(|_| ())?
+                    }
+                    None => 0,
+                };
+                let new_val = current.wrapping_add(delta);
+                map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
+                Ok(new_val)
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// HSETNX: set hash field only if it doesn't already exist
+    fn hash_set_nx(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
+        match entry {
+            Value::Hash(map) => {
+                use std::collections::hash_map::Entry;
+                match map.entry(field) {
+                    Entry::Occupied(_) => Ok(false),
+                    Entry::Vacant(e) => {
+                        e.insert(value);
+                        Ok(true)
+                    }
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// SUNION: return the union of multiple sets
+    fn set_union(&mut self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        let mut result: HashSet<Arc<[u8]>> = HashSet::new();
+        for &key in keys {
+            if self.is_expired(key) {
+                self.remove(key);
+            }
+            match self.data.get(key) {
+                Some(Value::Set(set)) => {
+                    for member in set {
+                        result.insert(member.clone());
+                    }
+                }
+                Some(_) => return Err(()),
+                None => {} // non-existent key = empty set
+            }
+        }
+        Ok(result.into_iter().collect())
+    }
+
+    /// SINTER: return the intersection of multiple sets
+    fn set_inter(&mut self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Clean up expired keys
+        for &key in keys {
+            if self.is_expired(key) {
+                self.remove(key);
+            }
+        }
+        // Find the smallest set (optimization) and intersect
+        let first_key = keys[0];
+        let first_set = match self.data.get(first_key) {
+            Some(Value::Set(set)) => set,
+            Some(_) => return Err(()),
+            None => return Ok(Vec::new()), // empty intersection
+        };
+        let mut result: Vec<Arc<[u8]>> = Vec::new();
+        'outer: for member in first_set.iter() {
+            for &key in &keys[1..] {
+                match self.data.get(key) {
+                    Some(Value::Set(set)) => {
+                        if !set.contains(member.as_ref()) {
+                            continue 'outer;
+                        }
+                    }
+                    Some(_) => return Err(()),
+                    None => return Ok(Vec::new()), // empty intersection
+                }
+            }
+            result.push(member.clone());
+        }
+        Ok(result)
+    }
+
+    /// XLEN: return the number of entries in a stream
+    fn stream_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Stream(items)) => Ok(items.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    /// XREVRANGE: return stream entries in reverse order
+    fn stream_rev_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Stream(items)) => {
+                // For XREVRANGE, start is the higher ID and end is the lower ID
+                // "+" means max, "-" means min
+                if start == "+" && end == "-" {
+                    let mut reversed = items.clone();
+                    reversed.reverse();
+                    return Ok(reversed);
+                }
+                Ok(Vec::new())
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// XDEL: remove entries by ID
+    fn stream_del(&mut self, key: &[u8], ids: &[&str]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::Stream(items)) => {
+                let before = items.len();
+                items.retain(|(id, _)| !ids.contains(&id.as_str()));
+                Ok((before - items.len()) as i64)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
     fn get_string(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -1200,6 +1401,88 @@ impl Db {
 
     pub fn stream_range(&self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
         self.shard(key).stream_range(key, start, end)
+    }
+
+    // --- additional list operations ---
+
+    pub fn list_push_x(&self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+        self.shard(key).list_push_x(key, values, left)
+    }
+
+    pub fn list_trim(&self, key: &[u8], start: i64, stop: i64) -> Result<(), ()> {
+        self.shard(key).list_trim(key, start, stop)
+    }
+
+    // --- additional hash operations ---
+
+    pub fn hash_incr_by(&self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
+        self.shard(key).hash_incr_by(key, field, delta)
+    }
+
+    pub fn hash_set_nx(&self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+        self.shard(key).hash_set_nx(key, field, value)
+    }
+
+    // --- additional set operations ---
+
+    pub fn set_union(&self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        // All keys may hash to different shards; for simplicity, lock the first
+        // shard and delegate.  Since Shard::set_union iterates data directly,
+        // we need all keys in the same shard.  Instead, collect members from
+        // each shard individually and merge at the Db level.
+        let mut result: HashSet<Arc<[u8]>> = HashSet::new();
+        for &key in keys {
+            match self.shard(key).set_members(key) {
+                Ok(members) => {
+                    for m in members {
+                        result.insert(m);
+                    }
+                }
+                Err(_) => return Err(()),
+            }
+        }
+        Ok(result.into_iter().collect())
+    }
+
+    pub fn set_inter(&self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Get members from first set
+        let first = match self.shard(keys[0]).set_members(keys[0]) {
+            Ok(m) => m,
+            Err(_) => return Err(()),
+        };
+        if first.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Filter by membership in all other sets
+        let mut result = Vec::new();
+        'outer: for member in &first {
+            for &key in &keys[1..] {
+                match self.shard(key).set_is_member(key, member.as_ref()) {
+                    Ok(true) => {}
+                    Ok(false) => continue 'outer,
+                    Err(_) => return Err(()),
+                }
+            }
+            result.push(member.clone());
+        }
+        Ok(result)
+    }
+
+    // --- additional stream operations ---
+
+    pub fn stream_len(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).stream_len(key)
+    }
+
+    pub fn stream_rev_range(&self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        self.shard(key).stream_rev_range(key, start, end)
+    }
+
+    pub fn stream_del(&self, key: &[u8], ids: &[&str]) -> Result<i64, ()> {
+        self.shard(key).stream_del(key, ids)
     }
 }
 

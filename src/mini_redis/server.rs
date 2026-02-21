@@ -196,6 +196,7 @@ async fn handle_client(
             Ok(a) => a,
             Err(err) => {
                 write_value_buf(&mut writer, &RespValue::Error(err), &mut resp_buf).await?;
+                if reader.buffer().is_empty() { writer.flush().await?; }
                 continue;
             }
         };
@@ -206,6 +207,7 @@ async fn handle_client(
                 &mut resp_buf,
             )
             .await?;
+            if reader.buffer().is_empty() { writer.flush().await?; }
             continue;
         }
         let cmd = match parse_command(args[0].as_ref()) {
@@ -218,6 +220,7 @@ async fn handle_client(
                     &mut resp_buf,
                 )
                 .await?;
+                if reader.buffer().is_empty() { writer.flush().await?; }
                 continue;
             }
         };
@@ -899,6 +902,37 @@ fn handle_command(
             }
             _ => RespValue::StaticError("ERR wrong number of arguments for 'HEXISTS'"),
         },
+        "HINCRBY" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(field), Some(delta)) => {
+                match parse_i64(delta.as_ref()) {
+                    Some(delta) => {
+                        match db.hash_incr_by(key.as_ref(), field.as_ref(), delta) {
+                            Ok(val) => {
+                                log_cmd!(state, *db_index, cmd, args);
+                                RespValue::Integer(val)
+                            }
+                            Err(_) => RespValue::StaticError("ERR hash value is not an integer"),
+                        }
+                    }
+                    None => RespValue::StaticError("ERR value is not an integer or out of range"),
+                }
+            }
+            _ => RespValue::StaticError("ERR wrong number of arguments for 'HINCRBY'"),
+        },
+        "HSETNX" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(field), Some(value)) => {
+                match db.hash_set_nx(key.as_ref(), field.as_ref().into(), value.as_ref().into()) {
+                    Ok(inserted) => {
+                        if inserted {
+                            log_cmd!(state, *db_index, cmd, args);
+                        }
+                        RespValue::Integer(if inserted { 1 } else { 0 })
+                    }
+                    Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                }
+            }
+            _ => RespValue::StaticError("ERR wrong number of arguments for 'HSETNX'"),
+        },
         "LPUSH" | "RPUSH" => {
             if args.len() < 2 {
                 return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
@@ -1046,6 +1080,36 @@ fn handle_command(
             }
             _ => RespValue::StaticError("ERR wrong number of arguments for 'LREM'"),
         },
+        "LPUSHX" | "RPUSHX" => {
+            if args.len() < 2 {
+                return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
+            }
+            let key = &args[0];
+            let left = cmd == "LPUSHX";
+            match db.list_push_x(key.as_ref(), &args[1..], left) {
+                Ok(len) => {
+                    if len > 0 {
+                        log_cmd!(state, *db_index, cmd, args);
+                    }
+                    RespValue::Integer(len)
+                }
+                Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            }
+        }
+        "LTRIM" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(start), Some(stop)) => {
+                let start = parse_i64(start.as_ref()).unwrap_or(0);
+                let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
+                match db.list_trim(key.as_ref(), start, stop) {
+                    Ok(()) => {
+                        log_cmd!(state, *db_index, cmd, args);
+                        RespValue::StaticSimple("OK")
+                    }
+                    Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                }
+            }
+            _ => RespValue::StaticError("ERR wrong number of arguments for 'LTRIM'"),
+        },
         "SADD" => {
             if args.len() < 2 {
                 return RespValue::StaticError("ERR wrong number of arguments for 'SADD'");
@@ -1119,6 +1183,32 @@ fn handle_command(
             }
             _ => RespValue::StaticError("ERR wrong number of arguments for 'SMOVE'"),
         },
+        "SUNION" => {
+            if args.is_empty() {
+                return RespValue::StaticError("ERR wrong number of arguments for 'SUNION'");
+            }
+            let key_refs: Vec<&[u8]> = args.iter().map(|a| a.as_ref()).collect();
+            match db.set_union(&key_refs) {
+                Ok(members) => {
+                    let out: Vec<RespValue> = members.into_iter().map(|m| RespValue::Blob(m)).collect();
+                    RespValue::Array(out)
+                }
+                Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            }
+        }
+        "SINTER" => {
+            if args.is_empty() {
+                return RespValue::StaticError("ERR wrong number of arguments for 'SINTER'");
+            }
+            let key_refs: Vec<&[u8]> = args.iter().map(|a| a.as_ref()).collect();
+            match db.set_inter(&key_refs) {
+                Ok(members) => {
+                    let out: Vec<RespValue> = members.into_iter().map(|m| RespValue::Blob(m)).collect();
+                    RespValue::Array(out)
+                }
+                Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            }
+        }
         "ZADD" => {
             if args.len() < 3 || (args.len() - 1) % 2 != 0 {
                 return RespValue::StaticError("ERR wrong number of arguments for 'ZADD'");
@@ -1228,6 +1318,57 @@ fn handle_command(
             }
             _ => RespValue::StaticError("ERR wrong number of arguments for 'XRANGE'"),
         },
+        "XREVRANGE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(key), Some(end_arg), Some(start_arg)) => {
+                let start_str = std::str::from_utf8(start_arg.as_ref()).unwrap_or("-");
+                let end_str = std::str::from_utf8(end_arg.as_ref()).unwrap_or("+");
+                // store method expects (high, low) order
+                match db.stream_rev_range(key.as_ref(), end_str, start_str) {
+                    Ok(items) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for (id, fields) in items {
+                            let mut field_array = Vec::with_capacity(fields.len() * 2);
+                            for (field, value) in fields {
+                                field_array.push(RespValue::Blob(field.into()));
+                                field_array.push(RespValue::Blob(value.into()));
+                            }
+                            out.push(RespValue::Array(vec![
+                                RespValue::Blob(id.into_bytes().into()),
+                                RespValue::Array(field_array),
+                            ]));
+                        }
+                        RespValue::Array(out)
+                    }
+                    Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                }
+            }
+            _ => RespValue::StaticError("ERR wrong number of arguments for 'XREVRANGE'"),
+        },
+        "XLEN" => match args.get(0) {
+            Some(key) => {
+                match db.stream_len(key.as_ref()) {
+                    Ok(len) => RespValue::Integer(len),
+                    Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                }
+            }
+            None => RespValue::StaticError("ERR wrong number of arguments for 'XLEN'"),
+        },
+        "XDEL" => {
+            if args.len() < 2 {
+                return RespValue::StaticError("ERR wrong number of arguments for 'XDEL'");
+            }
+            let key = &args[0];
+            let ids: Vec<&str> = args[1..].iter()
+                .filter_map(|a| std::str::from_utf8(a.as_ref()).ok())
+                .collect();
+            match db.stream_del(key.as_ref(), &ids) {
+                Ok(deleted) => {
+                    log_cmd!(state, *db_index, cmd, args);
+                    RespValue::Integer(deleted)
+                }
+                Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            }
+        }
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
@@ -2259,8 +2400,10 @@ fn parse_command(input: &[u8]) -> Option<&'static str> {
             "PING", "ECHO", "SELECT", "DBSIZE", "GET", "SET", "SETNX", "MSET", "MGET", "GETSET",
             "APPEND", "INCR", "INCRBY", "DECR", "DECRBY", "STRLEN", "HSET", "HGET", "HDEL", "HGETALL",
             "HLEN", "HEXISTS", "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX", "LSET",
-            "LINSERT", "LREM", "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SCARD", "SMOVE", "ZADD", "ZRANGE",
-            "ZREM", "ZCARD", "XADD", "XRANGE", "DEL", "EXISTS", "EXPIRE", "PEXPIRE", "PERSIST", "TTL",
+            "LINSERT", "LREM", "LPUSHX", "RPUSHX", "LTRIM", "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SCARD", "SMOVE",
+            "SUNION", "SINTER", "ZADD", "ZRANGE",
+            "ZREM", "ZCARD", "XADD", "XRANGE", "XREVRANGE", "XLEN", "XDEL", "HINCRBY", "HSETNX",
+            "DEL", "EXISTS", "EXPIRE", "PEXPIRE", "PERSIST", "TTL",
             "PTTL", "TYPE", "KEYS", "SCAN", "FLUSHDB", "FLUSHALL", "INFO", "EVAL", "EVALSHA", "SCRIPT",
             "CONFIG", "FUNCTION", "CLIENT", "SLOWLOG", "SAVE", "BGSAVE", "REPLICAOF", "QUIT", "MULTI",
             "EXEC", "DISCARD", "SUBSCRIBE", "PUBLISH",
