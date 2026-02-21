@@ -682,7 +682,7 @@ fn handle_command(
         "GET" => match args.get(0) {
             Some(key) => {
                 match db.get_string(key.as_ref()) {
-                    Ok(Some(v)) => RespValue::Blob(v.into()),
+                    Ok(Some(v)) => RespValue::Blob(v),
                     Ok(None) => RespValue::Null,
                     Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
                 }
@@ -691,7 +691,7 @@ fn handle_command(
         },
         "SETNX" => match args.get(0).zip(args.get(1)) {
             Some((key, value)) => {
-                match db.set_nx(key.as_ref().to_vec(), value.as_ref().to_vec()) {
+                match db.set_nx(key.as_ref().to_vec(), Arc::clone(value)) {
                     Ok(set) => {
                         if set {
                             log_cmd!(state, *db_index, cmd, args);
@@ -710,8 +710,7 @@ fn handle_command(
             let mut idx = 0;
             while idx + 1 < args.len() {
                 let key = args[idx].as_ref().to_vec();
-                let value = args[idx + 1].as_ref().to_vec();
-                db.set_string(key, value, None);
+                db.set_string(key, Arc::clone(&args[idx + 1]), None);
                 idx += 2;
             }
             log_cmd!(state, *db_index, cmd, args);
@@ -724,7 +723,7 @@ fn handle_command(
             let mut out = Vec::with_capacity(args.len());
             for key in args {
                 match db.get_string(key.as_ref()) {
-                    Ok(Some(v)) => out.push(RespValue::Blob(v.into())),
+                    Ok(Some(v)) => out.push(RespValue::Blob(v)),
                     Ok(None) => out.push(RespValue::Null),
                     Err(_) => return RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
                 }
@@ -739,10 +738,10 @@ fn handle_command(
                         return RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value")
                     }
                 };
-                db.set_string(key.as_ref().to_vec(), value.as_ref().to_vec(), None);
+                db.set_string(key.as_ref().to_vec(), Arc::clone(value), None);
                 log_cmd!(state, *db_index, cmd, args);
                 match prev {
-                    Some(v) => RespValue::Blob(v.into()),
+                    Some(v) => RespValue::Blob(v),
                     None => RespValue::Null,
                 }
             }
@@ -1372,7 +1371,7 @@ fn handle_command(
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
                 let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-                db.set_string(key.as_ref().to_vec(), value.as_ref().to_vec(), expire_at);
+                db.set_string(key.as_ref().to_vec(), value, expire_at);
                 log_cmd!(state, *db_index, cmd, args);
                 RespValue::StaticSimple("OK")
             }
@@ -1998,7 +1997,7 @@ unsafe fn redis_call_fast(
                     let mut buf = JSCStringBuf { buf: [0u8; 5] };
                     JS_ToCString(ctx, *argv.add(2), &mut buf).as_bytes().to_vec()
                 };
-                db.set_string(key, val, None);
+                db.set_string(key, Arc::from(val), None);
                 return Some(JS_NewString(ctx, "OK"));
             }
             if cmd_bytes.eq_ignore_ascii_case(b"DEL") && argc >= 2 {

@@ -3,6 +3,8 @@
 
 use std::io;
 #[cfg(feature = "mini-redis-libsql")]
+use std::sync::Arc;
+#[cfg(feature = "mini-redis-libsql")]
 use tokio::sync::mpsc::{self, Sender, Receiver};
 #[cfg(feature = "mini-redis-libsql")]
 use tokio::time::timeout;
@@ -143,7 +145,7 @@ impl LibsqlPersist {
             if let Some(db) = dbs.get(db_idx as usize) {
                 match typ {
                     0 => {
-                        db.set_with_expire_at(key, Value::String(value.unwrap_or_default()), exp.map(|v| v as u64));
+                        db.set_with_expire_at(key, Value::String(Arc::from(value.unwrap_or_default())), exp.map(|v| v as u64));
                     }
                     1 => {
                         let list = load_list(&self.conn, db_idx as usize, &key).await?;
@@ -223,7 +225,7 @@ impl LibsqlPersist {
                     Value::String(bytes) => {
                         self.conn.execute(
                             "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key, 0i64, bytes, exp_val),
+                            (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
                     Value::List(items) => {

@@ -142,11 +142,11 @@ impl VM {
                     if a_is_str || b_is_str {
                         let ls = js_to_string(ctx, a);
                         let rs = js_to_string(ctx, b);
-                        let lb = match ctx.string_bytes(ls) { Some(b) => b.to_vec(), None => Vec::new() };
-                        let rb = match ctx.string_bytes(rs) { Some(b) => b.to_vec(), None => Vec::new() };
+                        let lb = ctx.string_bytes(ls).unwrap_or(b"");
+                        let rb = ctx.string_bytes(rs).unwrap_or(b"");
                         let mut out = Vec::with_capacity(lb.len() + rb.len());
-                        out.extend_from_slice(&lb);
-                        out.extend_from_slice(&rb);
+                        out.extend_from_slice(lb);
+                        out.extend_from_slice(rb);
                         stack.push(js_new_string_len(ctx, &out));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -224,7 +224,7 @@ impl VM {
                 OpCode::Lt => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la < lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -236,7 +236,7 @@ impl VM {
                 OpCode::Gt => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la > lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -248,7 +248,7 @@ impl VM {
                 OpCode::Le => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la <= lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -260,7 +260,7 @@ impl VM {
                 OpCode::Ge => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la >= lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -394,11 +394,11 @@ impl VM {
                     let a = pop!(stack, ctx);
                     let ls = js_to_string(ctx, a);
                     let rs = js_to_string(ctx, b);
-                    let lb = ctx.string_bytes(ls).unwrap_or(b"").to_vec();
-                    let rb = ctx.string_bytes(rs).unwrap_or(b"").to_vec();
+                    let lb = ctx.string_bytes(ls).unwrap_or(b"");
+                    let rb = ctx.string_bytes(rs).unwrap_or(b"");
                     let mut out = Vec::with_capacity(lb.len() + rb.len());
-                    out.extend_from_slice(&lb);
-                    out.extend_from_slice(&rb);
+                    out.extend_from_slice(lb);
+                    out.extend_from_slice(rb);
                     stack.push(js_new_string_len(ctx, &out));
                 }
 
@@ -506,7 +506,7 @@ fn vm_loose_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
     if (a.is_null() && b.is_undefined()) || (a.is_undefined() && b.is_null()) {
         return true;
     }
-    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
         return la == lb;
     }
     if a.0 == b.0 {
@@ -523,7 +523,7 @@ fn vm_loose_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
 
 /// Strict equality (===) for the VM.
 fn vm_strict_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
-    if let (Some(la), Some(lb)) = (ctx.string_bytes(a).map(|b| b.to_vec()), ctx.string_bytes(b).map(|b| b.to_vec())) {
+    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
         return la == lb;
     }
     if a.0 == b.0 {

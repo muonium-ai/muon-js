@@ -8,7 +8,7 @@ const NUM_SHARDS: usize = 64;
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    String(Vec<u8>),
+    String(Arc<[u8]>),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
     Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
@@ -748,7 +748,7 @@ impl Shard {
         }
     }
 
-    fn get_string(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    fn get_string(&mut self, key: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -759,11 +759,11 @@ impl Shard {
         }
     }
 
-    fn set_string(&mut self, key: Vec<u8>, value: Vec<u8>, expire_at_ms: Option<u64>) {
+    fn set_string(&mut self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
         self.set(key, Value::String(value), expire_at_ms);
     }
 
-    fn set_nx(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+    fn set_nx(&mut self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(&key) {
             self.remove(&key);
         }
@@ -780,12 +780,16 @@ impl Shard {
         }
         match self.data.get_mut(&key) {
             Some(Value::String(buf)) => {
-                buf.extend_from_slice(value);
-                Ok(buf.len() as i64)
+                let mut v = Vec::with_capacity(buf.len() + value.len());
+                v.extend_from_slice(buf);
+                v.extend_from_slice(value);
+                let len = v.len();
+                *buf = Arc::from(v);
+                Ok(len as i64)
             }
             Some(_) => Err(()),
             None => {
-                self.data.insert(key.clone(), Value::String(value.to_vec()));
+                self.data.insert(key.clone(), Value::String(Arc::from(value)));
                 Ok(value.len() as i64)
             }
         }
@@ -799,7 +803,9 @@ impl Shard {
             Some(Value::String(buf)) => {
                 let n = parse_i64_bytes(buf)?;
                 let next = n.saturating_add(delta);
-                write_i64_bytes(buf, next);
+                let mut out = Vec::with_capacity(20);
+                write_i64_bytes(&mut out, next);
+                *buf = Arc::from(out);
                 Ok(next)
             }
             Some(_) => Err(()),
@@ -807,7 +813,7 @@ impl Shard {
                 let next = delta;
                 let mut out = Vec::with_capacity(20);
                 write_i64_bytes(&mut out, next);
-                self.data.insert(key.to_vec(), Value::String(out));
+                self.data.insert(key.to_vec(), Value::String(Arc::from(out)));
                 Ok(next)
             }
         }
@@ -1239,15 +1245,15 @@ impl Db {
 
     // --- string operations ---
 
-    pub fn get_string(&self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    pub fn get_string(&self, key: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         self.shard(key).get_string(key)
     }
 
-    pub fn set_string(&self, key: Vec<u8>, value: Vec<u8>, expire_at_ms: Option<u64>) {
+    pub fn set_string(&self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
         self.shard(&key).set_string(key, value, expire_at_ms);
     }
 
-    pub fn set_nx(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+    pub fn set_nx(&self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
         self.shard(&key).set_nx(key, value)
     }
 
