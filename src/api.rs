@@ -9066,11 +9066,13 @@ impl<'a> ArithParser<'a> {
             return self.unary_minus(val);
         }
         if let Some(b'!') = self.peek() {
-            let op_pos = self.pos;
-            self.pos += 1;
-            let val = self.parse_postfix()?;
-            self.set_error_at(op_pos);
-            return self.logical_not(val);
+            if self.peek_at(1) != Some(b'=') {
+                let op_pos = self.pos;
+                self.pos += 1;
+                let val = self.parse_postfix()?;
+                self.set_error_at(op_pos);
+                return self.logical_not(val);
+            }
         }
         if let Some(b'~') = self.peek() {
             let op_pos = self.pos;

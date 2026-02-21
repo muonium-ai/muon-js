@@ -1,5 +1,5 @@
 #[cfg(feature = "mini-redis")]
-#[async_std::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     use std::env;
     let mut bind = "127.0.0.1".to_string();

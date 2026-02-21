@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark redis-run redis-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -26,6 +26,11 @@ MINI_REDIS_JS_HOTSPOT_ITERS ?= 1000
 MINI_REDIS_JS_HOTSPOT_WARMUP ?= 200
 MINI_REDIS_JS_HOTSPOT_JSON ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).json
 MINI_REDIS_JS_HOTSPOT_CSV ?= tmp/mini_redis_js_hotspots_$(shell date +%Y%m%d_%H%M%S).csv
+PIPELINE_DEPTH ?= 16
+PIPELINE_REQUESTS ?= 200000
+PIPELINE_TESTS ?= GET,SET,INCR,LPUSH,LPOP,RPUSH,RPOP,SADD,HSET
+MINI_REDIS_PIPE_BENCH_LOG ?= tmp/mini_redis_pipelined_bench_$(shell date +%Y%m%d_%H%M%S).log
+REDIS_PIPE_BENCH_LOG ?= tmp/redis_pipelined_bench_$(shell date +%Y%m%d_%H%M%S).log
 LUA_JS_GATE_ROUNDS ?= 3
 LUA_JS_GATE_REDIS_BASE_PORT ?= 6385
 LUA_JS_GATE_OUT ?= tmp/comparison/lua_js_perf_gate_$(shell date +%Y%m%d_%H%M%S).json
@@ -216,6 +221,16 @@ redis-benchmark:
 	@echo "Benchmark log: $(REDIS_BENCH_LOG)"
 	@redis-benchmark -p $(REDIS_PORT) | tee $(REDIS_BENCH_LOG)
 
+redis-pipelined-benchmark:
+	@mkdir -p tmp
+	@echo "Starting redis-server on port $(REDIS_PORT)"
+	@$(MAKE) -s redis-run
+	@echo "Running pipelined redis-benchmark -P $(PIPELINE_DEPTH) on port $(REDIS_PORT)"
+	@echo "Benchmark log: $(REDIS_PIPE_BENCH_LOG)"
+	@redis-benchmark -p $(REDIS_PORT) -t $(PIPELINE_TESTS) -P $(PIPELINE_DEPTH) -n $(PIPELINE_REQUESTS) | tee $(REDIS_PIPE_BENCH_LOG)
+	@echo "Stopping redis"
+	@$(MAKE) -s redis-stop
+
 redis-stop:
 	@if [ ! -f "$(REDIS_PIDFILE)" ]; then echo "No PID file at $(REDIS_PIDFILE)"; exit 1; fi; \
 	pid=$$(cat $(REDIS_PIDFILE)); \
@@ -402,6 +417,41 @@ mini-redis-parity-verbose: sync-version
 	sleep 0.5; \
 	python3 tests/mini_redis_parity.py $(MINI_REDIS_HOST) $$port; \
 	kill $$server_pid 2>/dev/null || true
+
+mini-redis-pipelined-benchmark: sync-version
+	@mkdir -p tmp
+	@echo "=== start mini-redis (no-persist + release) ==="; \
+	$(MAKE) -s mini-redis-persist-release-bg; \
+	if [ ! -f "$(MINI_REDIS_PORTFILE)" ]; then \
+		echo "Port file missing: $(MINI_REDIS_PORTFILE)"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	port=$$(cat $(MINI_REDIS_PORTFILE)); \
+	retries=80; \
+	while [ $$retries -gt 0 ]; do \
+		python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("127.0.0.1", int(sys.argv[1]))); s.close(); sys.exit(0 if rc==0 else 1)' $$port && break; \
+		retries=$$((retries-1)); \
+		sleep 0.25; \
+	done; \
+	if [ $$retries -eq 0 ]; then \
+		echo "mini-redis did not start on port $$port"; \
+		$(MAKE) -s mini-redis-stop || true; \
+		exit 1; \
+	fi; \
+	echo "=== running pipelined benchmark -P $(PIPELINE_DEPTH) on $$port ==="; \
+	echo "Benchmark log: $(MINI_REDIS_PIPE_BENCH_LOG)"; \
+	redis-benchmark -p $$port -t $(PIPELINE_TESTS) -P $(PIPELINE_DEPTH) -n $(PIPELINE_REQUESTS) | tee $(MINI_REDIS_PIPE_BENCH_LOG); \
+	echo "=== stop mini-redis ==="; \
+	$(MAKE) -s mini-redis-stop || true
+
+pipelined-benchmark-compare: sync-version
+	@mkdir -p tmp
+	@echo "=== Pipelined Benchmark Comparison (P=$(PIPELINE_DEPTH)) ==="
+	@$(MAKE) -s mini-redis-pipelined-benchmark
+	@$(MAKE) -s redis-pipelined-benchmark
+	@echo "=== Comparison ==="
+	@python3 tools/compare_benchmarks.py --mini $(MINI_REDIS_PIPE_BENCH_LOG) --redis $(REDIS_PIPE_BENCH_LOG)
 
 mini-redis-benchmark: sync-version
 	@mkdir -p tmp

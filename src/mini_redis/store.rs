@@ -1,11 +1,14 @@
-//! In-memory multi-DB store with TTL support.
+//! In-memory multi-DB store with TTL support and internal key-sharding.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+
+const NUM_SHARDS: usize = 64;
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    String(Vec<u8>),
+    String(Arc<[u8]>),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
     Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
@@ -13,18 +16,55 @@ pub enum Value {
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
 
+/// Per-shard storage bucket. Holds the data and expiry maps for a subset of keys.
 #[derive(Default)]
-pub struct Db {
+struct Shard {
     data: HashMap<Vec<u8>, Value>,
     expires: HashMap<Vec<u8>, u64>,
 }
 
+/// Thread-safe, internally-sharded key-value store.
+///
+/// All public methods take `&self`; interior mutability is provided by per-shard
+/// `std::sync::Mutex` locks. This allows multiple threads/tasks to operate on
+/// different keys concurrently without an external Mutex.
+pub struct Db {
+    shards: Vec<StdMutex<Shard>>,
+}
+
+impl Default for Db {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Db {
     pub fn new() -> Self {
-        Self::default()
+        let shards = (0..NUM_SHARDS)
+            .map(|_| StdMutex::new(Shard::default()))
+            .collect();
+        Self { shards }
     }
 
-    pub fn get(&mut self, key: &[u8]) -> Option<Value> {
+    /// FNV-1a hash to select a shard bucket.
+    #[inline]
+    fn shard_index(key: &[u8]) -> usize {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in key {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h as usize % NUM_SHARDS
+    }
+
+    #[inline]
+    fn shard(&self, key: &[u8]) -> std::sync::MutexGuard<'_, Shard> {
+        self.shards[Self::shard_index(key)].lock().unwrap()
+    }
+}
+
+impl Shard {
+    fn get(&mut self, key: &[u8]) -> Option<Value> {
         if self.is_expired(key) {
             self.remove(key);
             return None;
@@ -32,7 +72,7 @@ impl Db {
         self.data.get(key).cloned()
     }
 
-    pub fn set(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
+    fn set(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
         if let Some(ts) = expire_at_ms {
             self.expires.insert(key.clone(), ts);
         } else {
@@ -41,17 +81,17 @@ impl Db {
         self.data.insert(key, value);
     }
 
-    pub fn set_with_expire_at(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
+    fn set_with_expire_at(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
         self.set(key, value, expire_at_ms);
     }
 
-    pub fn remove(&mut self, key: &[u8]) -> bool {
+    fn remove(&mut self, key: &[u8]) -> bool {
         let existed = self.data.remove(key).is_some();
         self.expires.remove(key);
         existed
     }
 
-    pub fn exists(&mut self, key: &[u8]) -> bool {
+    fn exists(&mut self, key: &[u8]) -> bool {
         if self.is_expired(key) {
             self.remove(key);
             return false;
@@ -59,7 +99,7 @@ impl Db {
         self.data.contains_key(key)
     }
 
-    pub fn ttl_ms(&mut self, key: &[u8]) -> Option<i64> {
+    fn ttl_ms(&mut self, key: &[u8]) -> Option<i64> {
         if !self.data.contains_key(key) {
             return None;
         }
@@ -74,7 +114,7 @@ impl Db {
         Some(-1)
     }
 
-    pub fn set_expire_ms(&mut self, key: &[u8], ttl_ms: u64) -> bool {
+    fn set_expire_ms(&mut self, key: &[u8], ttl_ms: u64) -> bool {
         if !self.data.contains_key(key) {
             return false;
         }
@@ -82,7 +122,7 @@ impl Db {
         true
     }
 
-    pub fn persist(&mut self, key: &[u8]) -> i64 {
+    fn persist(&mut self, key: &[u8]) -> i64 {
         if self.is_expired(key) {
             self.remove(key);
             return 0;
@@ -96,7 +136,7 @@ impl Db {
         0
     }
 
-    pub fn purge_expired_all(&mut self) {
+    fn purge_expired_all(&mut self) {
         let now = now_ms();
         let expired: Vec<Vec<u8>> = self.expires
             .iter()
@@ -107,7 +147,7 @@ impl Db {
         }
     }
 
-    pub fn snapshot_items(&mut self) -> Vec<(Vec<u8>, Value, Option<u64>)> {
+    fn snapshot_items(&mut self) -> Vec<(Vec<u8>, Value, Option<u64>)> {
         self.purge_expired_all();
         let mut out = Vec::with_capacity(self.data.len());
         for (k, v) in self.data.iter() {
@@ -117,17 +157,17 @@ impl Db {
         out
     }
 
-    pub fn len(&mut self) -> usize {
+    fn len(&mut self) -> usize {
         self.purge_expired_all();
         self.data.len()
     }
 
-    pub fn keys(&mut self) -> Vec<Vec<u8>> {
+    fn keys(&mut self) -> Vec<Vec<u8>> {
         self.purge_expired_all();
         self.data.keys().cloned().collect()
     }
 
-    pub fn keys_matching(&mut self, pattern: &[u8]) -> Vec<Vec<u8>> {
+    fn keys_matching(&mut self, pattern: &[u8]) -> Vec<Vec<u8>> {
         self.purge_expired_all();
         let mut out = Vec::new();
         for key in self.data.keys() {
@@ -139,14 +179,14 @@ impl Db {
         out
     }
 
-    pub fn flush(&mut self) -> usize {
+    fn flush(&mut self) -> usize {
         let count = self.data.len();
         self.data.clear();
         self.expires.clear();
         count
     }
 
-    pub fn value_type(&mut self, key: &[u8]) -> Option<&'static str> {
+    fn value_type(&mut self, key: &[u8]) -> Option<&'static str> {
         if self.is_expired(key) {
             self.remove(key);
             return None;
@@ -282,7 +322,7 @@ impl Db {
         pi == pattern.len() && ti == text.len()
     }
 
-    pub fn list_push(&mut self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+    fn list_push(&mut self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -307,7 +347,7 @@ impl Db {
         }
     }
 
-    pub fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Arc<[u8]>>, ()> {
+    fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -332,7 +372,7 @@ impl Db {
         }
     }
 
-    pub fn list_range(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Arc<[u8]>>, ()> {
+    fn list_range(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -389,7 +429,7 @@ impl Db {
         }
     }
 
-    pub fn list_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+    fn list_len(&mut self, key: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -400,7 +440,7 @@ impl Db {
         }
     }
 
-    pub fn list_index(&mut self, key: &[u8], index: i64) -> Result<Option<Arc<[u8]>>, ()> {
+    fn list_index(&mut self, key: &[u8], index: i64) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -418,7 +458,7 @@ impl Db {
         }
     }
 
-    pub fn list_set(&mut self, key: &[u8], index: i64, value: &[u8]) -> Result<(), ()> {
+    fn list_set(&mut self, key: &[u8], index: i64, value: &[u8]) -> Result<(), ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -439,7 +479,7 @@ impl Db {
         }
     }
 
-    pub fn list_insert(&mut self, key: &[u8], before: bool, pivot: &[u8], value: &[u8]) -> Result<i64, ()> {
+    fn list_insert(&mut self, key: &[u8], before: bool, pivot: &[u8], value: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -460,7 +500,7 @@ impl Db {
         }
     }
 
-    pub fn list_rem(&mut self, key: &[u8], count: i64, value: &[u8]) -> Result<i64, ()> {
+    fn list_rem(&mut self, key: &[u8], count: i64, value: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -507,7 +547,208 @@ impl Db {
         }
     }
 
-    pub fn get_string(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    /// LPUSHX / RPUSHX: push only if the list already exists.
+    fn list_push_x(&mut self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                if left {
+                    for value in values {
+                        list.push_front(value.clone());
+                    }
+                } else {
+                    for value in values {
+                        list.push_back(value.clone());
+                    }
+                }
+                Ok(list.len() as i64)
+            }
+            Some(_) => Err(()),
+            None => Ok(0), // key doesn't exist → return 0 per Redis spec
+        }
+    }
+
+    /// LTRIM: trim list to [start..=stop] range
+    fn list_trim(&mut self, key: &[u8], start: i64, stop: i64) -> Result<(), ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::List(list)) => {
+                let len = list.len() as i64;
+                let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                let e = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+                if s > e || s >= list.len() {
+                    list.clear();
+                } else {
+                    // Drain from back first, then front, to keep indices valid
+                    list.truncate(e + 1);
+                    list.drain(..s);
+                }
+                if list.is_empty() {
+                    self.data.remove(key);
+                    self.expires.remove(key);
+                }
+                Ok(())
+            }
+            Some(_) => Err(()),
+            None => Ok(()), // non-existent key → treat as empty list, no-op
+        }
+    }
+
+    /// HINCRBY: increment hash field by delta
+    fn hash_incr_by(&mut self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
+        match entry {
+            Value::Hash(map) => {
+                let field_key: Arc<[u8]> = Arc::from(field);
+                let current = match map.get(&field_key) {
+                    Some(val) => {
+                        let s = std::str::from_utf8(val.as_ref()).map_err(|_| ())?;
+                        s.parse::<i64>().map_err(|_| ())?
+                    }
+                    None => 0,
+                };
+                let new_val = current.wrapping_add(delta);
+                map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
+                Ok(new_val)
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// HSETNX: set hash field only if it doesn't already exist
+    fn hash_set_nx(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
+        match entry {
+            Value::Hash(map) => {
+                use std::collections::hash_map::Entry;
+                match map.entry(field) {
+                    Entry::Occupied(_) => Ok(false),
+                    Entry::Vacant(e) => {
+                        e.insert(value);
+                        Ok(true)
+                    }
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// SUNION: return the union of multiple sets
+    fn set_union(&mut self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        let mut result: HashSet<Arc<[u8]>> = HashSet::new();
+        for &key in keys {
+            if self.is_expired(key) {
+                self.remove(key);
+            }
+            match self.data.get(key) {
+                Some(Value::Set(set)) => {
+                    for member in set {
+                        result.insert(member.clone());
+                    }
+                }
+                Some(_) => return Err(()),
+                None => {} // non-existent key = empty set
+            }
+        }
+        Ok(result.into_iter().collect())
+    }
+
+    /// SINTER: return the intersection of multiple sets
+    fn set_inter(&mut self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Clean up expired keys
+        for &key in keys {
+            if self.is_expired(key) {
+                self.remove(key);
+            }
+        }
+        // Find the smallest set (optimization) and intersect
+        let first_key = keys[0];
+        let first_set = match self.data.get(first_key) {
+            Some(Value::Set(set)) => set,
+            Some(_) => return Err(()),
+            None => return Ok(Vec::new()), // empty intersection
+        };
+        let mut result: Vec<Arc<[u8]>> = Vec::new();
+        'outer: for member in first_set.iter() {
+            for &key in &keys[1..] {
+                match self.data.get(key) {
+                    Some(Value::Set(set)) => {
+                        if !set.contains(member.as_ref()) {
+                            continue 'outer;
+                        }
+                    }
+                    Some(_) => return Err(()),
+                    None => return Ok(Vec::new()), // empty intersection
+                }
+            }
+            result.push(member.clone());
+        }
+        Ok(result)
+    }
+
+    /// XLEN: return the number of entries in a stream
+    fn stream_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Stream(items)) => Ok(items.len() as i64),
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    /// XREVRANGE: return stream entries in reverse order
+    fn stream_rev_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get(key) {
+            Some(Value::Stream(items)) => {
+                // For XREVRANGE, start is the higher ID and end is the lower ID
+                // "+" means max, "-" means min
+                if start == "+" && end == "-" {
+                    let mut reversed = items.clone();
+                    reversed.reverse();
+                    return Ok(reversed);
+                }
+                Ok(Vec::new())
+            }
+            Some(_) => Err(()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// XDEL: remove entries by ID
+    fn stream_del(&mut self, key: &[u8], ids: &[&str]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        match self.data.get_mut(key) {
+            Some(Value::Stream(items)) => {
+                let before = items.len();
+                items.retain(|(id, _)| !ids.contains(&id.as_str()));
+                Ok((before - items.len()) as i64)
+            }
+            Some(_) => Err(()),
+            None => Ok(0),
+        }
+    }
+
+    fn get_string(&mut self, key: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -518,11 +759,11 @@ impl Db {
         }
     }
 
-    pub fn set_string(&mut self, key: Vec<u8>, value: Vec<u8>, expire_at_ms: Option<u64>) {
+    fn set_string(&mut self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
         self.set(key, Value::String(value), expire_at_ms);
     }
 
-    pub fn set_nx(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, ()> {
+    fn set_nx(&mut self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(&key) {
             self.remove(&key);
         }
@@ -533,24 +774,28 @@ impl Db {
         Ok(true)
     }
 
-    pub fn append(&mut self, key: Vec<u8>, value: &[u8]) -> Result<i64, ()> {
+    fn append(&mut self, key: Vec<u8>, value: &[u8]) -> Result<i64, ()> {
         if self.is_expired(&key) {
             self.remove(&key);
         }
         match self.data.get_mut(&key) {
             Some(Value::String(buf)) => {
-                buf.extend_from_slice(value);
-                Ok(buf.len() as i64)
+                let mut v = Vec::with_capacity(buf.len() + value.len());
+                v.extend_from_slice(buf);
+                v.extend_from_slice(value);
+                let len = v.len();
+                *buf = Arc::from(v);
+                Ok(len as i64)
             }
             Some(_) => Err(()),
             None => {
-                self.data.insert(key.clone(), Value::String(value.to_vec()));
+                self.data.insert(key.clone(), Value::String(Arc::from(value)));
                 Ok(value.len() as i64)
             }
         }
     }
 
-    pub fn incr_by(&mut self, key: &[u8], delta: i64) -> Result<i64, ()> {
+    fn incr_by(&mut self, key: &[u8], delta: i64) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -558,7 +803,9 @@ impl Db {
             Some(Value::String(buf)) => {
                 let n = parse_i64_bytes(buf)?;
                 let next = n.saturating_add(delta);
-                write_i64_bytes(buf, next);
+                let mut out = Vec::with_capacity(20);
+                write_i64_bytes(&mut out, next);
+                *buf = Arc::from(out);
                 Ok(next)
             }
             Some(_) => Err(()),
@@ -566,13 +813,13 @@ impl Db {
                 let next = delta;
                 let mut out = Vec::with_capacity(20);
                 write_i64_bytes(&mut out, next);
-                self.data.insert(key.to_vec(), Value::String(out));
+                self.data.insert(key.to_vec(), Value::String(Arc::from(out)));
                 Ok(next)
             }
         }
     }
 
-    pub fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+    fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -583,7 +830,7 @@ impl Db {
         }
     }
 
-    pub fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
+    fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -594,7 +841,7 @@ impl Db {
         }
     }
 
-    pub fn hash_del(&mut self, key: &[u8], fields: &[Arc<[u8]>]) -> Result<i64, ()> {
+    fn hash_del(&mut self, key: &[u8], fields: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -617,7 +864,7 @@ impl Db {
         }
     }
 
-    pub fn hash_len(&mut self, key: &[u8]) -> Result<i64, ()> {
+    fn hash_len(&mut self, key: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -628,7 +875,7 @@ impl Db {
         }
     }
 
-    pub fn hash_exists(&mut self, key: &[u8], field: &[u8]) -> Result<bool, ()> {
+    fn hash_exists(&mut self, key: &[u8], field: &[u8]) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -639,7 +886,7 @@ impl Db {
         }
     }
 
-    pub fn hash_getall(&mut self, key: &[u8]) -> Result<Vec<(Arc<[u8]>, Arc<[u8]>)>, ()> {
+    fn hash_getall(&mut self, key: &[u8]) -> Result<Vec<(Arc<[u8]>, Arc<[u8]>)>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -656,7 +903,7 @@ impl Db {
         }
     }
 
-    pub fn set_add(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
+    fn set_add(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -675,7 +922,7 @@ impl Db {
         }
     }
 
-    pub fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
+    fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -698,7 +945,7 @@ impl Db {
         }
     }
 
-    pub fn set_members(&mut self, key: &[u8]) -> Result<Vec<Arc<[u8]>>, ()> {
+    fn set_members(&mut self, key: &[u8]) -> Result<Vec<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -709,7 +956,7 @@ impl Db {
         }
     }
 
-    pub fn set_is_member(&mut self, key: &[u8], member: &[u8]) -> Result<bool, ()> {
+    fn set_is_member(&mut self, key: &[u8], member: &[u8]) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -720,7 +967,7 @@ impl Db {
         }
     }
 
-    pub fn set_card(&mut self, key: &[u8]) -> Result<i64, ()> {
+    fn set_card(&mut self, key: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -731,7 +978,7 @@ impl Db {
         }
     }
 
-    pub fn set_move(&mut self, source: &[u8], dest: &[u8], member: &[u8]) -> Result<bool, ()> {
+    fn set_move(&mut self, source: &[u8], dest: &[u8], member: &[u8]) -> Result<bool, ()> {
         if self.is_expired(source) {
             self.remove(source);
         }
@@ -762,7 +1009,7 @@ impl Db {
         }
     }
 
-    pub fn zadd(&mut self, key: &[u8], score: f64, member: Vec<u8>) -> Result<bool, ()> {
+    fn zadd(&mut self, key: &[u8], score: f64, member: Vec<u8>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -773,7 +1020,7 @@ impl Db {
         }
     }
 
-    pub fn zrem(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+    fn zrem(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -796,7 +1043,7 @@ impl Db {
         }
     }
 
-    pub fn zcard(&mut self, key: &[u8]) -> Result<i64, ()> {
+    fn zcard(&mut self, key: &[u8]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -807,7 +1054,7 @@ impl Db {
         }
     }
 
-    pub fn zrange(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
+    fn zrange(&mut self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -854,7 +1101,7 @@ impl Db {
         }
     }
 
-    pub fn stream_add(&mut self, key: &[u8], id: &str, fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<String, ()> {
+    fn stream_add(&mut self, key: &[u8], id: &str, fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<String, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -872,7 +1119,7 @@ impl Db {
         }
     }
 
-    pub fn stream_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+    fn stream_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
@@ -889,10 +1136,359 @@ impl Db {
     }
 
     fn is_expired(&self, key: &[u8]) -> bool {
+        if self.expires.is_empty() {
+            return false;
+        }
         if let Some(&ts) = self.expires.get(key) {
             return ts <= now_ms();
         }
         false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Db: sharded delegation layer
+// ---------------------------------------------------------------------------
+// All public methods take &self and lock only the relevant shard(s).
+// For multi-key operations that may span shards, locks are acquired in shard
+// index order to prevent deadlocks.
+// ---------------------------------------------------------------------------
+
+impl Db {
+    // --- core key operations (single shard) ---
+
+    pub fn get(&self, key: &[u8]) -> Option<Value> {
+        self.shard(key).get(key)
+    }
+
+    pub fn set(&self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
+        self.shard(&key).set(key, value, expire_at_ms);
+    }
+
+    pub fn set_with_expire_at(&self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
+        self.shard(&key).set_with_expire_at(key, value, expire_at_ms);
+    }
+
+    pub fn remove(&self, key: &[u8]) -> bool {
+        self.shard(key).remove(key)
+    }
+
+    pub fn exists(&self, key: &[u8]) -> bool {
+        self.shard(key).exists(key)
+    }
+
+    pub fn ttl_ms(&self, key: &[u8]) -> Option<i64> {
+        self.shard(key).ttl_ms(key)
+    }
+
+    pub fn set_expire_ms(&self, key: &[u8], ttl_ms: u64) -> bool {
+        self.shard(key).set_expire_ms(key, ttl_ms)
+    }
+
+    pub fn persist(&self, key: &[u8]) -> i64 {
+        self.shard(key).persist(key)
+    }
+
+    pub fn value_type(&self, key: &[u8]) -> Option<&'static str> {
+        self.shard(key).value_type(key)
+    }
+
+    // --- all-shard operations ---
+
+    pub fn purge_expired_all(&self) {
+        for shard in &self.shards {
+            shard.lock().unwrap().purge_expired_all();
+        }
+    }
+
+    pub fn snapshot_items(&self) -> Vec<(Vec<u8>, Value, Option<u64>)> {
+        let mut out = Vec::new();
+        for shard in &self.shards {
+            let mut s = shard.lock().unwrap();
+            out.extend(s.snapshot_items());
+        }
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        let mut total = 0;
+        for shard in &self.shards {
+            total += shard.lock().unwrap().len();
+        }
+        total
+    }
+
+    pub fn keys(&self) -> Vec<Vec<u8>> {
+        let mut all = Vec::new();
+        for shard in &self.shards {
+            all.extend(shard.lock().unwrap().keys());
+        }
+        all
+    }
+
+    pub fn keys_matching(&self, pattern: &[u8]) -> Vec<Vec<u8>> {
+        let mut all = Vec::new();
+        for shard in &self.shards {
+            all.extend(shard.lock().unwrap().keys_matching(pattern));
+        }
+        all.sort();
+        all
+    }
+
+    pub fn flush(&self) -> usize {
+        let mut total = 0;
+        for shard in &self.shards {
+            total += shard.lock().unwrap().flush();
+        }
+        total
+    }
+
+    // --- string operations ---
+
+    pub fn get_string(&self, key: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
+        self.shard(key).get_string(key)
+    }
+
+    pub fn set_string(&self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
+        self.shard(&key).set_string(key, value, expire_at_ms);
+    }
+
+    pub fn set_nx(&self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
+        self.shard(&key).set_nx(key, value)
+    }
+
+    pub fn append(&self, key: Vec<u8>, value: &[u8]) -> Result<i64, ()> {
+        self.shard(&key).append(key, value)
+    }
+
+    pub fn incr_by(&self, key: &[u8], delta: i64) -> Result<i64, ()> {
+        self.shard(key).incr_by(key, delta)
+    }
+
+    // --- list operations ---
+
+    pub fn list_push(&self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+        self.shard(key).list_push(key, values, left)
+    }
+
+    pub fn list_pop(&self, key: &[u8], left: bool) -> Result<Option<Arc<[u8]>>, ()> {
+        self.shard(key).list_pop(key, left)
+    }
+
+    pub fn list_range(&self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Arc<[u8]>>, ()> {
+        self.shard(key).list_range(key, start, stop)
+    }
+
+    pub fn list_len(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).list_len(key)
+    }
+
+    pub fn list_index(&self, key: &[u8], index: i64) -> Result<Option<Arc<[u8]>>, ()> {
+        self.shard(key).list_index(key, index)
+    }
+
+    pub fn list_set(&self, key: &[u8], index: i64, value: &[u8]) -> Result<(), ()> {
+        self.shard(key).list_set(key, index, value)
+    }
+
+    pub fn list_insert(&self, key: &[u8], before: bool, pivot: &[u8], value: &[u8]) -> Result<i64, ()> {
+        self.shard(key).list_insert(key, before, pivot, value)
+    }
+
+    pub fn list_rem(&self, key: &[u8], count: i64, value: &[u8]) -> Result<i64, ()> {
+        self.shard(key).list_rem(key, count, value)
+    }
+
+    // --- hash operations ---
+
+    pub fn hash_set(&self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+        self.shard(key).hash_set(key, field, value)
+    }
+
+    pub fn hash_get(&self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
+        self.shard(key).hash_get(key, field)
+    }
+
+    pub fn hash_del(&self, key: &[u8], fields: &[Arc<[u8]>]) -> Result<i64, ()> {
+        self.shard(key).hash_del(key, fields)
+    }
+
+    pub fn hash_len(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).hash_len(key)
+    }
+
+    pub fn hash_exists(&self, key: &[u8], field: &[u8]) -> Result<bool, ()> {
+        self.shard(key).hash_exists(key, field)
+    }
+
+    pub fn hash_getall(&self, key: &[u8]) -> Result<Vec<(Arc<[u8]>, Arc<[u8]>)>, ()> {
+        self.shard(key).hash_getall(key)
+    }
+
+    // --- set operations ---
+
+    pub fn set_add(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
+        self.shard(key).set_add(key, members)
+    }
+
+    pub fn set_remove(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
+        self.shard(key).set_remove(key, members)
+    }
+
+    pub fn set_members(&self, key: &[u8]) -> Result<Vec<Arc<[u8]>>, ()> {
+        self.shard(key).set_members(key)
+    }
+
+    pub fn set_is_member(&self, key: &[u8], member: &[u8]) -> Result<bool, ()> {
+        self.shard(key).set_is_member(key, member)
+    }
+
+    pub fn set_card(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).set_card(key)
+    }
+
+    /// SMOVE across shards: lock both shard buckets in index order to avoid deadlock.
+    pub fn set_move(&self, source: &[u8], dest: &[u8], member: &[u8]) -> Result<bool, ()> {
+        let si = Self::shard_index(source);
+        let di = Self::shard_index(dest);
+        if si == di {
+            return self.shards[si].lock().unwrap().set_move(source, dest, member);
+        }
+        // Lock in ascending index order to prevent deadlock.
+        let (first, second) = if si < di { (si, di) } else { (di, si) };
+        let mut g1 = self.shards[first].lock().unwrap();
+        let mut g2 = self.shards[second].lock().unwrap();
+        let (src, dst) = if si < di { (&mut *g1, &mut *g2) } else { (&mut *g2, &mut *g1) };
+        // Inline cross-shard move: remove from source shard, add in dest shard.
+        if src.is_expired(source) { src.remove(source); }
+        if dst.is_expired(dest) { dst.remove(dest); }
+        let removed = match src.data.get_mut(source) {
+            Some(Value::Set(set)) => set.remove(member),
+            Some(_) => return Err(()),
+            None => return Ok(false),
+        };
+        if !removed { return Ok(false); }
+        if let Some(Value::Set(set)) = src.data.get(source) {
+            if set.is_empty() {
+                src.data.remove(source);
+                src.expires.remove(source);
+            }
+        }
+        let entry = dst.data.entry(dest.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
+        match entry {
+            Value::Set(set) => { set.insert(Arc::from(member)); Ok(true) }
+            _ => Err(()),
+        }
+    }
+
+    // --- sorted set operations ---
+
+    pub fn zadd(&self, key: &[u8], score: f64, member: Vec<u8>) -> Result<bool, ()> {
+        self.shard(key).zadd(key, score, member)
+    }
+
+    pub fn zrem(&self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
+        self.shard(key).zrem(key, members)
+    }
+
+    pub fn zcard(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).zcard(key)
+    }
+
+    pub fn zrange(&self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, ()> {
+        self.shard(key).zrange(key, start, stop)
+    }
+
+    // --- stream operations ---
+
+    pub fn stream_add(&self, key: &[u8], id: &str, fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<String, ()> {
+        self.shard(key).stream_add(key, id, fields)
+    }
+
+    pub fn stream_range(&self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        self.shard(key).stream_range(key, start, end)
+    }
+
+    // --- additional list operations ---
+
+    pub fn list_push_x(&self, key: &[u8], values: &[Arc<[u8]>], left: bool) -> Result<i64, ()> {
+        self.shard(key).list_push_x(key, values, left)
+    }
+
+    pub fn list_trim(&self, key: &[u8], start: i64, stop: i64) -> Result<(), ()> {
+        self.shard(key).list_trim(key, start, stop)
+    }
+
+    // --- additional hash operations ---
+
+    pub fn hash_incr_by(&self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
+        self.shard(key).hash_incr_by(key, field, delta)
+    }
+
+    pub fn hash_set_nx(&self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
+        self.shard(key).hash_set_nx(key, field, value)
+    }
+
+    // --- additional set operations ---
+
+    pub fn set_union(&self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        // All keys may hash to different shards; for simplicity, lock the first
+        // shard and delegate.  Since Shard::set_union iterates data directly,
+        // we need all keys in the same shard.  Instead, collect members from
+        // each shard individually and merge at the Db level.
+        let mut result: HashSet<Arc<[u8]>> = HashSet::new();
+        for &key in keys {
+            match self.shard(key).set_members(key) {
+                Ok(members) => {
+                    for m in members {
+                        result.insert(m);
+                    }
+                }
+                Err(_) => return Err(()),
+            }
+        }
+        Ok(result.into_iter().collect())
+    }
+
+    pub fn set_inter(&self, keys: &[&[u8]]) -> Result<Vec<Arc<[u8]>>, ()> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Get members from first set
+        let first = match self.shard(keys[0]).set_members(keys[0]) {
+            Ok(m) => m,
+            Err(_) => return Err(()),
+        };
+        if first.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Filter by membership in all other sets
+        let mut result = Vec::new();
+        'outer: for member in &first {
+            for &key in &keys[1..] {
+                match self.shard(key).set_is_member(key, member.as_ref()) {
+                    Ok(true) => {}
+                    Ok(false) => continue 'outer,
+                    Err(_) => return Err(()),
+                }
+            }
+            result.push(member.clone());
+        }
+        Ok(result)
+    }
+
+    // --- additional stream operations ---
+
+    pub fn stream_len(&self, key: &[u8]) -> Result<i64, ()> {
+        self.shard(key).stream_len(key)
+    }
+
+    pub fn stream_rev_range(&self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
+        self.shard(key).stream_rev_range(key, start, end)
+    }
+
+    pub fn stream_del(&self, key: &[u8], ids: &[&str]) -> Result<i64, ()> {
+        self.shard(key).stream_del(key, ids)
     }
 }
 

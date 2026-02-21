@@ -1,13 +1,13 @@
 //! Persistence layer for mini-redis (snapshot + AOF).
 #![allow(dead_code)]
 
-use async_std::io;
+use std::io;
 #[cfg(feature = "mini-redis-libsql")]
-use async_std::channel::{bounded, Sender, Receiver};
+use std::sync::Arc;
 #[cfg(feature = "mini-redis-libsql")]
-use async_std::future::timeout;
+use tokio::sync::mpsc::{self, Sender, Receiver};
 #[cfg(feature = "mini-redis-libsql")]
-use async_std::task;
+use tokio::time::timeout;
 #[cfg(feature = "mini-redis-libsql")]
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ impl Persist {
         }
     }
 
-    pub async fn load(&self, _dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn load(&self, _dbs: &[Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
@@ -54,7 +54,7 @@ impl Persist {
         }
     }
 
-    pub async fn snapshot(&self, _dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn snapshot(&self, _dbs: &[Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
@@ -84,9 +84,9 @@ impl LibsqlPersist {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
         let aof_tx = if aof_enabled {
-            let (tx, rx) = bounded::<AofEntry>(AOF_QUEUE_CAPACITY);
+            let (tx, rx) = mpsc::channel::<AofEntry>(AOF_QUEUE_CAPACITY);
             let path = path.to_string();
-            task::spawn(async move {
+            tokio::spawn(async move {
                 run_aof_worker(path, rx).await;
             });
             Some(tx)
@@ -134,7 +134,7 @@ impl LibsqlPersist {
 
 #[cfg(feature = "mini-redis-libsql")]
 impl LibsqlPersist {
-    async fn load(&self, dbs: &mut [Db]) -> io::Result<()> {
+    async fn load(&self, dbs: &[Db]) -> io::Result<()> {
         let mut rows = self.conn.query("SELECT db, key, type, value, expires_at_ms FROM kv", ()).await.map_err(to_io)?;
         while let Some(row) = rows.next().await.map_err(to_io)? {
             let db_idx: i64 = row.get(0).map_err(to_io)?;
@@ -142,10 +142,10 @@ impl LibsqlPersist {
             let typ: i64 = row.get(2).map_err(to_io)?;
             let value: Option<Vec<u8>> = row.get(3).map_err(to_io)?;
             let exp: Option<i64> = row.get(4).map_err(to_io)?;
-            if let Some(db) = dbs.get_mut(db_idx as usize) {
+            if let Some(db) = dbs.get(db_idx as usize) {
                 match typ {
                     0 => {
-                        db.set_with_expire_at(key, Value::String(value.unwrap_or_default()), exp.map(|v| v as u64));
+                        db.set_with_expire_at(key, Value::String(Arc::from(value.unwrap_or_default())), exp.map(|v| v as u64));
                     }
                     1 => {
                         let list = load_list(&self.conn, db_idx as usize, &key).await?;
@@ -186,10 +186,10 @@ impl LibsqlPersist {
             };
             match tx.try_send(entry) {
                 Ok(()) => {}
-                Err(async_std::channel::TrySendError::Full(entry)) => {
+                Err(mpsc::error::TrySendError::Full(entry)) => {
                     tx.send(entry).await.map_err(to_io)?;
                 }
-                Err(async_std::channel::TrySendError::Closed(_)) => {
+                Err(mpsc::error::TrySendError::Closed(_)) => {
                     return Err(io::Error::new(io::ErrorKind::BrokenPipe, "AOF channel closed"));
                 }
             }
@@ -201,7 +201,7 @@ impl LibsqlPersist {
         }
     }
 
-    async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
+    async fn snapshot(&self, dbs: &[Db]) -> io::Result<()> {
         self.conn.execute("BEGIN", ()).await.map_err(to_io)?;
         if let Err(err) = self.snapshot_inner(dbs).await {
             let _ = self.conn.execute("ROLLBACK", ()).await;
@@ -211,21 +211,21 @@ impl LibsqlPersist {
         Ok(())
     }
 
-    async fn snapshot_inner(&self, dbs: &mut [Db]) -> io::Result<()> {
+    async fn snapshot_inner(&self, dbs: &[Db]) -> io::Result<()> {
         self.conn.execute("DELETE FROM kv", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM list_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM set_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM hash_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM zset_items", ()).await.map_err(to_io)?;
         self.conn.execute("DELETE FROM stream_entries", ()).await.map_err(to_io)?;
-        for (idx, db) in dbs.iter_mut().enumerate() {
+        for (idx, db) in dbs.iter().enumerate() {
             for (key, value, exp) in db.snapshot_items() {
                 let exp_val = exp.map(|v| v as i64);
                 match value {
                     Value::String(bytes) => {
                         self.conn.execute(
                             "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key, 0i64, bytes, exp_val),
+                            (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
                     Value::List(items) => {
@@ -303,7 +303,7 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
+async fn run_aof_worker(path: String, mut rx: Receiver<AofEntry>) {
     let db = match libsql::Database::open(&path) {
         Ok(db) => db,
         Err(err) => {
@@ -320,15 +320,15 @@ async fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
     };
     loop {
         let first = match rx.recv().await {
-            Ok(entry) => entry,
-            Err(_) => break,
+            Some(entry) => entry,
+            None => break,
         };
         let mut batch = Vec::with_capacity(AOF_BATCH_MAX);
         batch.push(first);
         while batch.len() < AOF_BATCH_MAX {
             match timeout(Duration::from_millis(AOF_BATCH_WAIT_MS), rx.recv()).await {
-                Ok(Ok(entry)) => batch.push(entry),
-                Ok(Err(_)) => break,
+                Ok(Some(entry)) => batch.push(entry),
+                Ok(None) => break,
                 Err(_) => break,
             }
         }
