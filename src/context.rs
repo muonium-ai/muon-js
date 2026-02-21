@@ -345,13 +345,16 @@ impl Context {
     /// Called from js_set_property_str when the target env matches the frame's var_env.
     #[inline(always)]
     pub fn update_call_frame_slot(&mut self, env: Value, name: &str, value: Value) {
-        if let Some(frame) = self.call_frames.last_mut() {
+        // Update the matching frame, not just the current one. Closures can
+        // assign into parent function environments.
+        for frame in self.call_frames.iter_mut().rev() {
             if env == frame.var_env {
                 if let Some(slot) = frame.slot_map.get_mut(name) {
                     *slot = value;
                 } else {
                     frame.slot_map.insert(name.to_string(), value);
                 }
+                break;
             }
         }
     }

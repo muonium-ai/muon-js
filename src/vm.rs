@@ -110,9 +110,23 @@ impl VM {
                     if atom <= 0 {
                         return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode global name not string");
                     }
-                    let val = ctx
+                    let mut val = ctx
                         .get_property_atom_id(global, atom as u32)
                         .unwrap_or(JSValue::UNDEFINED);
+                    if val.is_undefined() {
+                        // VM global loads bypass eval_value(), so unresolved globals
+                        // need builtin marker fallback (Math, JSON, console, parseInt...).
+                        if let Some(name_bytes) = ctx.string_bytes(name_val) {
+                            let name_buf = name_bytes.to_vec();
+                            if !ctx.has_property_str(global, &name_buf) {
+                                if let Ok(name) = core::str::from_utf8(&name_buf) {
+                                    if let Some(resolved) = crate::evals::eval_value(ctx, name) {
+                                        val = resolved;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     stack.push(val);
                 }
 

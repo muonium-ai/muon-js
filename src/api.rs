@@ -3303,7 +3303,7 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                                 LValueKey::Index(idx) => js_set_property_uint32(ctx, base, idx, result),
                                 LValueKey::Name(name) => js_set_property_str(ctx, base, &name, result),
                             };
-                            if res.is_exception() { return None; }
+                            if res.is_exception() { return Some(Value::EXCEPTION); }
                             return Some(result);
                         }
                     }
@@ -3339,11 +3339,15 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
             }
         }
         let res = match key {
-            LValueKey::Index(idx) => js_set_property_uint32(ctx, base, idx, rhs_val),
-            LValueKey::Name(name) => js_set_property_str(ctx, base, &name, rhs_val),
+            LValueKey::Index(idx) => {
+                js_set_property_uint32(ctx, base, idx, rhs_val)
+            }
+            LValueKey::Name(name) => {
+                js_set_property_str(ctx, base, &name, rhs_val)
+            }
         };
         if res.is_exception() {
-            return None;
+            return Some(Value::EXCEPTION);
         }
         return Some(rhs_val);
     }
@@ -8122,6 +8126,18 @@ pub fn eval_function_body_cached(ctx: &mut JSContextImpl, stmts: &[String]) -> O
             _ => false,
         };
         if !is_keyword_possible {
+            // Labeled statements can start with any identifier, so they can
+            // hit this fast path (e.g. "x: { break x; }"). Handle them before
+            // falling back to expression parsing.
+            if trimmed.as_bytes().contains(&b':') {
+                if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+                    last = label_result?;
+                    if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                        return Some(last);
+                    }
+                    continue;
+                }
+            }
             // Simple expression statement — go directly to eval_expr
             match eval_expr(ctx, trimmed) {
                 Some(val) => {

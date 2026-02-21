@@ -1192,6 +1192,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         Some(val) => val,
         None => {
             if let Some(body) = catch_body {
+                let exception_val = ctx.get_exception();
                 ctx.set_exception(Value::UNDEFINED);
 
                 let parent_env = ctx.current_env();
@@ -1199,7 +1200,7 @@ pub fn parse_try_catch(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                 js_set_property_str(ctx, catch_env, "__parent__", parent_env);
                 ctx.push_env(catch_env);
                 if let Some(param) = catch_param {
-                    js_set_property_str(ctx, catch_env, param, Value::UNDEFINED);
+                    js_set_property_str(ctx, catch_env, param, exception_val);
                 }
 
                 let out = match eval_block(ctx, body) {
@@ -1478,8 +1479,26 @@ pub fn parse_lvalue(ctx: &mut JSContextImpl, src: &str) -> Option<(JSValue, LVal
                 let owned = bytes.to_vec();
                 let name = core::str::from_utf8(&owned).ok()?.to_string();
                 LValueKey::Name(name)
+            } else if let Some(f) = ctx.float_value(key_val) {
+                // Non-integer numeric key (e.g. 1.2, NaN, Infinity) — convert to string
+                let name = if f.is_nan() {
+                    "NaN".to_string()
+                } else if f.is_infinite() {
+                    if f > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() }
+                } else {
+                    format!("{}", f)
+                };
+                LValueKey::Name(name)
             } else {
-                return None;
+                // Fallback: convert value to string for property name
+                let str_val = crate::api::js_to_string(ctx, key_val);
+                if let Some(bytes) = ctx.string_bytes(str_val) {
+                    let owned = bytes.to_vec();
+                    let name = core::str::from_utf8(&owned).ok()?.to_string();
+                    LValueKey::Name(name)
+                } else {
+                    return None;
+                }
             };
             if next.trim().is_empty() {
                 return Some((base, key));
@@ -2021,9 +2040,27 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     };
     let result = match bc_cached {
         Some(Some(ref module)) => {
-            // Already compiled — run via VM
-            let mut vm = crate::vm::VM::new();
-            Some(vm.run_module_with_locals(ctx, module, args))
+            let has_unsupported_ops = module
+                .functions
+                .get(module.main)
+                .map(|f| {
+                    f.code.iter().any(|ins| {
+                        matches!(
+                            ins.op,
+                            crate::bytecode::OpCode::GetProp
+                                | crate::bytecode::OpCode::GetElem
+                                | crate::bytecode::OpCode::SetProp
+                        )
+                    })
+                })
+                .unwrap_or(true);
+            if has_unsupported_ops {
+                None
+            } else {
+                // Already compiled — run via VM
+                let mut vm = crate::vm::VM::new();
+                Some(vm.run_module_with_locals(ctx, module, args))
+            }
         }
         Some(None) => {
             // Previously tried and failed to compile — fall back
@@ -2035,10 +2072,29 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
             sc.add_params(&param_names);
             match sc.compile_stmts(&cached_stmts) {
                 Ok(module) => {
-                    let mut vm = crate::vm::VM::new();
-                    let result = vm.run_module_with_locals(ctx, &module, args);
-                    ctx.set_bytecode_cache(body_key, Some(module));
-                    Some(result)
+                    let has_unsupported_ops = module
+                        .functions
+                        .get(module.main)
+                        .map(|f| {
+                            f.code.iter().any(|ins| {
+                                matches!(
+                                    ins.op,
+                                    crate::bytecode::OpCode::GetProp
+                                        | crate::bytecode::OpCode::GetElem
+                                        | crate::bytecode::OpCode::SetProp
+                                )
+                            })
+                        })
+                        .unwrap_or(true);
+                    if has_unsupported_ops {
+                        ctx.set_bytecode_cache(body_key, None);
+                        None
+                    } else {
+                        let mut vm = crate::vm::VM::new();
+                        let result = vm.run_module_with_locals(ctx, &module, args);
+                        ctx.set_bytecode_cache(body_key, Some(module));
+                        Some(result)
+                    }
                 }
                 Err(_) => {
                     ctx.set_bytecode_cache(body_key, None);
