@@ -279,12 +279,19 @@ async fn handle_client(
                         results.push(handle_flushall_command(&dbs_state, &persist_state, &qargs).await);
                         continue;
                     }
+                    if qcmd == "EVAL" || qcmd == "EVALSHA" {
+                        results.push(handle_eval_command(
+                            &mut local_state, &dbs_state, db_count, &persist_state,
+                            &script_cache_state, &mut current_db, &mut script_runtime,
+                            &qcmd, &qargs,
+                        ));
+                        continue;
+                    }
                     let mut db_guard = dbs_state[current_db].lock().await;
                     let resp = handle_command(
                         &mut local_state,
                         &mut *db_guard,
                         db_count,
-                        &dbs_state,
                         &persist_state,
                         &script_cache_state,
                         &mut current_db,
@@ -309,13 +316,18 @@ async fn handle_client(
             FastResponse::Value(resp)
         } else if cmd == "FLUSHALL" {
             FastResponse::Value(handle_flushall_command(&dbs_state, &persist_state, &args[1..]).await)
+        } else if cmd == "EVAL" || cmd == "EVALSHA" {
+            FastResponse::Value(handle_eval_command(
+                &mut local_state, &dbs_state, db_count, &persist_state,
+                &script_cache_state, &mut current_db, &mut script_runtime,
+                cmd, &args[1..],
+            ))
         } else {
             let mut db_guard = dbs_state[current_db].lock().await;
             let resp = handle_command(
                 &mut local_state,
                 &mut *db_guard,
                 db_count,
-                &dbs_state,
                 &persist_state,
                 &script_cache_state,
                 &mut current_db,
@@ -588,11 +600,31 @@ async fn snapshot_dbs_for_persistence(dbs_state: &Arc<DbsState>) -> Vec<Db> {
     snapshot
 }
 
+fn handle_eval_command(
+    state: &mut ServerState,
+    dbs_state: &Arc<DbsState>,
+    db_count: usize,
+    persist_state: &Arc<Mutex<PersistState>>,
+    script_cache_state: &Arc<Mutex<ScriptCacheState>>,
+    db_index: &mut usize,
+    script: &mut Option<ScriptRuntime>,
+    cmd: &str,
+    args: &[Arc<[u8]>],
+) -> RespValue {
+    if script.is_none() {
+        *script = Some(ScriptRuntime::new(&state.script_runtime));
+    }
+    if cmd == "EVAL" {
+        eval_script(state, dbs_state, db_count, persist_state, script_cache_state, db_index, script.as_mut().unwrap(), args, true)
+    } else {
+        eval_script_sha(state, dbs_state, db_count, persist_state, script_cache_state, db_index, script.as_mut().unwrap(), args)
+    }
+}
+
 fn handle_command(
     state: &mut ServerState,
     db: &mut Db,
     db_count: usize,
-    dbs_state: &Arc<DbsState>,
     persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
@@ -1401,36 +1433,10 @@ fn handle_command(
             RespValue::Error("ERR FLUSHALL requires async context".to_string())
         }
         "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
-        "EVAL" => {
-            if script.is_none() {
-                *script = Some(ScriptRuntime::new(&state.script_runtime));
-            }
-            eval_script(
-                state,
-                dbs_state,
-                db_count,
-                persist_state,
-                script_cache_state,
-                db_index,
-                script.as_mut().unwrap(),
-                args,
-                true,
-            )
-        }
-        "EVALSHA" => {
-            if script.is_none() {
-                *script = Some(ScriptRuntime::new(&state.script_runtime));
-            }
-            eval_script_sha(
-                state,
-                dbs_state,
-                db_count,
-                persist_state,
-                script_cache_state,
-                db_index,
-                script.as_mut().unwrap(),
-                args,
-            )
+        "EVAL" | "EVALSHA" => {
+            // EVAL/EVALSHA are intercepted before the DB lock in handle_client and EXEC.
+            // Reaching here means a recursive redis.call() tried to invoke EVAL, which is not supported.
+            RespValue::Error("ERR EVAL cannot be used recursively".to_string())
         }
         "SCRIPT" => handle_script_command(script_cache_state, args),
         "CONFIG" => {
@@ -1897,7 +1903,6 @@ fn redis_call(
             state,
             &mut *db_guard,
             db_count,
-            dbs_state,
             persist_state,
             script_cache_state,
             db_index,

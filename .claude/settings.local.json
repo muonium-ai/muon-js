@@ -23,7 +23,10 @@
       "Bash(git stash:*)",
       "Bash(git checkout:*)",
       "Bash(git reset:*)",
-      "Bash(lsof:*)"
+      "Bash(lsof:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(ls:*)"
     ]
   }
 }
