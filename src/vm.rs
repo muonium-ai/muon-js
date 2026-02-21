@@ -137,17 +137,8 @@ impl VM {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
                     // String concatenation if either side is a string
-                    let a_is_str = ctx.string_bytes(a).is_some();
-                    let b_is_str = ctx.string_bytes(b).is_some();
-                    if a_is_str || b_is_str {
-                        let ls = js_to_string(ctx, a);
-                        let rs = js_to_string(ctx, b);
-                        let lb = ctx.string_bytes(ls).unwrap_or(b"");
-                        let rb = ctx.string_bytes(rs).unwrap_or(b"");
-                        let mut out = Vec::with_capacity(lb.len() + rb.len());
-                        out.extend_from_slice(lb);
-                        out.extend_from_slice(rb);
-                        stack.push(js_new_string_len(ctx, &out));
+                    if js_is_string(ctx, a) != 0 || js_is_string(ctx, b) != 0 {
+                        stack.push(vm_concat_strings(ctx, a, b));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
                         let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
@@ -392,14 +383,7 @@ impl VM {
                 OpCode::Concat => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let ls = js_to_string(ctx, a);
-                    let rs = js_to_string(ctx, b);
-                    let lb = ctx.string_bytes(ls).unwrap_or(b"");
-                    let rb = ctx.string_bytes(rs).unwrap_or(b"");
-                    let mut out = Vec::with_capacity(lb.len() + rb.len());
-                    out.extend_from_slice(lb);
-                    out.extend_from_slice(rb);
-                    stack.push(js_new_string_len(ctx, &out));
+                    stack.push(vm_concat_strings(ctx, a, b));
                 }
 
                 OpCode::ToNumber => {
@@ -499,6 +483,23 @@ impl VM {
         }
         JSValue::UNDEFINED
     }
+}
+
+fn vm_concat_strings(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> JSValue {
+    let ls = js_to_string(ctx, a);
+    let rs = js_to_string(ctx, b);
+    let lb = ctx.string_bytes(ls).unwrap_or(b"");
+    let rb = ctx.string_bytes(rs).unwrap_or(b"");
+    if lb.is_empty() {
+        return rs;
+    }
+    if rb.is_empty() {
+        return ls;
+    }
+    let mut out = Vec::with_capacity(lb.len() + rb.len());
+    out.extend_from_slice(lb);
+    out.extend_from_slice(rb);
+    js_new_string_len(ctx, &out)
 }
 
 /// Loose equality (==) for the VM.
