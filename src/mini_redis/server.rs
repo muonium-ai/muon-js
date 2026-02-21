@@ -56,7 +56,7 @@ pub struct ServerState {
 type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<Sender<RespValue>>>;
 type ScriptCacheState = std::collections::HashMap<String, String>;
 type PersistState = Option<Persist>;
-type DbsState = Vec<Mutex<Db>>;
+type DbsState = Vec<Db>;
 
 impl ServerState {
     fn new(script_runtime: ScriptRuntimeConfig) -> Self {
@@ -88,9 +88,9 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
         dbs.push(Db::new());
     }
     if let Some(p) = persist.as_ref() {
-        let _ = p.load(&mut dbs).await;
+        let _ = p.load(&dbs).await;
     }
-    let dbs_state: Arc<DbsState> = Arc::new(dbs.into_iter().map(Mutex::new).collect());
+    let dbs_state: Arc<DbsState> = Arc::new(dbs);
     let state = Arc::new(Mutex::new(ServerState::new(config.script_runtime)));
     let persist_state = Arc::new(Mutex::new(persist));
     let pubsub_state = Arc::new(Mutex::new(PubSubState::new()));
@@ -129,8 +129,7 @@ async fn graceful_shutdown(
 ) {
     eprintln!("mini-redis: shutdown requested");
     if !dbs_state.is_empty() {
-        let mut db0_guard = dbs_state[0].lock().await;
-        let items = db0_guard.snapshot_items();
+        let items = dbs_state[0].snapshot_items();
         let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for (_, value, _) in items.iter() {
             match value {
@@ -155,8 +154,8 @@ async fn graceful_shutdown(
         return;
     }
     if let Some(persist) = persist_guard.as_ref() {
-        let mut snapshot = snapshot_dbs_for_persistence(&dbs_state).await;
-        if let Err(err) = persist.snapshot(&mut snapshot).await {
+        let snapshot = snapshot_dbs_for_persistence(&dbs_state).await;
+        if let Err(err) = persist.snapshot(&snapshot).await {
             eprintln!("mini-redis: persistence failed: {}", err);
         }
     }
@@ -294,10 +293,9 @@ async fn handle_client(
                         ));
                         continue;
                     }
-                    let mut db_guard = dbs_state[current_db].lock().await;
                     let resp = handle_command(
                         &mut local_state,
-                        &mut *db_guard,
+                        &dbs_state[current_db],
                         db_count,
                         &persist_state,
                         &script_cache_state,
@@ -331,10 +329,9 @@ async fn handle_client(
                 cmd, &args[1..],
             ))
         } else {
-            let mut db_guard = dbs_state[current_db].lock().await;
             let resp = handle_command(
                 &mut local_state,
-                &mut *db_guard,
+                &dbs_state[current_db],
                 db_count,
                 &persist_state,
                 &script_cache_state,
@@ -393,8 +390,7 @@ async fn handle_lrange_fast(
         (Some(key), Some(start), Some(stop)) => {
             let start = parse_i64(start.as_ref()).unwrap_or(0);
             let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
-            let mut guard = dbs_state[*db_index].lock().await;
-            let db = &mut *guard;
+            let db = &dbs_state[*db_index];
             match db.list_range(key.as_ref(), start, stop) {
                 Ok(items) => Ok(items),
                 Err(_) => Err(RespValue::Error(
@@ -561,10 +557,10 @@ async fn handle_save_like_command(
         )));
     }
 
-    let mut snapshot_dbs = snapshot_dbs_for_persistence(dbs_state).await;
+    let snapshot_dbs = snapshot_dbs_for_persistence(dbs_state).await;
     let persist_guard = persist_state.lock().await;
     let resp = if let Some(p) = persist_guard.as_ref() {
-        match p.snapshot(&mut snapshot_dbs).await {
+        match p.snapshot(&snapshot_dbs).await {
             Ok(_) => RespValue::Simple("OK".to_string()),
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 RespValue::Error("ERR persistence not configured".to_string())
@@ -586,9 +582,8 @@ async fn handle_flushall_command(
     if !args.is_empty() {
         return RespValue::Error("ERR wrong number of arguments for 'FLUSHALL'".to_string());
     }
-    for db_mutex in dbs_state.iter() {
-        let mut db_guard = db_mutex.lock().await;
-        db_guard.flush();
+    for db in dbs_state.iter() {
+        db.flush();
     }
     if !skip_aof {
         let _ = async_std::task::block_on(async {
@@ -605,10 +600,9 @@ async fn handle_flushall_command(
 
 async fn snapshot_dbs_for_persistence(dbs_state: &Arc<DbsState>) -> Vec<Db> {
     let mut snapshot = Vec::with_capacity(dbs_state.len());
-    for db_mutex in dbs_state.iter() {
-        let mut db_guard = db_mutex.lock().await;
-        let mut cloned = Db::new();
-        for (key, value, expires_at) in db_guard.snapshot_items() {
+    for db in dbs_state.iter() {
+        let cloned = Db::new();
+        for (key, value, expires_at) in db.snapshot_items() {
             cloned.set_with_expire_at(key, value, expires_at);
         }
         snapshot.push(cloned);
@@ -639,7 +633,7 @@ fn handle_eval_command(
 
 fn handle_command(
     state: &mut ServerState,
-    db: &mut Db,
+    db: &Db,
     db_count: usize,
     persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
@@ -684,12 +678,10 @@ fn handle_command(
             _ => RespValue::Error("ERR invalid DB index".to_string()),
         },
         "DBSIZE" => {
-            let db = &mut *db;
             RespValue::Integer(db.len() as i64)
         }
         "GET" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.get_string(key.as_ref()) {
                     Ok(Some(v)) => RespValue::Blob(v.into()),
                     Ok(None) => RespValue::Null,
@@ -700,7 +692,6 @@ fn handle_command(
         },
         "SETNX" => match args.get(0).zip(args.get(1)) {
             Some((key, value)) => {
-                let db = &mut *db;
                 match db.set_nx(key.as_ref().to_vec(), value.as_ref().to_vec()) {
                     Ok(set) => {
                         if set {
@@ -717,7 +708,6 @@ fn handle_command(
             if args.len() < 2 || args.len() % 2 != 0 {
                 return RespValue::Error("ERR wrong number of arguments for 'MSET'".to_string());
             }
-            let db = &mut *db;
             let mut idx = 0;
             while idx + 1 < args.len() {
                 let key = args[idx].as_ref().to_vec();
@@ -732,7 +722,6 @@ fn handle_command(
             if args.is_empty() {
                 return RespValue::Error("ERR wrong number of arguments for 'MGET'".to_string());
             }
-            let db = &mut *db;
             let mut out = Vec::with_capacity(args.len());
             for key in args {
                 match db.get_string(key.as_ref()) {
@@ -745,7 +734,6 @@ fn handle_command(
         }
         "GETSET" => match args.get(0).zip(args.get(1)) {
             Some((key, value)) => {
-                let db = &mut *db;
                 let prev = match db.get_string(key.as_ref()) {
                     Ok(val) => val,
                     Err(_) => {
@@ -763,7 +751,6 @@ fn handle_command(
         },
         "APPEND" => match args.get(0).zip(args.get(1)) {
             Some((key, value)) => {
-                let db = &mut *db;
                 match db.append(key.as_ref().to_vec(), value.as_ref()) {
                     Ok(len) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -776,7 +763,6 @@ fn handle_command(
         },
         "INCR" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.incr_by(key.as_ref(), 1) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -790,7 +776,6 @@ fn handle_command(
         "INCRBY" => match args.get(0).zip(args.get(1)) {
             Some((key, delta)) => {
                 let delta = parse_i64(delta.as_ref()).unwrap_or(0);
-                let db = &mut *db;
                 match db.incr_by(key.as_ref(), delta) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -803,7 +788,6 @@ fn handle_command(
         },
         "DECR" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.incr_by(key.as_ref(), -1) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -817,7 +801,6 @@ fn handle_command(
         "DECRBY" => match args.get(0).zip(args.get(1)) {
             Some((key, delta)) => {
                 let delta = parse_i64(delta.as_ref()).unwrap_or(0);
-                let db = &mut *db;
                 match db.incr_by(key.as_ref(), -delta) {
                     Ok(val) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -830,7 +813,6 @@ fn handle_command(
         },
         "STRLEN" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.get_string(key.as_ref()) {
                     Ok(Some(v)) => RespValue::Integer(v.len() as i64),
                     Ok(None) => RespValue::Integer(0),
@@ -845,7 +827,6 @@ fn handle_command(
             }
             let key = &args[0];
             let mut added = 0;
-            let db = &mut *db;
             let mut idx = 1;
             while idx + 1 < args.len() {
                 let field = args[idx].clone();
@@ -867,7 +848,6 @@ fn handle_command(
         }
         "HGET" => match (args.get(0), args.get(1)) {
             (Some(key), Some(field)) => {
-                let db = &mut *db;
                 match db.hash_get(key.as_ref(), field.as_ref()) {
                     Ok(Some(v)) => RespValue::Blob(v),
                     Ok(None) => RespValue::Null,
@@ -881,7 +861,6 @@ fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'HDEL'".to_string());
             }
             let key = &args[0];
-            let db = &mut *db;
             match db.hash_del(key.as_ref(), &args[1..]) {
                 Ok(removed) => {
                     log_cmd!(state, *db_index, cmd, args);
@@ -892,7 +871,6 @@ fn handle_command(
         }
         "HGETALL" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.hash_getall(key.as_ref()) {
                     Ok(items) => {
                         let mut out = Vec::with_capacity(items.len() * 2);
@@ -909,7 +887,6 @@ fn handle_command(
         },
         "HLEN" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.hash_len(key.as_ref()) {
                     Ok(len) => RespValue::Integer(len),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -919,7 +896,6 @@ fn handle_command(
         },
         "HEXISTS" => match (args.get(0), args.get(1)) {
             (Some(key), Some(field)) => {
-                let db = &mut *db;
                 match db.hash_exists(key.as_ref(), field.as_ref()) {
                     Ok(exists) => RespValue::Integer(if exists { 1 } else { 0 }),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -932,7 +908,6 @@ fn handle_command(
                 return RespValue::Error(format!("ERR wrong number of arguments for '{}'", cmd));
             }
             let key = &args[0];
-            let db = &mut *db;
             match db.list_push(key.as_ref(), &args[1..], cmd == "LPUSH") {
                 Ok(len) => {
                     log_cmd!(state, *db_index, cmd, args);
@@ -955,7 +930,6 @@ fn handle_command(
             } else {
                 None
             };
-            let db = &mut *db;
             if let Some(count) = count {
                 let mut out = Vec::new();
                 for _ in 0..count {
@@ -993,7 +967,6 @@ fn handle_command(
             (Some(key), Some(start), Some(stop)) => {
                 let start = parse_i64(start.as_ref()).unwrap_or(0);
                 let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
-                let db = &mut *db;
                 match db.list_range(key.as_ref(), start, stop) {
                     Ok(items) => RespValue::Array(items.into_iter().map(RespValue::Blob).collect()),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1003,7 +976,6 @@ fn handle_command(
         },
         "LLEN" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.list_len(key.as_ref()) {
                     Ok(len) => RespValue::Integer(len),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1017,7 +989,6 @@ fn handle_command(
                     Some(v) => v,
                     None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
                 };
-                let db = &mut *db;
                 match db.list_index(key.as_ref(), idx) {
                     Ok(Some(v)) => RespValue::Blob(v),
                     Ok(None) => RespValue::Null,
@@ -1032,7 +1003,6 @@ fn handle_command(
                     Some(v) => v,
                     None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
                 };
-                let db = &mut *db;
                 match db.list_set(key.as_ref(), idx, value.as_ref()) {
                     Ok(()) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -1050,7 +1020,6 @@ fn handle_command(
                     b"AFTER" => false,
                     _ => return RespValue::Error("ERR syntax error".to_string()),
                 };
-                let db = &mut *db;
                 match db.list_insert(key.as_ref(), before, pivot.as_ref(), value.as_ref()) {
                     Ok(len) => {
                         if len > 0 {
@@ -1069,7 +1038,6 @@ fn handle_command(
                     Some(v) => v,
                     None => return RespValue::Error("ERR value is not an integer or out of range".to_string()),
                 };
-                let db = &mut *db;
                 match db.list_rem(key.as_ref(), cnt, value.as_ref()) {
                     Ok(removed) => {
                         if removed > 0 {
@@ -1087,7 +1055,6 @@ fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'SADD'".to_string());
             }
             let key = &args[0];
-            let db = &mut *db;
             match db.set_add(key.as_ref(), &args[1..]) {
                 Ok(added) => {
                     log_cmd!(state, *db_index, cmd, args);
@@ -1101,7 +1068,6 @@ fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'SREM'".to_string());
             }
             let key = &args[0];
-            let db = &mut *db;
             match db.set_remove(key.as_ref(), &args[1..]) {
                 Ok(removed) => {
                     log_cmd!(state, *db_index, cmd, args);
@@ -1112,7 +1078,6 @@ fn handle_command(
         }
         "SMEMBERS" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.set_members(key.as_ref()) {
                     Ok(members) => {
                         let mut out = Vec::with_capacity(members.len());
@@ -1128,7 +1093,6 @@ fn handle_command(
         },
         "SISMEMBER" => match (args.get(0), args.get(1)) {
             (Some(key), Some(member)) => {
-                let db = &mut *db;
                 match db.set_is_member(key.as_ref(), member.as_ref()) {
                     Ok(exists) => RespValue::Integer(if exists { 1 } else { 0 }),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1138,7 +1102,6 @@ fn handle_command(
         },
         "SCARD" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.set_card(key.as_ref()) {
                     Ok(len) => RespValue::Integer(len),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1148,7 +1111,6 @@ fn handle_command(
         },
         "SMOVE" => match (args.get(0), args.get(1), args.get(2)) {
             (Some(source), Some(dest), Some(member)) => {
-                let db = &mut *db;
                 match db.set_move(source.as_ref(), dest.as_ref(), member.as_ref()) {
                     Ok(moved) => {
                         if moved {
@@ -1166,7 +1128,6 @@ fn handle_command(
                 return RespValue::Error("ERR wrong number of arguments for 'ZADD'".to_string());
             }
             let key = &args[0];
-            let db = &mut *db;
             let mut added = 0;
             let mut idx = 1;
             while idx + 1 < args.len() {
@@ -1191,7 +1152,6 @@ fn handle_command(
             (Some(key), Some(start), Some(stop)) => {
                 let start = parse_i64(start.as_ref()).unwrap_or(0);
                 let stop = parse_i64(stop.as_ref()).unwrap_or(-1);
-                let db = &mut *db;
                 match db.zrange(key.as_ref(), start, stop) {
                     Ok(items) => RespValue::Array(items.into_iter().map(|v| RespValue::Blob(v.into())).collect()),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1205,7 +1165,6 @@ fn handle_command(
             }
             let key = &args[0];
             let members: Vec<Vec<u8>> = args[1..].iter().map(|m| m.as_ref().to_vec()).collect();
-            let db = &mut *db;
             match db.zrem(key.as_ref(), &members) {
                 Ok(removed) => {
                     if removed > 0 {
@@ -1218,7 +1177,6 @@ fn handle_command(
         }
         "ZCARD" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.zcard(key.as_ref()) {
                     Ok(len) => RespValue::Integer(len),
                     Err(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1241,7 +1199,6 @@ fn handle_command(
                 fields.push((args[idx].as_ref().to_vec(), args[idx + 1].as_ref().to_vec()));
                 idx += 2;
             }
-            let db = &mut *db;
             match db.stream_add(key.as_ref(), id, fields) {
                 Ok(new_id) => {
                         log_cmd!(state, *db_index, cmd, args);
@@ -1254,7 +1211,6 @@ fn handle_command(
             (Some(key), Some(start), Some(end)) => {
                 let start = std::str::from_utf8(start.as_ref()).unwrap_or("-");
                 let end = std::str::from_utf8(end.as_ref()).unwrap_or("+");
-                let db = &mut *db;
                 match db.stream_range(key.as_ref(), start, end) {
                     Ok(items) => {
                         let mut out = Vec::with_capacity(items.len());
@@ -1278,7 +1234,6 @@ fn handle_command(
         },
         "SET" => match parse_set_args(args) {
             Ok((key, value, expire_ms)) => {
-                let db = &mut *db;
                 let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
                 db.set_string(key.as_ref().to_vec(), value.as_ref().to_vec(), expire_at);
                 log_cmd!(state, *db_index, cmd, args);
@@ -1288,7 +1243,6 @@ fn handle_command(
         },
         "DEL" => {
             let mut removed = 0;
-            let db = &mut *db;
             for key in args {
                 if db.remove(key.as_ref()) {
                     removed += 1;
@@ -1299,7 +1253,6 @@ fn handle_command(
         }
         "EXISTS" => {
             let mut count = 0;
-            let db = &mut *db;
             for key in args {
                 if db.exists(key.as_ref()) {
                     count += 1;
@@ -1309,7 +1262,6 @@ fn handle_command(
         }
         "EXPIRE" => match (args.get(0), args.get(1)) {
             (Some(key), Some(sec)) => {
-                let db = &mut *db;
                 let ms = parse_u64(sec.as_ref()).unwrap_or(0).saturating_mul(1000);
                 let ok = db.set_expire_ms(key.as_ref(), ms);
                 if ok {
@@ -1321,7 +1273,6 @@ fn handle_command(
         },
         "PEXPIRE" => match (args.get(0), args.get(1)) {
             (Some(key), Some(ms)) => {
-                let db = &mut *db;
                 let ms = parse_u64(ms.as_ref()).unwrap_or(0);
                 let ok = db.set_expire_ms(key.as_ref(), ms);
                 if ok {
@@ -1333,7 +1284,6 @@ fn handle_command(
         },
         "PERSIST" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 let removed = db.persist(key.as_ref());
                 if removed == 1 {
                     log_cmd!(state, *db_index, cmd, args);
@@ -1344,7 +1294,6 @@ fn handle_command(
         },
         "TTL" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.ttl_ms(key.as_ref()) {
                     Some(ms) if ms >= 0 => RespValue::Integer((ms / 1000) as i64),
                     Some(ms) => RespValue::Integer(ms),
@@ -1355,7 +1304,6 @@ fn handle_command(
         },
         "PTTL" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.ttl_ms(key.as_ref()) {
                     Some(ms) => RespValue::Integer(ms),
                     None => RespValue::Integer(-2),
@@ -1365,7 +1313,6 @@ fn handle_command(
         },
         "TYPE" => match args.get(0) {
             Some(key) => {
-                let db = &mut *db;
                 match db.value_type(key.as_ref()) {
                     Some(t) => RespValue::Simple(t.to_string()),
                     None => RespValue::Simple("none".to_string()),
@@ -1375,7 +1322,6 @@ fn handle_command(
         },
         "KEYS" => match args.get(0) {
             Some(pattern) => {
-                let db = &mut *db;
                 let keys = db.keys_matching(pattern.as_ref());
                 RespValue::Array(keys.into_iter().map(|v| RespValue::Blob(v.into())).collect())
             }
@@ -1421,7 +1367,6 @@ fn handle_command(
                     }
                     return RespValue::Error("ERR syntax error".to_string());
                 }
-                let db = &mut *db;
                 let keys = db.keys_matching(&pattern);
                 if cursor_val > keys.len() {
                     cursor_val = keys.len();
@@ -1440,7 +1385,6 @@ fn handle_command(
             if !args.is_empty() {
                 return RespValue::Error("ERR wrong number of arguments for 'FLUSHDB'".to_string());
             }
-            let db = &mut *db;
             db.flush();
             log_cmd!(state, *db_index, cmd, args);
             RespValue::Simple("OK".to_string())
@@ -1614,10 +1558,9 @@ fn eval_wrapped_script(
     let argv = &args[1 + numkeys..];
     script_runtime.maybe_reset();
     script_runtime.set_keys_argv(keys, argv);
-    // Acquire the DB lock for the entire script execution (matches Redis atomic semantics).
-    // This eliminates per-redis.call() lock acquire/release overhead.
-    let mut db_guard = async_std::task::block_on(dbs_state[*db_index].lock());
-    let db_ptr: *mut Db = &mut *db_guard;
+    // With internal sharding in Db, no outer lock is needed.
+    // Script commands lock individual shards as they execute.
+    let db_ptr: *const Db = &dbs_state[*db_index];
     let held_idx = *db_index as isize;
     let mut exec = ScriptExec {
         state: state as *mut ServerState,
@@ -1633,7 +1576,6 @@ fn eval_wrapped_script(
     JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
     let result = JS_Eval(ctx, wrapped_script, "<eval>", JS_EVAL_RETVAL);
     JS_SetContextOpaque(ctx, std::ptr::null_mut());
-    drop(db_guard);
     if result.is_exception() {
         let exc = JS_GetException(ctx);
         let msg = js_value_to_string(ctx, exc);
@@ -1880,10 +1822,10 @@ struct ScriptExec {
     db_index: *mut usize,
     persist_state: *const Arc<Mutex<PersistState>>,
     script_cache_state: *const Arc<Mutex<ScriptCacheState>>,
-    /// Raw pointer to the DB locked for the script's lifetime.
-    /// Valid only while the MutexGuard in eval_wrapped_script is alive.
-    held_db: *mut Db,
-    /// Which DB index is held by the script-level lock (-1 = none).
+    /// Raw pointer to the Db for the script's database.
+    /// Valid for the lifetime of the dbs_state Arc.
+    held_db: *const Db,
+    /// Which DB index is held by the script-level pointer (-1 = none).
     held_db_index: isize,
 }
 
@@ -1893,7 +1835,7 @@ struct ScriptExec {
 #[inline]
 unsafe fn redis_call_fast(
     ctx: &mut JSContextImpl,
-    db: &mut Db,
+    db: &Db,
     cmd_bytes: &[u8],
     argc: i32,
     argv: *mut JSValue,
@@ -2121,7 +2063,7 @@ fn redis_call(
 
         // Try direct fast-path dispatch (no parse_command, no handle_command, no RespValue).
         if *exec.db_index as isize == exec.held_db_index && !exec.held_db.is_null() {
-            if let Some(result) = redis_call_fast(ctx, &mut *exec.held_db, &cmd_bytes, argc, argv, magic) {
+            if let Some(result) = redis_call_fast(ctx, &*exec.held_db, &cmd_bytes, argc, argv, magic) {
                 return result;
             }
         }
@@ -2148,16 +2090,16 @@ fn redis_call(
         let mut script = None;
         // skip_aof=true: Redis logs EVAL, not individual redis.call() commands.
         if *db_index as isize == exec.held_db_index && !exec.held_db.is_null() {
-            let db = &mut *exec.held_db;
+            let db = &*exec.held_db;
             let resp = handle_command(
                 state, db, db_count, persist_state, script_cache_state,
                 db_index, &mut script, &cmd, &args, true,
             );
             resp_to_js(ctx, resp, magic == 1)
         } else {
-            let mut db_guard = async_std::task::block_on((*dbs_state)[*db_index].lock());
+            let db = &(*dbs_state)[*db_index];
             let resp = handle_command(
-                state, &mut *db_guard, db_count, persist_state, script_cache_state,
+                state, db, db_count, persist_state, script_cache_state,
                 db_index, &mut script, &cmd, &args, true,
             );
             resp_to_js(ctx, resp, magic == 1)
