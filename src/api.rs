@@ -955,6 +955,10 @@ pub fn js_eval(
         }
         return js_throw_error(_ctx, JSObjectClassEnum::SyntaxError, "invalid JSON");
     }
+    // Script mode: handle top-level `return` like a function body
+    if (_eval_flags & JS_EVAL_SCRIPT) != 0 {
+        return eval_script_body(_ctx, src);
+    }
     if let Some(val) = eval_program(_ctx, src) {
         if val.is_exception() {
             return val;
@@ -3071,7 +3075,8 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         return None;
     }
 
-    // Fast path: simple identifiers and pure integers skip all operator/keyword scans.
+    // Fast path: simple identifiers, pure integers, and string literals
+    // skip all operator/keyword scans.
     let bytes = s.as_bytes();
     let first = bytes[0];
     if bytes.len() <= 20 {
@@ -3085,6 +3090,17 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         {
             // Simple identifier — delegate to eval_value which handles scope chain
             return eval_value(ctx, s);
+        }
+    }
+    // Fast path: string literals "..." or '...' — skip operator scanning
+    if bytes.len() >= 2 {
+        let last_byte = bytes[bytes.len() - 1];
+        if (first == b'"' && last_byte == b'"') || (first == b'\'' && last_byte == b'\'') {
+            // Check for simple string (no concatenation operators after the close quote)
+            // Only applies if the string is self-contained
+            if count_unescaped_quotes(s, first) == 2 {
+                return eval_value(ctx, s);
+            }
         }
     }
 
@@ -8335,6 +8351,271 @@ pub fn eval_function_body_cached(ctx: &mut JSContextImpl, stmts: &[String]) -> O
 // - split_assignment(), split_ternary(), split_base_and_tail() - Expression splitting
 //
 // Parsing helpers live in parser.rs and are imported above.
+
+/// Evaluate a script body that supports top-level `return`, like a function body
+/// but without the overhead of creating/calling a function.
+/// Used by JS_EVAL_SCRIPT flag to eliminate function wrapping overhead.
+/// Simple FNV-1a hash for script caching.
+#[inline]
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Count unescaped occurrences of a quote character in a string.
+#[inline]
+fn count_unescaped_quotes(s: &str, q: u8) -> usize {
+    let bytes = s.as_bytes();
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2; // skip escaped char
+            continue;
+        }
+        if bytes[i] == q {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
+
+fn eval_script_body(ctx: &mut JSContextImpl, src: &str) -> JSValue {
+    // Fast path: single-line return statement (very common for Redis scripts)
+    let trimmed_src = src.trim();
+    if trimmed_src.starts_with("return ") && !trimmed_src.contains('\n') {
+        let expr = trimmed_src[7..].trim().trim_end_matches(';');
+        if !expr.is_empty() {
+            if let Some(val) = eval_expr(ctx, expr) {
+                return val;
+            }
+        }
+    }
+
+    // Check script cache first (avoids re-parsing on repeated EVAL calls)
+    let script_hash = fnv1a_hash(src.as_bytes());
+    let stmts: Vec<String> = if let Some(cached) = ctx.get_script_cache(script_hash) {
+        cached.to_vec()
+    } else {
+        // Parse: strip comments, normalize, split statements
+        let stripped = if !src.contains("//") && !src.contains("/*") {
+            src.to_string()
+        } else {
+            match crate::evals::strip_comments_checked(src) {
+                Ok(s) => s.into_owned(),
+                Err(pos) => {
+                    ctx.set_error_offset(pos);
+                    return js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "syntax error");
+                }
+            }
+        };
+        let cleaned = if !stripped.contains("\\\n") && !stripped.contains("\\\r") {
+            stripped
+        } else {
+            normalize_line_continuations(&stripped).into_owned()
+        };
+        let parsed = match split_statements(&cleaned) {
+            Some(s) => s,
+            None => return js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "syntax error"),
+        };
+        // Cache the parsed statements (trimmed, non-empty)
+        let trimmed_stmts: Vec<String> = parsed.iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        ctx.set_script_cache(script_hash, trimmed_stmts.clone());
+        trimmed_stmts
+    };
+
+    let mut last = Value::UNDEFINED;
+    for stmt in &stmts {
+        let trimmed = stmt.as_str();
+        ctx.clear_error_offset();
+        // Handle return statement at top level
+        if trimmed.starts_with("return ") || trimmed.starts_with("return;") {
+            let expr = if trimmed.starts_with("return;") {
+                ""
+            } else {
+                trimmed[7..].trim()
+            };
+            if expr.is_empty() {
+                return Value::UNDEFINED;
+            }
+            // Fast path for return of simple literals (string, number, bool, null)
+            let ebytes = expr.as_bytes();
+            if ebytes.len() >= 2 {
+                let first = ebytes[0];
+                let last_byte = ebytes[ebytes.len() - 1];
+                // String literal: "..." or '...'
+                if (first == b'"' && last_byte == b'"') || (first == b'\'' && last_byte == b'\'') {
+                    if let Some(val) = eval_value(ctx, expr) {
+                        return val;
+                    }
+                }
+                // Integer literal
+                if first.is_ascii_digit() && ebytes.iter().all(|b| b.is_ascii_digit()) {
+                    if let Ok(n) = expr.parse::<i32>() {
+                        return js_new_int32(ctx, n);
+                    }
+                }
+            }
+            return match eval_expr(ctx, expr) {
+                Some(val) => val,
+                None => {
+                    let off = find_syntax_error_offset(trimmed);
+                    ctx.set_error_offset(ctx.current_stmt_offset() + off);
+                    js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "syntax error")
+                }
+            };
+        }
+        if trimmed == "return" {
+            return Value::UNDEFINED;
+        }
+        // Delegate to eval_program for all other statement types
+        match eval_program_stmt(ctx, trimmed) {
+            StmtResult::Value(val) => {
+                last = val;
+                if last.is_exception() {
+                    return last;
+                }
+            }
+            StmtResult::Error => {
+                return js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "syntax error");
+            }
+            StmtResult::LoopControl => return last,
+        }
+    }
+    last
+}
+
+/// Result of evaluating a single statement in eval_program
+enum StmtResult {
+    Value(JSValue),
+    Error,
+    LoopControl,
+}
+
+/// Evaluate a single statement (factored out from eval_program for reuse).
+fn eval_program_stmt(ctx: &mut JSContextImpl, trimmed: &str) -> StmtResult {
+    // Check for break/continue
+    if trimmed == "break" {
+        ctx.set_loop_control(crate::context::LoopControl::Break);
+        return StmtResult::LoopControl;
+    }
+    if trimmed == "continue" {
+        ctx.set_loop_control(crate::context::LoopControl::Continue);
+        return StmtResult::LoopControl;
+    }
+    // Function declaration
+    if trimmed.starts_with("function ") {
+        if let Some(val) = parse_function_declaration(ctx, trimmed) {
+            return StmtResult::Value(val);
+        }
+        if let Some(pos) = find_function_error_pos(trimmed) {
+            ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+        }
+        return StmtResult::Error;
+    }
+    // If statement
+    if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
+        if let Some(val) = parse_if_statement(ctx, trimmed) {
+            return StmtResult::Value(val);
+        }
+        ctx.set_error_offset(ctx.current_stmt_offset());
+        return StmtResult::Error;
+    }
+    // While loop
+    if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
+        if let Some(val) = parse_while_loop(ctx, trimmed, None) {
+            return StmtResult::Value(val);
+        }
+        ctx.set_error_offset(ctx.current_stmt_offset());
+        return StmtResult::Error;
+    }
+    // For loop
+    if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
+        if let Some(val) = parse_for_loop(ctx, trimmed, None) {
+            return StmtResult::Value(val);
+        }
+        ctx.set_error_offset(ctx.current_stmt_offset());
+        return StmtResult::Error;
+    }
+    // Do-while loop
+    if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
+        if let Some(val) = parse_do_while_loop(ctx, trimmed, None) {
+            return StmtResult::Value(val);
+        }
+        ctx.set_error_offset(ctx.current_stmt_offset());
+        return StmtResult::Error;
+    }
+    // Switch
+    if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
+        if let Some(val) = parse_switch_statement(ctx, trimmed) {
+            return StmtResult::Value(val);
+        }
+        ctx.set_error_offset(ctx.current_stmt_offset());
+        return StmtResult::Error;
+    }
+    // Throw
+    if trimmed.starts_with("throw ") || trimmed == "throw" {
+        if trimmed == "throw" {
+            ctx.set_exception(Value::UNDEFINED);
+            return StmtResult::Value(Value::EXCEPTION);
+        }
+        let expr = trimmed[6..].trim();
+        if let Some(val) = eval_expr(ctx, expr) {
+            ctx.set_exception(val);
+            return StmtResult::Value(Value::EXCEPTION);
+        }
+        ctx.set_exception(Value::UNDEFINED);
+        return StmtResult::Value(Value::EXCEPTION);
+    }
+    // Try/catch/finally
+    if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
+        if let Some(val) = parse_try_catch(ctx, trimmed) {
+            return StmtResult::Value(val);
+        }
+        return StmtResult::Error;
+    }
+    // Labeled statement
+    if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+        match label_result {
+            Some(val) => {
+                if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                    return StmtResult::LoopControl;
+                }
+                return StmtResult::Value(val);
+            }
+            None => return StmtResult::Error,
+        }
+    }
+    // Bare block
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        if let Some((block_content, _)) = extract_braces(trimmed) {
+            if let Some(val) = eval_block(ctx, block_content) {
+                if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                    return StmtResult::LoopControl;
+                }
+                return StmtResult::Value(val);
+            }
+        }
+        return StmtResult::Error;
+    }
+    // Expression
+    match eval_expr(ctx, trimmed) {
+        Some(val) => StmtResult::Value(val),
+        None => {
+            let pos = find_syntax_error_offset(trimmed);
+            ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+            StmtResult::Error
+        }
+    }
+}
 
 
 pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {

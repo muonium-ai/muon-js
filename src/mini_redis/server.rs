@@ -13,7 +13,7 @@ use crate::mini_redis::resp::{read_value, write_array_of_blobs_buf, write_value_
 use crate::mini_redis::persist::Persist;
 use crate::mini_redis::store::Db;
 use crate::{
-    JSContextImpl, JS_EVAL_RETVAL, JS_GetException, JS_GetGlobalObject, JS_IsBool, JS_IsNull,
+    JSContextImpl, JS_EVAL_RETVAL, JS_EVAL_SCRIPT, JS_GetException, JS_GetGlobalObject, JS_IsBool, JS_IsNull,
     JS_IsNumber, JS_IsString, JS_IsUndefined, JS_NewArray, JS_NewCFunctionParams, JS_NewInt64,
     JS_NewObject, JS_NewString, JS_NewStringLen, JS_RegisterStdlibMinimal, JS_SetCFunctionTable,
     JS_SetContextOpaque, JS_SetPropertyStr, JS_SetPropertyUint32, JS_ToCString, JS_ToNumber,
@@ -1641,7 +1641,6 @@ fn eval_script_source(
     script: &str,
     args: &[Arc<[u8]>],
 ) -> RespValue {
-    let wrapped = wrap_eval_script(script);
     eval_wrapped_script(
         state,
         dbs_state,
@@ -1650,7 +1649,7 @@ fn eval_script_source(
         script_cache_state,
         db_index,
         script_runtime,
-        &wrapped,
+        script,
         args,
     )
 }
@@ -1693,7 +1692,7 @@ fn eval_wrapped_script(
     };
     let ctx = &mut script_runtime.ctx;
     JS_SetContextOpaque(ctx, &mut exec as *mut ScriptExec as *mut c_void);
-    let result = JS_Eval(ctx, wrapped_script, "<eval>", JS_EVAL_RETVAL);
+    let result = JS_Eval(ctx, wrapped_script, "<eval>", JS_EVAL_SCRIPT | JS_EVAL_RETVAL);
     JS_SetContextOpaque(ctx, std::ptr::null_mut());
     if result.is_exception() {
         let exc = JS_GetException(ctx);
@@ -1721,12 +1720,13 @@ fn eval_script_sha(
         Err(_) => return RespValue::StaticError("ERR invalid script"),
     };
     let cache = script_cache_state.lock().unwrap();
-    let wrapped = match cache.get(sha) {
-        Some(s) => wrap_eval_script(s),
+    let script = match cache.get(sha) {
+        Some(s) => s.clone(),
         None => {
             return RespValue::StaticError("NOSCRIPT No matching script. Please use EVAL.")
         }
     };
+    drop(cache);
     eval_wrapped_script(
         state,
         dbs_state,
@@ -1735,7 +1735,7 @@ fn eval_script_sha(
         script_cache_state,
         db_index,
         script_runtime,
-        &wrapped,
+        &script,
         &args[1..],
     )
 }
@@ -1919,18 +1919,30 @@ impl ScriptRuntime {
 
     fn set_keys_argv(&mut self, keys: &[Arc<[u8]>], argv: &[Arc<[u8]>]) {
         let global = JS_GetGlobalObject(&mut self.ctx);
-        let keys_arr = JS_NewArray(&mut self.ctx, keys.len() as i32);
-        for (idx, key) in keys.iter().enumerate() {
-            let v = JS_NewStringLen(&mut self.ctx, key.as_ref());
-            let _ = JS_SetPropertyUint32(&mut self.ctx, keys_arr, idx as u32, v);
+        // Always set KEYS and ARGV (even if empty) for script compatibility.
+        // But avoid per-element overhead when empty.
+        if keys.is_empty() {
+            let keys_arr = JS_NewArray(&mut self.ctx, 0);
+            let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
+        } else {
+            let keys_arr = JS_NewArray(&mut self.ctx, keys.len() as i32);
+            for (idx, key) in keys.iter().enumerate() {
+                let v = JS_NewStringLen(&mut self.ctx, key.as_ref());
+                let _ = JS_SetPropertyUint32(&mut self.ctx, keys_arr, idx as u32, v);
+            }
+            let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
         }
-        let argv_arr = JS_NewArray(&mut self.ctx, argv.len() as i32);
-        for (idx, arg) in argv.iter().enumerate() {
-            let v = JS_NewStringLen(&mut self.ctx, arg.as_ref());
-            let _ = JS_SetPropertyUint32(&mut self.ctx, argv_arr, idx as u32, v);
+        if argv.is_empty() {
+            let argv_arr = JS_NewArray(&mut self.ctx, 0);
+            let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
+        } else {
+            let argv_arr = JS_NewArray(&mut self.ctx, argv.len() as i32);
+            for (idx, arg) in argv.iter().enumerate() {
+                let v = JS_NewStringLen(&mut self.ctx, arg.as_ref());
+                let _ = JS_SetPropertyUint32(&mut self.ctx, argv_arr, idx as u32, v);
+            }
+            let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
         }
-        let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
-        let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
     }
 }
 

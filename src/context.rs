@@ -82,6 +82,10 @@ pub struct Context {
     /// Overflow hash maps for objects with >8 properties.
     /// Keyed by HeapObject raw pointer (as usize). Only populated when prop_count > 8.
     prop_maps: HashMap<usize, HashMap<u64, Value>>,
+    /// Single-entry script cache: hash of last parsed script → pre-split statements.
+    /// Avoids re-parsing on repeated EVAL calls with the same script text.
+    script_cache_hash: u64,
+    script_cache_stmts: Vec<String>,
 }
 
 impl Context {
@@ -126,6 +130,8 @@ impl Context {
             call_frames: Vec::new(),
             bytecode_cache: HashMap::new(),
             prop_maps: HashMap::new(),
+            script_cache_hash: 0,
+            script_cache_stmts: Vec::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -233,6 +239,21 @@ impl Context {
     /// Store cached parsed statements for a function body Value.
     pub fn set_body_cache(&mut self, body_val_bits: u64, stmts: Vec<String>) {
         self.body_cache.insert(body_val_bits, stmts);
+    }
+
+    /// Check if cached script statements match a given hash.
+    pub fn get_script_cache(&self, hash: u64) -> Option<&[String]> {
+        if self.script_cache_hash == hash && !self.script_cache_stmts.is_empty() {
+            Some(&self.script_cache_stmts)
+        } else {
+            None
+        }
+    }
+
+    /// Store parsed statements for a script (single-entry cache, replaces previous).
+    pub fn set_script_cache(&mut self, hash: u64, stmts: Vec<String>) {
+        self.script_cache_hash = hash;
+        self.script_cache_stmts = stmts;
     }
 
     /// Get cached bytecode module for a function body. Returns Some(Some(module)) if cached and compilable,
