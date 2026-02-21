@@ -584,7 +584,7 @@ async fn handle_flushall_command(
     if !skip_aof {
         if let Some(p) = persist_state.as_ref() {
             if p.aof_enabled() {
-                let _ = p.log_command(0, "FLUSHALL", args).await;
+                let _ = p.log_command_nowait(0, b"FLUSHALL", args);
             }
         }
     }
@@ -642,16 +642,7 @@ fn handle_command(
                 let _ = &$state;
                 if let Some(p) = persist_state.as_ref() {
                     if p.aof_enabled() {
-                        // Fire-and-forget: AOF channel is bounded, try_send or enqueue.
-                        let args_clone: Vec<std::sync::Arc<[u8]>> = $args.to_vec();
-                        let cmd_str = $cmd.to_string();
-                        let db_idx = $db;
-                        let persist = Arc::clone(persist_state);
-                        tokio::spawn(async move {
-                            if let Some(ref p) = *persist {
-                                let _ = p.log_command(db_idx, &cmd_str, &args_clone).await;
-                            }
-                        });
+                        let _ = p.log_command_nowait($db, $cmd.as_bytes(), $args);
                     }
                 }
             }

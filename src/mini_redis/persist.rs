@@ -3,11 +3,11 @@
 
 use std::io;
 #[cfg(feature = "mini-redis-libsql")]
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+#[cfg(feature = "mini-redis-libsql")]
 use std::sync::Arc;
 #[cfg(feature = "mini-redis-libsql")]
-use tokio::sync::mpsc::{self, Sender, Receiver};
-#[cfg(feature = "mini-redis-libsql")]
-use tokio::time::timeout;
+use std::thread;
 #[cfg(feature = "mini-redis-libsql")]
 use std::time::Duration;
 
@@ -47,10 +47,14 @@ impl Persist {
     }
 
     pub async fn log_command(&self, _db: usize, _cmd: &str, _args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
+        self.log_command_nowait(_db, _cmd.as_bytes(), _args)
+    }
+
+    pub fn log_command_nowait(&self, _db: usize, _cmd: &[u8], _args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
-            Persist::Libsql(persist) => persist.log_command(_db, _cmd, _args).await,
+            Persist::Libsql(persist) => persist.log_command_nowait(_db, _cmd, _args),
         }
     }
 
@@ -73,8 +77,7 @@ pub struct LibsqlPersist {
 #[cfg(feature = "mini-redis-libsql")]
 struct AofEntry {
     db: i64,
-    cmd: Vec<u8>,
-    args: Vec<std::sync::Arc<[u8]>>,
+    encoded: Vec<u8>,
 }
 
 #[cfg(feature = "mini-redis-libsql")]
@@ -84,11 +87,12 @@ impl LibsqlPersist {
         let db = libsql::Database::open(path).map_err(to_io)?;
         let conn = db.connect().map_err(to_io)?;
         let aof_tx = if aof_enabled {
-            let (tx, rx) = mpsc::channel::<AofEntry>(AOF_QUEUE_CAPACITY);
+            let (tx, rx) = bounded::<AofEntry>(AOF_QUEUE_CAPACITY);
             let path = path.to_string();
-            tokio::spawn(async move {
-                run_aof_worker(path, rx).await;
-            });
+            thread::Builder::new()
+                .name("mini-redis-aof".to_string())
+                .spawn(move || run_aof_worker(path, rx))
+                .map_err(to_io)?;
             Some(tx)
         } else {
             None
@@ -174,30 +178,19 @@ impl LibsqlPersist {
         Ok(())
     }
 
-    async fn log_command(&self, db: usize, cmd: &str, args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
+    fn log_command_nowait(&self, db: usize, cmd: &[u8], args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
         if !self.aof_enabled {
             return Ok(());
         }
         if let Some(tx) = self.aof_tx.as_ref() {
             let entry = AofEntry {
                 db: db as i64,
-                cmd: cmd.as_bytes().to_vec(),
-                args: args.to_vec(),
+                encoded: encode_cmd(cmd, args),
             };
-            match tx.try_send(entry) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(entry)) => {
-                    tx.send(entry).await.map_err(to_io)?;
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "AOF channel closed"));
-                }
-            }
+            tx.send(entry).map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "AOF channel closed"))?;
             Ok(())
         } else {
-            let encoded = encode_cmd(cmd.as_bytes(), args);
-            self.conn.execute("INSERT INTO aof_log (db, cmd) VALUES (?, ?)", (db as i64, encoded)).await.map_err(to_io)?;
-            Ok(())
+            Err(io::Error::new(io::ErrorKind::Other, "AOF queue unavailable"))
         }
     }
 
@@ -303,7 +296,8 @@ impl LibsqlPersist {
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn run_aof_worker(path: String, mut rx: Receiver<AofEntry>) {
+#[allow(deprecated)] // TODO: migrate to libsql Builder API
+fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
     let db = match libsql::Database::open(&path) {
         Ok(db) => db,
         Err(err) => {
@@ -318,21 +312,28 @@ async fn run_aof_worker(path: String, mut rx: Receiver<AofEntry>) {
             return;
         }
     };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("mini-redis: failed to create AOF runtime: {}", err);
+            return;
+        }
+    };
     loop {
-        let first = match rx.recv().await {
-            Some(entry) => entry,
-            None => break,
+        let first = match rx.recv() {
+            Ok(entry) => entry,
+            Err(_) => break,
         };
         let mut batch = Vec::with_capacity(AOF_BATCH_MAX);
         batch.push(first);
         while batch.len() < AOF_BATCH_MAX {
-            match timeout(Duration::from_millis(AOF_BATCH_WAIT_MS), rx.recv()).await {
-                Ok(Some(entry)) => batch.push(entry),
-                Ok(None) => break,
-                Err(_) => break,
+            match rx.recv_timeout(Duration::from_millis(AOF_BATCH_WAIT_MS)) {
+                Ok(entry) => batch.push(entry),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        if let Err(err) = flush_aof_batch(&conn, batch).await {
+        if let Err(err) = runtime.block_on(flush_aof_batch(&conn, batch)) {
             eprintln!("mini-redis: AOF batch insert failed: {}", err);
         }
     }
@@ -345,10 +346,9 @@ async fn flush_aof_batch(conn: &libsql::Connection, mut batch: Vec<AofEntry>) ->
     }
     conn.execute("BEGIN", ()).await.map_err(to_io)?;
     for entry in batch.drain(..) {
-        let encoded = encode_cmd(entry.cmd.as_slice(), entry.args.as_slice());
         if let Err(err) = conn.execute(
             "INSERT INTO aof_log (db, cmd) VALUES (?, ?)",
-            (entry.db, encoded),
+            (entry.db, entry.encoded),
         )
         .await
         .map_err(to_io)
