@@ -185,6 +185,13 @@ async fn handle_client(
         guard.script_runtime.clone()
     };
     let mut local_state = ServerState::new(script_runtime_config);
+    // Check once at connection start whether AOF is configured.
+    // When no persistence is configured, skip_aof=true avoids the
+    // block_on(persist_state.lock()) on every mutating command.
+    let no_persist = {
+        let guard = persist_state.lock().await;
+        guard.is_none()
+    };
     loop {
         let val = read_value(&mut reader).await?;
         let val = match val {
@@ -276,7 +283,7 @@ async fn handle_client(
                         continue;
                     }
                     if qcmd == "FLUSHALL" {
-                        results.push(handle_flushall_command(&dbs_state, &persist_state, &qargs).await);
+                        results.push(handle_flushall_command(&dbs_state, &persist_state, &qargs, no_persist).await);
                         continue;
                     }
                     if qcmd == "EVAL" || qcmd == "EVALSHA" {
@@ -298,7 +305,7 @@ async fn handle_client(
                         &mut script_runtime,
                         &qcmd,
                         &qargs,
-                        false,
+                        no_persist,
                     );
                     results.push(resp);
                 }
@@ -316,7 +323,7 @@ async fn handle_client(
         ) {
             FastResponse::Value(resp)
         } else if cmd == "FLUSHALL" {
-            FastResponse::Value(handle_flushall_command(&dbs_state, &persist_state, &args[1..]).await)
+            FastResponse::Value(handle_flushall_command(&dbs_state, &persist_state, &args[1..], no_persist).await)
         } else if cmd == "EVAL" || cmd == "EVALSHA" {
             FastResponse::Value(handle_eval_command(
                 &mut local_state, &dbs_state, db_count, &persist_state,
@@ -335,7 +342,7 @@ async fn handle_client(
                 &mut script_runtime,
                 cmd,
                 &args[1..],
-                false,
+                no_persist,
             );
             FastResponse::Value(resp)
         };
@@ -574,6 +581,7 @@ async fn handle_flushall_command(
     dbs_state: &Arc<DbsState>,
     persist_state: &Arc<Mutex<PersistState>>,
     args: &[Arc<[u8]>],
+    skip_aof: bool,
 ) -> RespValue {
     if !args.is_empty() {
         return RespValue::Error("ERR wrong number of arguments for 'FLUSHALL'".to_string());
@@ -582,14 +590,16 @@ async fn handle_flushall_command(
         let mut db_guard = db_mutex.lock().await;
         db_guard.flush();
     }
-    let _ = async_std::task::block_on(async {
-        let persist_guard = persist_state.lock().await;
-        if let Some(p) = persist_guard.as_ref() {
-            if p.aof_enabled() {
-                let _ = p.log_command(0, "FLUSHALL", args).await;
+    if !skip_aof {
+        let _ = async_std::task::block_on(async {
+            let persist_guard = persist_state.lock().await;
+            if let Some(p) = persist_guard.as_ref() {
+                if p.aof_enabled() {
+                    let _ = p.log_command(0, "FLUSHALL", args).await;
+                }
             }
-        }
-    });
+        });
+    }
     RespValue::Simple("OK".to_string())
 }
 
