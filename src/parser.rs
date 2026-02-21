@@ -4,9 +4,11 @@
 //! function declarations, and expression decomposition.
 
 use crate::api::*;
+use crate::context::CallFrame;
 use crate::types::*;
 use crate::value::*;
 use crate::evals::*;
+use std::collections::HashMap;
 
 /// LValue key type for property access
 pub enum LValueKey {
@@ -1936,6 +1938,14 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     js_set_property_str(ctx, env, "__parent__", parent_env);
     js_set_property_str(ctx, env, "__var_env__", Value::TRUE);
 
+    // Push call frame for fast indexed-slot variable access.
+    // The slot_map starts empty and is populated by js_set_property_str
+    // calls below (this, arguments, params, var declarations).
+    ctx.push_call_frame(CallFrame {
+        slot_map: HashMap::new(),
+        var_env: env,
+    });
+
     // Bind `this` in the function scope
     js_set_property_str(ctx, env, "this", this_val);
 
@@ -1984,6 +1994,7 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     }
 
     ctx.pop_env();
+    ctx.pop_call_frame();
 
     result
 }

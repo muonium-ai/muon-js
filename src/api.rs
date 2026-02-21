@@ -847,6 +847,11 @@ pub fn js_set_property_str(
         }
     }
     if _ctx.set_property_str(_this_obj, _str.as_bytes(), _val) {
+        // Keep call frame slot_map in sync for fast variable access.
+        // Skip internal properties (__parent__, __var_env__, etc.).
+        if !_str.starts_with("__") {
+            _ctx.update_call_frame_slot(_this_obj, _str, _val);
+        }
         _val
     } else {
         js_throw_error(_ctx, JSObjectClassEnum::TypeError, "property set failed")

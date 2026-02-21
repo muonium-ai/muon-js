@@ -16,6 +16,17 @@ pub enum LoopControl {
     ContinueLabel(String),
 }
 
+/// A call frame for fast indexed-slot variable access.
+/// Each function invocation pushes a frame whose `slot_map` holds local
+/// bindings (parameters + `var` declarations). `resolve_binding` checks
+/// the top frame first, giving O(1) lookups instead of O(props × depth).
+pub struct CallFrame {
+    /// Variable name → current value (authoritative for reads, kept in sync on writes).
+    pub slot_map: HashMap<String, Value>,
+    /// The environment object associated with this function call (the __var_env__ env).
+    pub var_env: Value,
+}
+
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
 pub struct Context {
     mem: MemoryRegion,
@@ -54,6 +65,8 @@ pub struct Context {
     current_stmt_offset: usize,
     /// Cache of parsed function bodies: body Value raw bits → pre-split statements.
     body_cache: HashMap<u64, Vec<String>>,
+    /// Stack of call frames for fast local variable access.
+    call_frames: Vec<CallFrame>,
 }
 
 impl Context {
@@ -94,6 +107,7 @@ impl Context {
             current_error_offset: None,
             current_stmt_offset: 0,
             body_cache: HashMap::new(),
+            call_frames: Vec::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -276,7 +290,41 @@ impl Context {
         self.env_stack.pop();
     }
 
+    // ── Call-frame helpers for indexed-slot variable access ──
+
+    /// Push a new call frame for a function invocation.
+    pub fn push_call_frame(&mut self, frame: CallFrame) {
+        self.call_frames.push(frame);
+    }
+
+    /// Pop the current call frame (on function return).
+    pub fn pop_call_frame(&mut self) {
+        self.call_frames.pop();
+    }
+
+    /// Update a slot in the current call frame.
+    /// Called from js_set_property_str when the target env matches the frame's var_env.
+    #[inline(always)]
+    pub fn update_call_frame_slot(&mut self, env: Value, name: &str, value: Value) {
+        if let Some(frame) = self.call_frames.last_mut() {
+            if env == frame.var_env {
+                if let Some(slot) = frame.slot_map.get_mut(name) {
+                    *slot = value;
+                } else {
+                    frame.slot_map.insert(name.to_string(), value);
+                }
+            }
+        }
+    }
+
     pub fn resolve_binding(&mut self, name: &str) -> Option<(Value, Value)> {
+        // Fast path: check current call frame for local variables (O(1) HashMap lookup)
+        if let Some(frame) = self.call_frames.last() {
+            if let Some(&val) = frame.slot_map.get(name) {
+                return Some((frame.var_env, val));
+            }
+        }
+        // Slow path: walk env chain via property lookup
         let mut env = self.current_env();
         let global = self.global_object;
         loop {
