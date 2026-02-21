@@ -768,6 +768,11 @@ pub fn js_get_property_str(_ctx: &mut JSContextImpl, _this_obj: JSValue, _str: &
 }
 
 pub fn js_get_property_uint32(_ctx: &mut JSContextImpl, _obj: JSValue, _idx: u32) -> JSValue {
+    // Fast path: direct array element access — avoids string_utf16_units,
+    // typed-array check, and get_property_index with prototype chain walk.
+    if let Some(v) = _ctx.array_direct_get(_obj, _idx) {
+        return v;
+    }
     if let Some(units) = string_utf16_units(_ctx, _obj) {
         let idx = _idx as usize;
         if idx < units.len() {
@@ -864,6 +869,11 @@ pub fn js_set_property_uint32(
     _idx: u32,
     _val: JSValue,
 ) -> JSValue {
+    // Fast path: direct array element write — skips typed-array check
+    // and set_property_index indirection.
+    if _ctx.array_direct_set(_this_obj, _idx, _val) {
+        return _val;
+    }
     if let Some(class_id) = _ctx.object_class_id(_this_obj) {
         if typed_array_kind_from_class_id(class_id).is_some() {
             if typed_array_set_element(_ctx, _this_obj, _idx, _val) {
@@ -896,6 +906,17 @@ pub fn js_new_array(_ctx: &mut JSContextImpl, _initial_len: i32) -> JSValue {
     }
     _ctx
         .new_array(_initial_len as usize)
+        .unwrap_or_else(|| js_throw_out_of_memory(_ctx))
+}
+
+/// Create a bare array without push/pop method setup (for internal use).
+#[inline]
+pub fn js_new_array_bare(_ctx: &mut JSContextImpl, _initial_len: i32) -> JSValue {
+    if _initial_len < 0 {
+        return Value::EXCEPTION;
+    }
+    _ctx
+        .new_array_bare(_initial_len as usize)
         .unwrap_or_else(|| js_throw_out_of_memory(_ctx))
 }
 

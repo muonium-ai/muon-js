@@ -631,6 +631,21 @@ impl Context {
         Some(val)
     }
 
+    /// Create an array without prototype or push/pop setup.
+    /// Use for internal arrays that will be immediately filled and returned
+    /// (e.g. KEYS/ARGV setup, LRANGE results, resp_to_js arrays).
+    #[inline]
+    pub fn new_array_bare(&mut self, initial_len: usize) -> Option<Value> {
+        let obj = self.alloc_array(initial_len)?;
+        // Set array prototype - needed so class_id checks work correctly.
+        if !self.array_proto.is_undefined() {
+            unsafe {
+                (*obj).proto = self.array_proto;
+            }
+        }
+        Some(Value::from_ptr(obj as *mut u8))
+    }
+
     pub fn new_c_function(&mut self, func_idx: i32, params: Value) -> Option<Value> {
         let obj = self.alloc_object(JSObjectClassEnum::CFunction as u32)?;
         unsafe {
@@ -964,6 +979,50 @@ impl Context {
             let v = self.array_get(obj, idx);
             (*obj).array_len = idx;
             Some(v)
+        }
+    }
+
+    /// Direct array length — O(1), no property lookup, no string interning.
+    /// Returns None if val is not an array.
+    #[inline]
+    pub fn array_direct_len(&self, val: Value) -> Option<u32> {
+        let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).tag != HEAP_TAG_ARRAY {
+                return None;
+            }
+            Some((*obj).array_len)
+        }
+    }
+
+    /// Direct array element read — O(1), bypasses prototype chain, typed-array
+    /// checks, and string-indexing overhead.
+    /// Returns None if val is not an array.
+    #[inline]
+    pub fn array_direct_get(&self, val: Value, idx: u32) -> Option<Value> {
+        let obj = self.object_ptr(val)?;
+        unsafe {
+            if (*obj).tag != HEAP_TAG_ARRAY {
+                return None;
+            }
+            Some(self.array_get(obj, idx))
+        }
+    }
+
+    /// Direct array element write — O(1) for indices within pre-allocated capacity.
+    /// Bypasses typed-array checks and set_property_index overhead.
+    /// Returns true on success.
+    #[inline]
+    pub fn array_direct_set(&mut self, val: Value, idx: u32, elem: Value) -> bool {
+        let obj = match self.object_ptr(val) {
+            Some(o) => o,
+            None => return false,
+        };
+        unsafe {
+            if (*obj).tag != HEAP_TAG_ARRAY {
+                return false;
+            }
+            self.array_set(obj, idx, elem).is_ok()
         }
     }
 
