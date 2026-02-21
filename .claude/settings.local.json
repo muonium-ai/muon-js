@@ -26,13 +26,7 @@
       "Bash(lsof:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(ls:*)",
-      "Bash(grep:*)",
-      "Bash(MT=/Users/senthil/code/muon-js/tickets/mt/muontickets/mt.py)",
-      "Bash(xxd:*)",
-      "Bash(/tmp/test_neq2.js:*)",
-      "Bash(/tmp/test_func.js:*)",
-      "Bash(/tmp/test_nested.js:*)"
+      "Bash(ls:*)"
     ]
   }
 }
