@@ -1960,9 +1960,103 @@ struct ScriptExec {
     held_db_index: isize,
 }
 
+/// Extract raw byte pointer + length from a JS string value without mutable borrow on ctx.
+/// Returns (pointer, length). Null pointer if the value is not a heap string.
+/// # Safety: returned pointer is valid as long as no JS heap mutation occurs.
+#[inline]
+unsafe fn js_value_raw_bytes(ctx: &JSContextImpl, val: JSValue) -> (*const u8, usize) {
+    if let Some(bytes) = ctx.string_bytes(val) {
+        (bytes.as_ptr(), bytes.len())
+    } else {
+        (core::ptr::null(), 0)
+    }
+}
+
+/// Convert an i32 to decimal bytes on a stack buffer. Returns the number of bytes written.
+#[inline]
+fn i32_to_stack_bytes(n: i32, buf: &mut [u8; 12]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let negative = n < 0;
+    let mut abs_val: u32 = if negative { (-(n as i64)) as u32 } else { n as u32 };
+    let mut idx = buf.len();
+    while abs_val > 0 {
+        idx -= 1;
+        buf[idx] = b'0' + (abs_val % 10) as u8;
+        abs_val /= 10;
+    }
+    if negative {
+        idx -= 1;
+        buf[idx] = b'-';
+    }
+    let len = buf.len() - idx;
+    if idx > 0 {
+        buf.copy_within(idx.., 0);
+    }
+    len
+}
+
+/// Get bytes from a JS value as raw slice, handling both strings and integers.
+/// For strings: zero-copy from JS heap. For ints: writes to `int_buf`.
+/// Returns empty slice for other types.
+/// # Safety: string bytes valid as long as no JS heap mutation occurs.
+#[inline]
+unsafe fn js_value_as_bytes<'a>(
+    ctx: &JSContextImpl,
+    val: JSValue,
+    int_buf: &'a mut [u8; 12],
+) -> &'a [u8] {
+    if let Some(bytes) = ctx.string_bytes(val) {
+        // Safety: reinterpret the lifetime — bytes point into the JS heap which
+        // won't be mutated while we hold the slice (no JS allocations between this
+        // call and the use site in the fast-path dispatch).
+        return core::slice::from_raw_parts(bytes.as_ptr(), bytes.len());
+    }
+    if val.is_int() {
+        let n = val.int32().unwrap_or(0);
+        let len = i32_to_stack_bytes(n, int_buf);
+        return &int_buf[..len];
+    }
+    &[]
+}
+
+/// Create a WRONGTYPE error response as a JSValue.
+#[inline]
+unsafe fn wrongtype_error(ctx: &mut JSContextImpl, magic: i32) -> JSValue {
+    if magic == 1 {
+        let obj = JS_NewObject(ctx);
+        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
+        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+        obj
+    } else {
+        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
+    }
+}
+
+/// Create an integer/range error response as a JSValue.
+#[inline]
+unsafe fn int_range_error(ctx: &mut JSContextImpl, magic: i32) -> JSValue {
+    if magic == 1 {
+        let obj = JS_NewObject(ctx);
+        let err_val = JS_NewString(ctx, "ERR value is not an integer or out of range");
+        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
+        obj
+    } else {
+        JS_ThrowInternalError(ctx, "ERR value is not an integer or out of range")
+    }
+}
+
 /// Fast-path dispatch for common commands inside scripts.
 /// Returns Some(JSValue) if handled, None to fall through to the generic path.
 /// Bypasses parse_command, handle_command dispatch, log_cmd!, RespValue, and resp_to_js.
+///
+/// Optimizations applied:
+/// - Uses raw byte pointers from JS heap to avoid mutable borrow conflicts and heap allocations
+/// - Integer arguments converted on stack without JS string creation
+/// - set_string_from_slices avoids intermediate Vec/Arc for SET
+/// - Keys used only as &[u8] are never heap-allocated
 #[inline]
 unsafe fn redis_call_fast(
     ctx: &mut JSContextImpl,
@@ -1974,41 +2068,34 @@ unsafe fn redis_call_fast(
 ) -> Option<JSValue> {
     match cmd_bytes.len() {
         3 => {
-            // GET, SET, DEL
+            // GET — key borrowed directly, no heap alloc
             if cmd_bytes.eq_ignore_ascii_case(b"GET") && argc == 2 {
-                let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
-                return Some(match db.get_string(key.as_bytes()) {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                return Some(match db.get_string(key) {
                     Ok(Some(v)) => JS_NewStringLen(ctx, &v),
                     Ok(None) => JSValue::NULL,
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
-                    },
+                    Err(_) => wrongtype_error(ctx, magic),
                 });
             }
+            // SET — uses set_string_from_slices, avoids intermediate Vec for both key and value
             if cmd_bytes.eq_ignore_ascii_case(b"SET") && argc == 3 {
-                let key = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
-                };
-                let val = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    JS_ToCString(ctx, *argv.add(2), &mut buf).as_bytes().to_vec()
-                };
-                db.set_string(key, Arc::from(val), None);
+                let mut ibuf1 = [0u8; 12];
+                let mut ibuf2 = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf1);
+                let val = js_value_as_bytes(ctx, *argv.add(2), &mut ibuf2);
+                if key.is_empty() { return None; }
+                db.set_string_from_slices(key, val, None);
                 return Some(JS_NewString(ctx, "OK"));
             }
+            // DEL — key borrowed directly
             if cmd_bytes.eq_ignore_ascii_case(b"DEL") && argc >= 2 {
                 let mut removed: i64 = 0;
                 for i in 1..argc {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    let key = JS_ToCString(ctx, *argv.add(i as usize), &mut buf);
-                    if db.remove(key.as_bytes()) {
+                    let mut ibuf = [0u8; 12];
+                    let key = js_value_as_bytes(ctx, *argv.add(i as usize), &mut ibuf);
+                    if !key.is_empty() && db.remove(key) {
                         removed += 1;
                     }
                 }
@@ -2016,125 +2103,117 @@ unsafe fn redis_call_fast(
             }
         }
         4 => {
-            // HSET, HGET, INCR, SADD, SREM
+            // HSET — key borrowed, field/value go to Arc from slices
             if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 4 && argc % 2 == 0 {
-                let key = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
-                };
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
                 let mut added: i64 = 0;
                 let mut idx = 2;
                 while idx + 1 < argc as usize {
-                    let field: Arc<[u8]> = {
-                        let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                        Arc::from(JS_ToCString(ctx, *argv.add(idx), &mut buf).as_bytes())
-                    };
-                    let value: Arc<[u8]> = {
-                        let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                        Arc::from(JS_ToCString(ctx, *argv.add(idx + 1), &mut buf).as_bytes())
-                    };
-                    match db.hash_set(&key, field, value) {
+                    let mut fbuf = [0u8; 12];
+                    let mut vbuf = [0u8; 12];
+                    let field: Arc<[u8]> = Arc::from(
+                        js_value_as_bytes(ctx, *argv.add(idx), &mut fbuf),
+                    );
+                    let value: Arc<[u8]> = Arc::from(
+                        js_value_as_bytes(ctx, *argv.add(idx + 1), &mut vbuf),
+                    );
+                    match db.hash_set(key, field, value) {
                         Ok(is_new) => { if is_new { added += 1; } }
-                        Err(_) => return Some(if magic == 1 {
-                            let obj = JS_NewObject(ctx);
-                            let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
-                            let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                            obj
-                        } else {
-                            JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
-                        }),
+                        Err(_) => return Some(wrongtype_error(ctx, magic)),
                     }
                     idx += 2;
                 }
                 return Some(JS_NewInt64(ctx, added));
             }
+            // HGET — both key and field borrowed directly
             if cmd_bytes.eq_ignore_ascii_case(b"HGET") && argc == 3 {
-                let mut kbuf = JSCStringBuf { buf: [0u8; 5] };
-                let key = JS_ToCString(ctx, *argv.add(1), &mut kbuf).as_bytes().to_vec();
-                let mut fbuf = JSCStringBuf { buf: [0u8; 5] };
-                let field = JS_ToCString(ctx, *argv.add(2), &mut fbuf);
-                return Some(match db.hash_get(&key, field.as_bytes()) {
+                let mut ibuf1 = [0u8; 12];
+                let mut ibuf2 = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf1);
+                let field = js_value_as_bytes(ctx, *argv.add(2), &mut ibuf2);
+                if key.is_empty() { return None; }
+                return Some(match db.hash_get(key, field) {
                     Ok(Some(v)) => JS_NewStringLen(ctx, v.as_ref()),
                     Ok(None) => JSValue::NULL,
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
-                    },
+                    Err(_) => wrongtype_error(ctx, magic),
                 });
             }
+            // INCR — key borrowed directly, no heap alloc
             if cmd_bytes.eq_ignore_ascii_case(b"INCR") && argc == 2 {
-                let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
-                return Some(match db.incr_by(key.as_bytes(), 1) {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                return Some(match db.incr_by(key, 1) {
                     Ok(val) => JS_NewInt64(ctx, val),
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "ERR value is not an integer or out of range");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "ERR value is not an integer or out of range")
-                    },
+                    Err(_) => int_range_error(ctx, magic),
                 });
             }
+            // SADD — key borrowed, members go to Arc
             if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 3 {
-                let key = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
-                };
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
                 let mut members: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 2) as usize);
                 for i in 2..argc {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    members.push(Arc::from(JS_ToCString(ctx, *argv.add(i as usize), &mut buf).as_bytes()));
+                    let mut mbuf = [0u8; 12];
+                    members.push(Arc::from(
+                        js_value_as_bytes(ctx, *argv.add(i as usize), &mut mbuf),
+                    ));
                 }
-                return Some(match db.set_add(&key, &members) {
+                return Some(match db.set_add(key, &members) {
                     Ok(added) => JS_NewInt64(ctx, added),
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
-                    },
+                    Err(_) => wrongtype_error(ctx, magic),
                 });
             }
         }
         6 => {
-            // INCRBY
+            // INCRBY — key borrowed, delta parsed from int or string
             if cmd_bytes.eq_ignore_ascii_case(b"INCRBY") && argc == 3 {
-                let key = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    JS_ToCString(ctx, *argv.add(1), &mut buf).as_bytes().to_vec()
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                // Fast path: if delta is a JS integer, read directly without string conversion
+                let delta_val = *argv.add(2);
+                let delta = if delta_val.is_int() {
+                    delta_val.int32().unwrap_or(0) as i64
+                } else {
+                    let mut dbuf = [0u8; 12];
+                    let s = js_value_as_bytes(ctx, delta_val, &mut dbuf);
+                    core::str::from_utf8(s).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
                 };
-                let delta = {
-                    let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                    let s = JS_ToCString(ctx, *argv.add(2), &mut buf);
-                    s.parse::<i64>().unwrap_or(0)
-                };
-                return Some(match db.incr_by(&key, delta) {
+                return Some(match db.incr_by(key, delta) {
                     Ok(val) => JS_NewInt64(ctx, val),
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "ERR value is not an integer or out of range");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "ERR value is not an integer or out of range")
-                    },
+                    Err(_) => int_range_error(ctx, magic),
+                });
+            }
+            // DECRBY — analogous to INCRBY with negated delta
+            if cmd_bytes.eq_ignore_ascii_case(b"DECRBY") && argc == 3 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let delta_val = *argv.add(2);
+                let delta = if delta_val.is_int() {
+                    -(delta_val.int32().unwrap_or(0) as i64)
+                } else {
+                    let mut dbuf = [0u8; 12];
+                    let s = js_value_as_bytes(ctx, delta_val, &mut dbuf);
+                    -(core::str::from_utf8(s).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0))
+                };
+                return Some(match db.incr_by(key, delta) {
+                    Ok(val) => JS_NewInt64(ctx, val),
+                    Err(_) => int_range_error(ctx, magic),
                 });
             }
         }
         8 => {
-            // SMEMBERS
+            // SMEMBERS — key borrowed directly
             if cmd_bytes.eq_ignore_ascii_case(b"SMEMBERS") && argc == 2 {
-                let mut buf = JSCStringBuf { buf: [0u8; 5] };
-                let key = JS_ToCString(ctx, *argv.add(1), &mut buf);
-                return Some(match db.set_members(key.as_bytes()) {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                return Some(match db.set_members(key) {
                     Ok(members) => {
                         let arr = JS_NewArray(ctx, members.len() as i32);
                         for (idx, member) in members.iter().enumerate() {
@@ -2143,14 +2222,7 @@ unsafe fn redis_call_fast(
                         }
                         arr
                     }
-                    Err(_) => if magic == 1 {
-                        let obj = JS_NewObject(ctx);
-                        let err_val = JS_NewString(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value");
-                        let _ = JS_SetPropertyStr(ctx, obj, "err", err_val);
-                        obj
-                    } else {
-                        JS_ThrowInternalError(ctx, "WRONGTYPE Operation against a key holding the wrong kind of value")
-                    },
+                    Err(_) => wrongtype_error(ctx, magic),
                 });
             }
         }
@@ -2179,16 +2251,22 @@ fn redis_call(
             return JS_ThrowInternalError(ctx, "redis.call missing context");
         }
         let exec = &mut *opaque;
-        // Read command name to a stack buffer to avoid heap allocation.
-        let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
-        let cmd_str = JS_ToCString(ctx, *argv, &mut cmd_buf);
-        let cmd_len = cmd_str.len();
+        // Extract command name bytes directly from JS heap (zero-copy for strings).
+        let (cmd_ptr, cmd_len) = js_value_raw_bytes(ctx, *argv);
         let mut cmd_stack = [0u8; 16];
-        let cmd_bytes: &[u8] = if cmd_len <= 16 {
-            cmd_stack[..cmd_len].copy_from_slice(cmd_str.as_bytes());
+        let cmd_bytes: &[u8] = if !cmd_ptr.is_null() && cmd_len <= 16 {
+            // Copy to stack buffer so ctx borrow is released for subsequent calls
+            core::ptr::copy_nonoverlapping(cmd_ptr, cmd_stack.as_mut_ptr(), cmd_len);
             &cmd_stack[..cmd_len]
+        } else if cmd_ptr.is_null() {
+            // Non-string command name (e.g. number) — fall back to JS_ToCString
+            let mut cmd_buf = JSCStringBuf { buf: [0u8; 5] };
+            let cmd_str = JS_ToCString(ctx, *argv, &mut cmd_buf);
+            let len = cmd_str.len().min(16);
+            cmd_stack[..len].copy_from_slice(&cmd_str.as_bytes()[..len]);
+            &cmd_stack[..len]
         } else {
-            // Fallback for unusually long command names (shouldn't happen).
+            // Unusually long command name
             &[]
         };
 

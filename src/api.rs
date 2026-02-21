@@ -8502,111 +8502,148 @@ enum StmtResult {
 
 /// Evaluate a single statement (factored out from eval_program for reuse).
 fn eval_program_stmt(ctx: &mut JSContextImpl, trimmed: &str) -> StmtResult {
-    // Check for break/continue
-    if trimmed == "break" {
-        ctx.set_loop_control(crate::context::LoopControl::Break);
-        return StmtResult::LoopControl;
-    }
-    if trimmed == "continue" {
-        ctx.set_loop_control(crate::context::LoopControl::Continue);
-        return StmtResult::LoopControl;
-    }
-    // Function declaration
-    if trimmed.starts_with("function ") {
-        if let Some(val) = parse_function_declaration(ctx, trimmed) {
-            return StmtResult::Value(val);
-        }
-        if let Some(pos) = find_function_error_pos(trimmed) {
-            ctx.set_error_offset(ctx.current_stmt_offset() + pos);
-        }
-        return StmtResult::Error;
-    }
-    // If statement
-    if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
-        if let Some(val) = parse_if_statement(ctx, trimmed) {
-            return StmtResult::Value(val);
-        }
-        ctx.set_error_offset(ctx.current_stmt_offset());
-        return StmtResult::Error;
-    }
-    // While loop
-    if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
-        if let Some(val) = parse_while_loop(ctx, trimmed, None) {
-            return StmtResult::Value(val);
-        }
-        ctx.set_error_offset(ctx.current_stmt_offset());
-        return StmtResult::Error;
-    }
-    // For loop
-    if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
-        if let Some(val) = parse_for_loop(ctx, trimmed, None) {
-            return StmtResult::Value(val);
-        }
-        ctx.set_error_offset(ctx.current_stmt_offset());
-        return StmtResult::Error;
-    }
-    // Do-while loop
-    if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
-        if let Some(val) = parse_do_while_loop(ctx, trimmed, None) {
-            return StmtResult::Value(val);
-        }
-        ctx.set_error_offset(ctx.current_stmt_offset());
-        return StmtResult::Error;
-    }
-    // Switch
-    if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
-        if let Some(val) = parse_switch_statement(ctx, trimmed) {
-            return StmtResult::Value(val);
-        }
-        ctx.set_error_offset(ctx.current_stmt_offset());
-        return StmtResult::Error;
-    }
-    // Throw
-    if trimmed.starts_with("throw ") || trimmed == "throw" {
-        if trimmed == "throw" {
-            ctx.set_exception(Value::UNDEFINED);
-            return StmtResult::Value(Value::EXCEPTION);
-        }
-        let expr = trimmed[6..].trim();
-        if let Some(val) = eval_expr(ctx, expr) {
-            ctx.set_exception(val);
-            return StmtResult::Value(Value::EXCEPTION);
-        }
-        ctx.set_exception(Value::UNDEFINED);
-        return StmtResult::Value(Value::EXCEPTION);
-    }
-    // Try/catch/finally
-    if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
-        if let Some(val) = parse_try_catch(ctx, trimmed) {
-            return StmtResult::Value(val);
-        }
-        return StmtResult::Error;
-    }
-    // Labeled statement
-    if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
-        match label_result {
-            Some(val) => {
-                if *ctx.get_loop_control() != crate::context::LoopControl::None {
-                    return StmtResult::LoopControl;
-                }
-                return StmtResult::Value(val);
+    // Fast dispatch: check first byte to skip keyword prefix chain for expression statements.
+    // Keywords that start statement types: b(reak), c(ontinue/const), d(o), f(or/function),
+    // i(f), l(et), s(witch), t(hrow/try), v(ar), w(hile), and '{' for bare blocks.
+    // Any other first byte must be an expression statement.
+    let first = match trimmed.as_bytes().first() {
+        Some(&b) => b,
+        None => return StmtResult::Value(Value::UNDEFINED),
+    };
+    match first {
+        b'b' => {
+            if trimmed == "break" {
+                ctx.set_loop_control(crate::context::LoopControl::Break);
+                return StmtResult::LoopControl;
             }
-            None => return StmtResult::Error,
+            // fall through to expression
+        }
+        b'c' => {
+            if trimmed == "continue" {
+                ctx.set_loop_control(crate::context::LoopControl::Continue);
+                return StmtResult::LoopControl;
+            }
+            // 'const' is handled by eval_expr
+            // fall through to expression
+        }
+        b'f' => {
+            if trimmed.starts_with("function ") {
+                if let Some(val) = parse_function_declaration(ctx, trimmed) {
+                    return StmtResult::Value(val);
+                }
+                if let Some(pos) = find_function_error_pos(trimmed) {
+                    ctx.set_error_offset(ctx.current_stmt_offset() + pos);
+                }
+                return StmtResult::Error;
+            }
+            if trimmed.starts_with("for ") || trimmed.starts_with("for(") {
+                if let Some(val) = parse_for_loop(ctx, trimmed, None) {
+                    return StmtResult::Value(val);
+                }
+                ctx.set_error_offset(ctx.current_stmt_offset());
+                return StmtResult::Error;
+            }
+            // fall through to expression (e.g., function call starting with 'f')
+        }
+        b'i' => {
+            if trimmed.starts_with("if ") || trimmed.starts_with("if(") {
+                if let Some(val) = parse_if_statement(ctx, trimmed) {
+                    return StmtResult::Value(val);
+                }
+                ctx.set_error_offset(ctx.current_stmt_offset());
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        b'w' => {
+            if trimmed.starts_with("while ") || trimmed.starts_with("while(") {
+                if let Some(val) = parse_while_loop(ctx, trimmed, None) {
+                    return StmtResult::Value(val);
+                }
+                ctx.set_error_offset(ctx.current_stmt_offset());
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        b'd' => {
+            if trimmed.starts_with("do ") || trimmed.starts_with("do{") {
+                if let Some(val) = parse_do_while_loop(ctx, trimmed, None) {
+                    return StmtResult::Value(val);
+                }
+                ctx.set_error_offset(ctx.current_stmt_offset());
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        b's' => {
+            if trimmed.starts_with("switch ") || trimmed.starts_with("switch(") {
+                if let Some(val) = parse_switch_statement(ctx, trimmed) {
+                    return StmtResult::Value(val);
+                }
+                ctx.set_error_offset(ctx.current_stmt_offset());
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        b't' => {
+            if trimmed.starts_with("throw ") || trimmed == "throw" {
+                if trimmed == "throw" {
+                    ctx.set_exception(Value::UNDEFINED);
+                    return StmtResult::Value(Value::EXCEPTION);
+                }
+                let expr = trimmed[6..].trim();
+                if let Some(val) = eval_expr(ctx, expr) {
+                    ctx.set_exception(val);
+                    return StmtResult::Value(Value::EXCEPTION);
+                }
+                ctx.set_exception(Value::UNDEFINED);
+                return StmtResult::Value(Value::EXCEPTION);
+            }
+            if trimmed.starts_with("try ") || trimmed.starts_with("try{") {
+                if let Some(val) = parse_try_catch(ctx, trimmed) {
+                    return StmtResult::Value(val);
+                }
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        b'{' => {
+            if trimmed.ends_with('}') {
+                if let Some((block_content, _)) = extract_braces(trimmed) {
+                    if let Some(val) = eval_block(ctx, block_content) {
+                        if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                            return StmtResult::LoopControl;
+                        }
+                        return StmtResult::Value(val);
+                    }
+                }
+                return StmtResult::Error;
+            }
+            // fall through to expression
+        }
+        _ => {
+            // First byte doesn't match any keyword — skip straight to eval_expr.
+            // This is the fast path for expression statements like `redis.call(...)`,
+            // variable assignments starting with non-keyword identifiers, etc.
         }
     }
-    // Bare block
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        if let Some((block_content, _)) = extract_braces(trimmed) {
-            if let Some(val) = eval_block(ctx, block_content) {
-                if *ctx.get_loop_control() != crate::context::LoopControl::None {
-                    return StmtResult::LoopControl;
+
+    // Labeled statement check (only for identifiers that could be labels)
+    if first.is_ascii_alphabetic() || first == b'_' || first == b'$' {
+        if let Some(label_result) = parse_labeled_statement(ctx, trimmed) {
+            match label_result {
+                Some(val) => {
+                    if *ctx.get_loop_control() != crate::context::LoopControl::None {
+                        return StmtResult::LoopControl;
+                    }
+                    return StmtResult::Value(val);
                 }
-                return StmtResult::Value(val);
+                None => return StmtResult::Error,
             }
         }
-        return StmtResult::Error;
     }
-    // Expression
+
+    // Expression (most common path for non-keyword statements)
     match eval_expr(ctx, trimmed) {
         Some(val) => StmtResult::Value(val),
         None => {
