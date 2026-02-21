@@ -2,9 +2,13 @@
 #![allow(dead_code)]
 
 use async_std::io;
+#[cfg(feature = "mini-redis-libsql")]
 use async_std::channel::{bounded, Sender, Receiver};
+#[cfg(feature = "mini-redis-libsql")]
 use async_std::future::timeout;
+#[cfg(feature = "mini-redis-libsql")]
 use async_std::task;
+#[cfg(feature = "mini-redis-libsql")]
 use std::time::Duration;
 
 use crate::mini_redis::store::Db;
@@ -34,27 +38,27 @@ impl Persist {
         }
     }
 
-    pub async fn load(&self, dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn load(&self, _dbs: &mut [Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
-            Persist::Libsql(persist) => persist.load(dbs).await,
+            Persist::Libsql(persist) => persist.load(_dbs).await,
         }
     }
 
-    pub async fn log_command(&self, db: usize, cmd: &str, args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
+    pub async fn log_command(&self, _db: usize, _cmd: &str, _args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
-            Persist::Libsql(persist) => persist.log_command(db, cmd, args).await,
+            Persist::Libsql(persist) => persist.log_command(_db, _cmd, _args).await,
         }
     }
 
-    pub async fn snapshot(&self, dbs: &mut [Db]) -> io::Result<()> {
+    pub async fn snapshot(&self, _dbs: &mut [Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
             #[cfg(feature = "mini-redis-libsql")]
-            Persist::Libsql(persist) => persist.snapshot(dbs).await,
+            Persist::Libsql(persist) => persist.snapshot(_dbs).await,
         }
     }
 }

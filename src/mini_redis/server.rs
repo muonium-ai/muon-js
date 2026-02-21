@@ -630,7 +630,7 @@ fn handle_command(
     persist_state: &Arc<Mutex<PersistState>>,
     script_cache_state: &Arc<Mutex<ScriptCacheState>>,
     db_index: &mut usize,
-    script: &mut Option<ScriptRuntime>,
+    _script: &mut Option<ScriptRuntime>,
     cmd: &str,
     args: &[Arc<[u8]>],
     skip_aof: bool,
