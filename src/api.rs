@@ -3178,10 +3178,113 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
                         let rhs = s[i + 1..].trim();
                         if !lhs.is_empty() && !rhs.is_empty() {
                             ctx.set_error_offset(stmt_offset + i - 1);
-                            // Expand: x += 5 => x = x + 5
-                            let op = prev as char;
-                            let expanded = format!("{} = {} {} {}", lhs, lhs, op, rhs);
-                            return eval_expr(ctx, &expanded);
+                            // Direct evaluation: avoid format! allocation + recursive parse.
+                            // Fast path for simple identifier (e.g., i += 1)
+                            if is_identifier(lhs) {
+                                let (env, lhs_val) = match ctx.resolve_binding(lhs) {
+                                    Some(pair) => pair,
+                                    None => {
+                                        let global = js_get_global_object(ctx);
+                                        if ctx.has_property_str(global, lhs.as_bytes()) {
+                                            let v = ctx.get_property_str(global, lhs.as_bytes()).unwrap_or(Value::UNDEFINED);
+                                            (global, v)
+                                        } else {
+                                            return Some(js_throw_error(ctx, JSObjectClassEnum::ReferenceError, "not defined"));
+                                        }
+                                    }
+                                };
+                                // Check const binding
+                                if is_const_binding(ctx, env, lhs) {
+                                    return Some(js_throw_error(ctx, JSObjectClassEnum::TypeError, "invalid assignment to const"));
+                                }
+                                let rhs_val = eval_expr(ctx, rhs)?;
+                                // Integer fast path
+                                let result = if let (Some(a), Some(b_int)) = (lhs_val.int32(), rhs_val.int32()) {
+                                    match prev {
+                                        b'+' => match a.checked_add(b_int) {
+                                            Some(r) => Value::from_int32(r),
+                                            None => number_to_value(ctx, a as f64 + b_int as f64),
+                                        },
+                                        b'-' => match a.checked_sub(b_int) {
+                                            Some(r) => Value::from_int32(r),
+                                            None => number_to_value(ctx, a as f64 - b_int as f64),
+                                        },
+                                        b'*' => match a.checked_mul(b_int) {
+                                            Some(r) => Value::from_int32(r),
+                                            None => number_to_value(ctx, a as f64 * b_int as f64),
+                                        },
+                                        b'/' => number_to_value(ctx, a as f64 / b_int as f64),
+                                        _ => unreachable!(),
+                                    }
+                                } else if prev == b'+' {
+                                    // Handle string concatenation for +=
+                                    let left_is_str = ctx.string_bytes(lhs_val).is_some();
+                                    let right_is_str = ctx.string_bytes(rhs_val).is_some();
+                                    if left_is_str || right_is_str {
+                                        let ls = js_to_string(ctx, lhs_val);
+                                        let rs = js_to_string(ctx, rhs_val);
+                                        let lb = ctx.string_bytes(ls).unwrap_or(&[]);
+                                        let rb = ctx.string_bytes(rs).unwrap_or(&[]);
+                                        let mut out = Vec::with_capacity(lb.len() + rb.len());
+                                        out.extend_from_slice(lb);
+                                        out.extend_from_slice(rb);
+                                        js_new_string_len(ctx, &out)
+                                    } else {
+                                        let ln = js_to_number(ctx, lhs_val).ok()?;
+                                        let rn = js_to_number(ctx, rhs_val).ok()?;
+                                        number_to_value(ctx, ln + rn)
+                                    }
+                                } else {
+                                    let ln = js_to_number(ctx, lhs_val).ok()?;
+                                    let rn = js_to_number(ctx, rhs_val).ok()?;
+                                    let n = match prev {
+                                        b'-' => ln - rn,
+                                        b'*' => ln * rn,
+                                        b'/' => ln / rn,
+                                        _ => unreachable!(),
+                                    };
+                                    number_to_value(ctx, n)
+                                };
+                                js_set_property_str(ctx, env, lhs, result);
+                                return Some(result);
+                            }
+                            // General case: property/bracket access (e.g., obj.x += 1)
+                            let lhs_val = eval_expr(ctx, lhs)?;
+                            let rhs_val = eval_expr(ctx, rhs)?;
+                            let result = if prev == b'+' {
+                                let left_is_str = ctx.string_bytes(lhs_val).is_some();
+                                let right_is_str = ctx.string_bytes(rhs_val).is_some();
+                                if left_is_str || right_is_str {
+                                    let ls = js_to_string(ctx, lhs_val);
+                                    let rs = js_to_string(ctx, rhs_val);
+                                    let lb = ctx.string_bytes(ls).unwrap_or(&[]);
+                                    let rb = ctx.string_bytes(rs).unwrap_or(&[]);
+                                    let mut out = Vec::with_capacity(lb.len() + rb.len());
+                                    out.extend_from_slice(lb);
+                                    out.extend_from_slice(rb);
+                                    js_new_string_len(ctx, &out)
+                                } else {
+                                    let ln = js_to_number(ctx, lhs_val).ok()?;
+                                    let rn = js_to_number(ctx, rhs_val).ok()?;
+                                    number_to_value(ctx, ln + rn)
+                                }
+                            } else {
+                                let ln = js_to_number(ctx, lhs_val).ok()?;
+                                let rn = js_to_number(ctx, rhs_val).ok()?;
+                                match prev {
+                                    b'-' => number_to_value(ctx, ln - rn),
+                                    b'*' => number_to_value(ctx, ln * rn),
+                                    b'/' => number_to_value(ctx, ln / rn),
+                                    _ => unreachable!(),
+                                }
+                            };
+                            let (base, key) = parse_lvalue(ctx, lhs)?;
+                            let res = match key {
+                                LValueKey::Index(idx) => js_set_property_uint32(ctx, base, idx, result),
+                                LValueKey::Name(name) => js_set_property_str(ctx, base, &name, result),
+                            };
+                            if res.is_exception() { return None; }
+                            return Some(result);
                         }
                     }
                 }
@@ -7757,10 +7860,11 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 /// Pre-parse a function/loop body into a list of trimmed statement strings.
 /// Returns None on parse error (e.g. unclosed comment).
 pub fn parse_body_to_stmts(body: &str) -> Option<Vec<String>> {
-    let cleaned = match crate::evals::strip_comments_checked(body) {
-        Ok(s) => normalize_line_continuations(&s),
+    let stripped = match crate::evals::strip_comments_checked(body) {
+        Ok(s) => s,
         Err(_) => return None,
     };
+    let cleaned = normalize_line_continuations(&stripped);
     let stmts = split_statements(&cleaned)?;
     Some(
         stmts
@@ -7772,13 +7876,14 @@ pub fn parse_body_to_stmts(body: &str) -> Option<Vec<String>> {
 }
 
 pub fn eval_function_body(ctx: &mut JSContextImpl, body: &str) -> Option<JSValue> {
-    let cleaned = match crate::evals::strip_comments_checked(body) {
-        Ok(s) => normalize_line_continuations(&s),
+    let stripped = match crate::evals::strip_comments_checked(body) {
+        Ok(s) => s,
         Err(pos) => {
             ctx.set_error_offset(pos);
             return None;
         }
     };
+    let cleaned = normalize_line_continuations(&stripped);
     let stmts = split_statements(&cleaned)?;
     let mut last = Value::UNDEFINED;
     let mut search_idx = 0usize;
@@ -8197,13 +8302,14 @@ pub fn eval_function_body_cached(ctx: &mut JSContextImpl, stmts: &[String]) -> O
 
 
 pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
-    let cleaned = match crate::evals::strip_comments_checked(src) {
-        Ok(s) => normalize_line_continuations(&s),
+    let stripped = match crate::evals::strip_comments_checked(src) {
+        Ok(s) => s,
         Err(pos) => {
             ctx.set_error_offset(pos);
             return None;
         }
     };
+    let cleaned = normalize_line_continuations(&stripped);
     let stmts = split_statements(&cleaned)?;
     let mut last = Value::UNDEFINED;
     let mut any = false;

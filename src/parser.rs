@@ -1867,37 +1867,37 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     let params_val = js_get_property_str(ctx, func, "__params__");
     let body_val = js_get_property_str(ctx, func, "__body__");
 
-    #[derive(Clone)]
-    struct ParamSpec {
-        name: String,
-        default: Option<String>,
-        rest: bool,
-    }
-    let mut param_specs: Vec<ParamSpec> = Vec::new();
-    {
-        let params_bytes = ctx.string_bytes(params_val)?;
-        let params_str = core::str::from_utf8(params_bytes).ok()?;
-        if !params_str.is_empty() {
-            for raw in params_str.split(',') {
-                let raw = raw.trim();
-                if raw.is_empty() {
-                    continue;
-                }
-                if raw.starts_with("...") {
-                    let name = raw[3..].trim().to_string();
-                    param_specs.push(ParamSpec { name, default: None, rest: true });
-                    break;
-                }
-                if let Some(eq_pos) = raw.find('=') {
-                    let name = raw[..eq_pos].trim().to_string();
-                    let default = raw[eq_pos + 1..].trim().to_string();
-                    param_specs.push(ParamSpec { name, default: Some(default), rest: false });
-                } else {
-                    param_specs.push(ParamSpec { name: raw.to_string(), default: None, rest: false });
+    // --- Param spec cache: parse once, reuse on subsequent calls ---
+    let params_key = params_val.0 as u64;
+    if ctx.get_param_cache(params_key).is_none() {
+        let mut specs = Vec::new();
+        if let Some(params_bytes) = ctx.string_bytes(params_val) {
+            if let Ok(params_str) = core::str::from_utf8(params_bytes) {
+                if !params_str.is_empty() {
+                    for raw in params_str.split(',') {
+                        let raw = raw.trim();
+                        if raw.is_empty() {
+                            continue;
+                        }
+                        if raw.starts_with("...") {
+                            let name = raw[3..].trim().to_string();
+                            specs.push(crate::context::CachedParamSpec { name, default: None, rest: true });
+                            break;
+                        }
+                        if let Some(eq_pos) = raw.find('=') {
+                            let name = raw[..eq_pos].trim().to_string();
+                            let default = raw[eq_pos + 1..].trim().to_string();
+                            specs.push(crate::context::CachedParamSpec { name, default: Some(default), rest: false });
+                        } else {
+                            specs.push(crate::context::CachedParamSpec { name: raw.to_string(), default: None, rest: false });
+                        }
+                    }
                 }
             }
         }
+        ctx.set_param_cache(params_key, specs);
     }
+    let param_specs = ctx.get_param_cache(params_key)?.clone();
 
     // --- Body cache: parse once, reuse on subsequent calls ---
     let body_key = body_val.0 as u64;
@@ -1907,10 +1907,11 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
         // First call: parse body and store in cache
         let body_bytes = ctx.string_bytes(body_val)?;
         let body_str = core::str::from_utf8(body_bytes).ok()?.to_string();
-        let cleaned = match crate::evals::strip_comments_checked(&body_str) {
-            Ok(s) => crate::evals::normalize_line_continuations(&s),
-            Err(_) => body_str.clone(),
+        let stripped = match crate::evals::strip_comments_checked(&body_str) {
+            Ok(s) => s,
+            Err(_) => std::borrow::Cow::Borrowed(body_str.as_str()),
         };
+        let cleaned = crate::evals::normalize_line_continuations(&stripped);
         let stmts = crate::evals::split_statements(&cleaned)
             .unwrap_or_default()
             .into_iter()
@@ -1924,13 +1925,26 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     let cached_stmts = ctx.get_body_cache(body_key)?.clone();
 
     // Check if function has a name (for recursive named function expressions)
+    // Use stack buffer to avoid heap allocation for names ≤ 64 bytes.
     let func_name_val = js_get_property_str(ctx, func, "name");
-    let func_name: Option<String> = if !func_name_val.is_undefined() {
-        ctx.string_bytes(func_name_val)
-            .and_then(|b| core::str::from_utf8(b).ok())
-            .map(|s| s.to_string())
+    let mut func_name_buf = [0u8; 64];
+    let func_name_len: usize;
+    let has_func_name = if !func_name_val.is_undefined() {
+        if let Some(name_bytes) = ctx.string_bytes(func_name_val) {
+            func_name_len = name_bytes.len();
+            if func_name_len <= 64 {
+                func_name_buf[..func_name_len].copy_from_slice(name_bytes);
+                true
+            } else {
+                false // extremely rare: fallback with heap alloc below
+            }
+        } else {
+            func_name_len = 0;
+            false
+        }
     } else {
-        None
+        func_name_len = 0;
+        false
     };
 
     let parent_env = js_get_property_str(ctx, func, "__env__");
@@ -1953,8 +1967,10 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     predeclare_block_bindings_from_stmts(ctx, &cached_stmts);
 
     // Bind function name in local scope for recursive calls
-    if let Some(name) = func_name {
-        js_set_property_str(ctx, env, &name, func);
+    if has_func_name {
+        if let Ok(name) = core::str::from_utf8(&func_name_buf[..func_name_len]) {
+            js_set_property_str(ctx, env, name, func);
+        }
     }
 
     // Populate `arguments` for function scope.

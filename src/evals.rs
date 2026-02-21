@@ -8,6 +8,7 @@ use crate::types::*;
 use crate::value::*;
 use crate::helpers::*;
 use crate::parser::{create_function, extract_braces, extract_paren, parse_identifier};
+use std::borrow::Cow;
 
 const BUILTIN_DISPATCH: [(&str, &str); 30] = [
     ("Array", "__builtin_Array__"),
@@ -394,7 +395,12 @@ pub use crate::api::eval_expr;
 
 /// Strip line (`//`) and block (`/* */`) comments while preserving strings and length.
 /// Returns an error offset if an unterminated block comment is found.
-pub fn strip_comments_checked(src: &str) -> Result<String, usize> {
+/// Fast path: returns borrowed `Cow::Borrowed` when source has no `/` character (no possible comments).
+pub fn strip_comments_checked(src: &str) -> Result<Cow<'_, str>, usize> {
+    // Fast path: no '/' means no possible comments — return borrowed ref, zero allocation.
+    if !src.as_bytes().contains(&b'/') {
+        return Ok(Cow::Borrowed(src));
+    }
     let bytes = src.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
@@ -471,17 +477,26 @@ pub fn strip_comments_checked(src: &str) -> Result<String, usize> {
         out.push(b);
         i += 1;
     }
-    String::from_utf8(out).map_err(|_| 0)
+    String::from_utf8(out).map(Cow::Owned).map_err(|_| 0)
 }
 
 /// Strip comments without error reporting.
 #[allow(dead_code)]
 pub fn strip_comments(src: &str) -> String {
-    strip_comments_checked(src).unwrap_or_else(|_| src.to_string())
+    match strip_comments_checked(src) {
+        Ok(Cow::Borrowed(s)) => s.to_string(),
+        Ok(Cow::Owned(s)) => s,
+        Err(_) => src.to_string(),
+    }
 }
 
 /// Join single-line control flow without braces to keep statements together.
-pub fn normalize_line_continuations(src: &str) -> String {
+/// Fast path: if source has no newlines, return as-is (no allocation).
+pub fn normalize_line_continuations(src: &str) -> Cow<'_, str> {
+    // Fast path: single-line source needs no line continuation processing.
+    if !src.contains('\n') {
+        return Cow::Borrowed(src);
+    }
     fn line_ends_with_operator(line: &str) -> bool {
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -583,7 +598,7 @@ pub fn normalize_line_continuations(src: &str) -> String {
         out.push_str(&current);
         out.push('\n');
     }
-    out
+    Cow::Owned(out)
 }
 
 /// Check if a value is truthy in JavaScript semantics

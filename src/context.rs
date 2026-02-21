@@ -27,6 +27,14 @@ pub struct CallFrame {
     pub var_env: Value,
 }
 
+/// Cached parsed parameter specification for a function.
+#[derive(Clone)]
+pub struct CachedParamSpec {
+    pub name: String,
+    pub default: Option<String>,
+    pub rest: bool,
+}
+
 /// Core runtime state. This will evolve to match MQuickJS JSContext.
 pub struct Context {
     mem: MemoryRegion,
@@ -65,6 +73,8 @@ pub struct Context {
     current_stmt_offset: usize,
     /// Cache of parsed function bodies: body Value raw bits → pre-split statements.
     body_cache: HashMap<u64, Vec<String>>,
+    /// Cache of parsed parameter specs: params Value raw bits → parsed specs.
+    param_cache: HashMap<u64, Vec<CachedParamSpec>>,
     /// Stack of call frames for fast local variable access.
     call_frames: Vec<CallFrame>,
 }
@@ -107,6 +117,7 @@ impl Context {
             current_error_offset: None,
             current_stmt_offset: 0,
             body_cache: HashMap::new(),
+            param_cache: HashMap::new(),
             call_frames: Vec::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
@@ -215,6 +226,16 @@ impl Context {
     /// Store cached parsed statements for a function body Value.
     pub fn set_body_cache(&mut self, body_val_bits: u64, stmts: Vec<String>) {
         self.body_cache.insert(body_val_bits, stmts);
+    }
+
+    /// Retrieve cached parameter specs for a function.
+    pub fn get_param_cache(&self, params_val_bits: u64) -> Option<&Vec<CachedParamSpec>> {
+        self.param_cache.get(&params_val_bits)
+    }
+
+    /// Store cached parameter specs for a function.
+    pub fn set_param_cache(&mut self, params_val_bits: u64, specs: Vec<CachedParamSpec>) {
+        self.param_cache.insert(params_val_bits, specs);
     }
 
     pub fn compute_line_col(&self, offset: usize) -> (usize, usize) {
