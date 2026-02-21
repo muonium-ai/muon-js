@@ -326,25 +326,36 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self
-            .data
-            .entry(key.to_vec())
-            .or_insert_with(|| Value::List(VecDeque::new()));
-        match entry {
-            Value::List(list) => {
-                if left {
-                    for value in values {
-                        list.push_front(value.clone());
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::List(list) => {
+                    if left {
+                        for value in values {
+                            list.push_front(value.clone());
+                        }
+                    } else {
+                        for value in values {
+                            list.push_back(value.clone());
+                        }
                     }
-                } else {
-                    for value in values {
-                        list.push_back(value.clone());
-                    }
+                    Ok(list.len() as i64)
                 }
-                Ok(list.len() as i64)
-            }
-            _ => Err(()),
+                _ => Err(()),
+            };
         }
+        let mut list = VecDeque::new();
+        if left {
+            for value in values {
+                list.push_front(value.clone());
+            }
+        } else {
+            for value in values {
+                list.push_back(value.clone());
+            }
+        }
+        let len = list.len() as i64;
+        self.data.insert(key.to_vec(), Value::List(list));
+        Ok(len)
     }
 
     fn list_pop(&mut self, key: &[u8], left: bool) -> Result<Option<Arc<[u8]>>, ()> {
@@ -603,23 +614,30 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
-        match entry {
-            Value::Hash(map) => {
-                let field_key: Arc<[u8]> = Arc::from(field);
-                let current = match map.get(&field_key) {
-                    Some(val) => {
-                        let s = std::str::from_utf8(val.as_ref()).map_err(|_| ())?;
-                        s.parse::<i64>().map_err(|_| ())?
-                    }
-                    None => 0,
-                };
-                let new_val = current.wrapping_add(delta);
-                map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
-                Ok(new_val)
-            }
-            _ => Err(()),
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => {
+                    let field_key: Arc<[u8]> = Arc::from(field);
+                    let current = match map.get(&field_key) {
+                        Some(val) => {
+                            let s = std::str::from_utf8(val.as_ref()).map_err(|_| ())?;
+                            s.parse::<i64>().map_err(|_| ())?
+                        }
+                        None => 0,
+                    };
+                    let new_val = current.wrapping_add(delta);
+                    map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
+                    Ok(new_val)
+                }
+                _ => Err(()),
+            };
         }
+        let field_key: Arc<[u8]> = Arc::from(field);
+        let new_val = delta;
+        let mut map = HashMap::new();
+        map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(new_val)
     }
 
     /// HSETNX: set hash field only if it doesn't already exist
@@ -627,20 +645,25 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
-        match entry {
-            Value::Hash(map) => {
-                use std::collections::hash_map::Entry;
-                match map.entry(field) {
-                    Entry::Occupied(_) => Ok(false),
-                    Entry::Vacant(e) => {
-                        e.insert(value);
-                        Ok(true)
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => {
+                    use std::collections::hash_map::Entry;
+                    match map.entry(field) {
+                        Entry::Occupied(_) => Ok(false),
+                        Entry::Vacant(e) => {
+                            e.insert(value);
+                            Ok(true)
+                        }
                     }
                 }
-            }
-            _ => Err(()),
+                _ => Err(()),
+            };
         }
+        let mut map = HashMap::new();
+        map.insert(field, value);
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(true)
     }
 
     /// SUNION: return the union of multiple sets
@@ -823,11 +846,16 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Hash(HashMap::new()));
-        match entry {
-            Value::Hash(map) => Ok(map.insert(field, value).is_none()),
-            _ => Err(()),
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => Ok(map.insert(field, value).is_none()),
+                _ => Err(()),
+            };
         }
+        let mut map = HashMap::new();
+        map.insert(field, value);
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(true)
     }
 
     fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
@@ -907,19 +935,29 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
-        match entry {
-            Value::Set(set) => {
-                let mut added = 0;
-                for member in members {
-                    if set.insert(member.clone()) {
-                        added += 1;
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Set(set) => {
+                    let mut added = 0;
+                    for member in members {
+                        if set.insert(member.clone()) {
+                            added += 1;
+                        }
                     }
+                    Ok(added)
                 }
-                Ok(added)
-            }
-            _ => Err(()),
+                _ => Err(()),
+            };
         }
+        let mut set = HashSet::new();
+        let mut added = 0;
+        for member in members {
+            if set.insert(member.clone()) {
+                added += 1;
+            }
+        }
+        self.data.insert(key.to_vec(), Value::Set(set));
+        Ok(added)
     }
 
     fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
@@ -999,25 +1037,35 @@ impl Shard {
                 self.expires.remove(source);
             }
         }
-        let entry = self.data.entry(dest.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
-        match entry {
-            Value::Set(set) => {
-                set.insert(Arc::from(member));
-                Ok(true)
-            }
-            _ => Err(()),
+        if let Some(entry) = self.data.get_mut(dest) {
+            return match entry {
+                Value::Set(set) => {
+                    set.insert(Arc::from(member));
+                    Ok(true)
+                }
+                _ => Err(()),
+            };
         }
+        let mut set = HashSet::new();
+        set.insert(Arc::from(member));
+        self.data.insert(dest.to_vec(), Value::Set(set));
+        Ok(true)
     }
 
     fn zadd(&mut self, key: &[u8], score: f64, member: Vec<u8>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::ZSet(HashMap::new()));
-        match entry {
-            Value::ZSet(items) => Ok(items.insert(member, score).is_none()),
-            _ => Err(()),
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::ZSet(items) => Ok(items.insert(member, score).is_none()),
+                _ => Err(()),
+            };
         }
+        let mut items = HashMap::new();
+        items.insert(member, score);
+        self.data.insert(key.to_vec(), Value::ZSet(items));
+        Ok(true)
     }
 
     fn zrem(&mut self, key: &[u8], members: &[Vec<u8>]) -> Result<i64, ()> {
@@ -1108,15 +1156,20 @@ impl Shard {
         if id != "*" {
             return Err(());
         }
-        let entry = self.data.entry(key.to_vec()).or_insert_with(|| Value::Stream(Vec::new()));
-        match entry {
-            Value::Stream(items) => {
-                let next_id = format!("{}-0", items.len() + 1);
-                items.push((next_id.clone(), fields));
-                Ok(next_id)
-            }
-            _ => Err(()),
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Stream(items) => {
+                    let next_id = format!("{}-0", items.len() + 1);
+                    items.push((next_id.clone(), fields));
+                    Ok(next_id)
+                }
+                _ => Err(()),
+            };
         }
+        let next_id = "1-0".to_string();
+        self.data
+            .insert(key.to_vec(), Value::Stream(vec![(next_id.clone(), fields)]));
+        Ok(next_id)
     }
 
     fn stream_range(&mut self, key: &[u8], start: &str, end: &str) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>, ()> {
@@ -1374,11 +1427,19 @@ impl Db {
                 src.expires.remove(source);
             }
         }
-        let entry = dst.data.entry(dest.to_vec()).or_insert_with(|| Value::Set(HashSet::new()));
-        match entry {
-            Value::Set(set) => { set.insert(Arc::from(member)); Ok(true) }
-            _ => Err(()),
+        if let Some(entry) = dst.data.get_mut(dest) {
+            return match entry {
+                Value::Set(set) => {
+                    set.insert(Arc::from(member));
+                    Ok(true)
+                }
+                _ => Err(()),
+            };
         }
+        let mut set = HashSet::new();
+        set.insert(Arc::from(member));
+        dst.data.insert(dest.to_vec(), Value::Set(set));
+        Ok(true)
     }
 
     // --- sorted set operations ---
