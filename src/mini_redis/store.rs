@@ -929,6 +929,9 @@ impl Shard {
     }
 
     fn is_expired(&self, key: &[u8]) -> bool {
+        if self.expires.is_empty() {
+            return false;
+        }
         if let Some(&ts) = self.expires.get(key) {
             return ts <= now_ms();
         }

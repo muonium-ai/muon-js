@@ -13,6 +13,10 @@ pub enum RespValue {
     Blob(Arc<[u8]>),
     Null,
     Array(Vec<RespValue>),
+    /// Zero-alloc simple string response (e.g. "OK", "PONG")
+    StaticSimple(&'static str),
+    /// Zero-alloc error response (e.g. "WRONGTYPE ...")
+    StaticError(&'static str),
 }
 
 fn push_usize(buf: &mut Vec<u8>, mut n: usize) {
@@ -59,7 +63,17 @@ impl RespValue {
                 out.extend_from_slice(s.as_bytes());
                 out.extend_from_slice(b"\r\n");
             }
+            RespValue::StaticSimple(s) => {
+                out.extend_from_slice(b"+");
+                out.extend_from_slice(s.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
             RespValue::Error(s) => {
+                out.extend_from_slice(b"-");
+                out.extend_from_slice(s.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+            RespValue::StaticError(s) => {
                 out.extend_from_slice(b"-");
                 out.extend_from_slice(s.as_bytes());
                 out.extend_from_slice(b"\r\n");
@@ -139,6 +153,7 @@ fn encode_array_of_blobs(items: &[Arc<[u8]>], out: &mut Vec<u8>) {
 fn estimate_encoded_len(value: &RespValue) -> usize {
     match value {
         RespValue::Simple(s) | RespValue::Error(s) => 3 + s.len(),
+        RespValue::StaticSimple(s) | RespValue::StaticError(s) => 3 + s.len(),
         RespValue::Integer(_) => 24,
         RespValue::Blob(bytes) => 16 + bytes.len(),
         RespValue::Null => 3,
@@ -218,7 +233,7 @@ where
                 }
                 Ok(Some(RespValue::Array(items)))
             }
-            _ => Ok(Some(RespValue::Error("ERR unknown RESP type".to_string()))),
+            _ => Ok(Some(RespValue::StaticError("ERR unknown RESP type"))),
         }
     })
 }
