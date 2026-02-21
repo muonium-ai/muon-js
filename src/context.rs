@@ -77,6 +77,9 @@ pub struct Context {
     param_cache: HashMap<u64, Vec<CachedParamSpec>>,
     /// Stack of call frames for fast local variable access.
     call_frames: Vec<CallFrame>,
+    /// Overflow hash maps for objects with >8 properties.
+    /// Keyed by HeapObject raw pointer (as usize). Only populated when prop_count > 8.
+    prop_maps: HashMap<usize, HashMap<u64, Value>>,
 }
 
 impl Context {
@@ -119,6 +122,7 @@ impl Context {
             body_cache: HashMap::new(),
             param_cache: HashMap::new(),
             call_frames: Vec::new(),
+            prop_maps: HashMap::new(),
         };
         if let Some(obj) = ctx.new_object(JSObjectClassEnum::Object as u32) {
             ctx.global_object = obj;
@@ -998,6 +1002,15 @@ const HEAP_TAG_FLOAT: u32 = 4;
 const PROP_KEY_ATOM: u32 = 0;
 const PROP_KEY_INDEX: u32 = 1;
 
+/// Threshold: when prop_count exceeds this, we build an overflow hash map.
+const PROP_MAP_THRESHOLD: u32 = 8;
+
+/// Pack (kind, key) into a single u64 for use as HashMap key.
+#[inline(always)]
+fn prop_map_key(kind: u32, key: u32) -> u64 {
+    (kind as u64) << 32 | key as u64
+}
+
 #[repr(C)]
 struct StringHeader {
     tag: u32,
@@ -1211,6 +1224,13 @@ impl Context {
     }
 
     unsafe fn find_prop_value(&self, obj: *mut HeapObject, kind: u32, key: u32) -> Option<Value> {
+        // Fast path: use overflow hash map when available (O(1) vs O(n))
+        if (*obj).prop_count > PROP_MAP_THRESHOLD {
+            if let Some(map) = self.prop_maps.get(&(obj as usize)) {
+                return map.get(&prop_map_key(kind, key)).copied();
+            }
+        }
+        // Slow path: linear scan of linked list (≤8 properties)
         let mut cur = (*obj).prop_head;
         while !cur.is_null() {
             if (*cur).key_kind == kind && (*cur).key == key {
@@ -1222,6 +1242,47 @@ impl Context {
     }
 
     unsafe fn set_prop_value(&mut self, obj: *mut HeapObject, kind: u32, key: u32, value: Value) -> bool {
+        let mk = prop_map_key(kind, key);
+
+        // Fast path: if hash map exists, update there first, then update linked list
+        if (*obj).prop_count > PROP_MAP_THRESHOLD {
+            let obj_key = obj as usize;
+            if let Some(map) = self.prop_maps.get_mut(&obj_key) {
+                if let Some(existing) = map.get_mut(&mk) {
+                    // Update existing property value in map
+                    *existing = value;
+                    // Also update in linked list (for iteration/GC correctness)
+                    let mut cur = (*obj).prop_head;
+                    while !cur.is_null() {
+                        if (*cur).key_kind == kind && (*cur).key == key {
+                            (*cur).value = value;
+                            return true;
+                        }
+                        cur = (*cur).next;
+                    }
+                    return true;
+                }
+                // New property: add to map, then add to linked list tail
+                map.insert(mk, value);
+                let prop = self.alloc_property(kind, key, value);
+                if prop.is_null() {
+                    return false;
+                }
+                if (*obj).prop_head.is_null() {
+                    (*obj).prop_head = prop;
+                } else {
+                    let mut tail = (*obj).prop_head;
+                    while !(*tail).next.is_null() {
+                        tail = (*tail).next;
+                    }
+                    (*tail).next = prop;
+                }
+                (*obj).prop_count = (*obj).prop_count.saturating_add(1);
+                return true;
+            }
+        }
+
+        // No hash map: linear scan for existing property (≤8 properties)
         let mut cur = (*obj).prop_head;
         while !cur.is_null() {
             if (*cur).key_kind == kind && (*cur).key == key {
@@ -1230,11 +1291,12 @@ impl Context {
             }
             cur = (*cur).next;
         }
+
+        // New property: alloc and append at tail
         let prop = self.alloc_property(kind, key, value);
         if prop.is_null() {
             return false;
         }
-        // Add at tail to maintain insertion order
         if (*obj).prop_head.is_null() {
             (*obj).prop_head = prop;
         } else {
@@ -1245,15 +1307,35 @@ impl Context {
             (*tail).next = prop;
         }
         (*obj).prop_count = (*obj).prop_count.saturating_add(1);
+
+        // Check threshold: build hash map if we just crossed it
+        if (*obj).prop_count > PROP_MAP_THRESHOLD {
+            let obj_key = obj as usize;
+            if !self.prop_maps.contains_key(&obj_key) {
+                let mut map = HashMap::with_capacity((*obj).prop_count as usize * 2);
+                let mut c = (*obj).prop_head;
+                while !c.is_null() {
+                    map.insert(prop_map_key((*c).key_kind, (*c).key), (*c).value);
+                    c = (*c).next;
+                }
+                self.prop_maps.insert(obj_key, map);
+            }
+        }
         true
     }
 
     unsafe fn delete_prop_value(&mut self, obj: *mut HeapObject, kind: u32, key: u32) -> bool {
+        // Remove from hash map if present
+        if (*obj).prop_count > PROP_MAP_THRESHOLD {
+            if let Some(map) = self.prop_maps.get_mut(&(obj as usize)) {
+                map.remove(&prop_map_key(kind, key));
+            }
+        }
+        // Remove from linked list
         let mut prev: *mut Property = core::ptr::null_mut();
         let mut cur = (*obj).prop_head;
         while !cur.is_null() {
             if (*cur).key_kind == kind && (*cur).key == key {
-                // Found it - unlink from list
                 if prev.is_null() {
                     (*obj).prop_head = (*cur).next;
                 } else {
