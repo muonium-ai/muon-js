@@ -103,7 +103,7 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Check mode exits non-zero when critical cases regress beyond threshold.
 
 ### Latest 3-run comparison snapshot (2026-02-21)
-- Command run: `python3 tmp/run_lua_js_3rounds.py`
+- Command run: `python3 scripts/run_lua_js_3rounds.py`
 - Report: `tmp/lua_js_comparison_3runs_20260221_001157.txt`
 - Aggregate ratios (mini-redis JS / Redis Lua):
 	- `overall_avg_ratio_mean=1.2152x`
