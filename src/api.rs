@@ -1420,10 +1420,15 @@ pub fn js_call(_ctx: &mut JSContextImpl, _call_flags: i32) -> JSValue {
         return call_c_function(_ctx, idx, params, _this_val, &args);
     }
     if let Some(bytes) = _ctx.string_bytes(func_val) {
-        let marker_owned = core::str::from_utf8(bytes).ok().map(|s| s.to_string());
-        if let Some(marker) = marker_owned.as_deref() {
-            if let Some(val) = call_builtin_global_marker(_ctx, marker, &args) {
-                return val;
+        // Stack buffer to avoid heap allocation from .to_string()
+        let mut marker_buf = [0u8; 64];
+        let blen = bytes.len();
+        if blen <= 64 {
+            marker_buf[..blen].copy_from_slice(bytes);
+            if let Ok(marker) = core::str::from_utf8(&marker_buf[..blen]) {
+                if let Some(val) = call_builtin_global_marker(_ctx, marker, &args) {
+                    return val;
+                }
             }
         }
         let mut parser = ArithParser::new(_ctx, b"", _ctx.current_stmt_offset());
@@ -1816,17 +1821,32 @@ pub fn call_function_value(
     if let Some((idx, params)) = ctx.c_function_info(func) {
         return Some(call_c_function(ctx, idx, params, this_val, args));
     }
-    let marker_owned = ctx
-        .string_bytes(func)
-        .and_then(|bytes| core::str::from_utf8(bytes).ok())
-        .map(|s| s.to_string());
-    if let Some(marker) = marker_owned.as_deref() {
-        if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
-            return Some(val);
+    // Copy marker bytes to stack buffer to avoid heap allocation
+    let mut marker_buf = [0u8; 64];
+    let marker_len;
+    let has_marker;
+    if let Some(bytes) = ctx.string_bytes(func) {
+        if bytes.len() <= 64 {
+            marker_len = bytes.len();
+            marker_buf[..marker_len].copy_from_slice(bytes);
+            has_marker = true;
+        } else {
+            marker_len = 0;
+            has_marker = false;
         }
-        let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
-        if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
-            return Some(val);
+    } else {
+        marker_len = 0;
+        has_marker = false;
+    }
+    if has_marker {
+        if let Ok(marker) = core::str::from_utf8(&marker_buf[..marker_len]) {
+            if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
+                return Some(val);
+            }
+            let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
+            if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
+                return Some(val);
+            }
         }
     }
     None
@@ -9321,12 +9341,27 @@ impl<'a> ArithParser<'a> {
     }
 
     fn call_builtin_method(&mut self, ctx: &mut JSContextImpl, method: JSValue, this_val: JSValue, args: &[JSValue]) -> Result<JSValue, ()> {
-        // Check if method is a builtin marker string
+        // Check if method is a builtin marker string.
+        // Copy marker bytes to stack buffer to release ctx borrow (avoids heap alloc from .to_string()).
+        let mut marker_buf = [0u8; 64];
+        let marker_len;
         if let Some(bytes) = ctx.string_bytes(method) {
-            if let Ok(marker) = core::str::from_utf8(bytes) {
-                let marker = marker.to_string();
+            let blen = bytes.len();
+            if blen > 64 {
+                return Err(());
+            }
+            marker_len = blen;
+            marker_buf[..marker_len].copy_from_slice(bytes);
+        } else {
+            return Err(());
+        }
+        let marker: &str = match core::str::from_utf8(&marker_buf[..marker_len]) {
+            Ok(s) => s,
+            Err(_) => return Err(()),
+        };
+        {
                 if marker == "__builtin_eval__" {
-                    if let Some(val) = call_builtin_global_marker(ctx, &marker, args) {
+                    if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
                         return Ok(val);
                     }
                 }
@@ -10571,7 +10606,6 @@ impl<'a> ArithParser<'a> {
                         return Ok(Value::from_int32(-1));
                     }
                 }
-            }
         }
 
         // Check if it's a closure (custom function)
