@@ -64,14 +64,6 @@ impl Db {
 }
 
 impl Shard {
-    fn get(&mut self, key: &[u8]) -> Option<Value> {
-        if self.is_expired(key) {
-            self.remove(key);
-            return None;
-        }
-        self.data.get(key).cloned()
-    }
-
     fn set(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
         if let Some(ts) = expire_at_ms {
             self.expires.insert(key.clone(), ts);
@@ -1209,10 +1201,6 @@ impl Shard {
 
 impl Db {
     // --- core key operations (single shard) ---
-
-    pub fn get(&self, key: &[u8]) -> Option<Value> {
-        self.shard(key).get(key)
-    }
 
     pub fn set(&self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
         self.shard(&key).set(key, value, expire_at_ms);
