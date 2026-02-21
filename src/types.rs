@@ -133,6 +133,9 @@ pub const JS_EVAL_REPL: i32 = 1 << 1;
 pub const JS_EVAL_STRIP_COL: i32 = 1 << 2;
 pub const JS_EVAL_JSON: i32 = 1 << 3;
 pub const JS_EVAL_REGEXP: i32 = 1 << 4;
+/// Treat top-level `return` as a script return (like function body).
+/// Eliminates the need for wrapping scripts in a function.
+pub const JS_EVAL_SCRIPT: i32 = 1 << 5;
 pub const JS_EVAL_REGEXP_FLAGS_SHIFT: i32 = 8;
 
 pub const JS_BYTECODE_MAGIC: u16 = 0xacfb;
