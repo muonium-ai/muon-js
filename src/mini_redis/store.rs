@@ -778,6 +778,11 @@ impl Shard {
         self.set(key, Value::String(value), expire_at_ms);
     }
 
+    /// SET from borrowed slices — avoids caller needing pre-allocated Vec/Arc.
+    fn set_string_from_slices(&mut self, key: &[u8], value: &[u8], expire_at_ms: Option<u64>) {
+        self.set(key.to_vec(), Value::String(Arc::from(value)), expire_at_ms);
+    }
+
     fn set_nx(&mut self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(&key) {
             self.remove(&key);
@@ -1292,6 +1297,11 @@ impl Db {
 
     pub fn set_string(&self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
         self.shard(&key).set_string(key, value, expire_at_ms);
+    }
+
+    /// SET from borrowed slices — single shard lock, internal alloc only.
+    pub fn set_string_from_slices(&self, key: &[u8], value: &[u8], expire_at_ms: Option<u64>) {
+        self.shard(key).set_string_from_slices(key, value, expire_at_ms);
     }
 
     pub fn set_nx(&self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
