@@ -7,6 +7,16 @@ use std::time::Instant;
 
 use crate::mini_redis::store::Db;
 
+#[cfg(feature = "mini-redis-wasm")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "mini-redis-wasm")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn perf_now() -> f64;
+}
+
 const WRONGTYPE: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
 const ERR_HASH_INT: &str = "ERR hash value is not an integer";
 const MAX_LATENCY_SAMPLES: usize = 4096;
@@ -101,6 +111,7 @@ pub struct CoreMetricsSnapshot {
     pub batch_size_avg: f64,
     pub latency_p50_us: u64,
     pub latency_p95_us: u64,
+    pub latency_p99_us: u64,
     pub queue_depth: u32,
     pub errors_total: u64,
     pub command_mix: HashMap<String, u64>,
@@ -155,6 +166,7 @@ impl CoreMetrics {
 
         let p50 = percentile(&latencies, 0.50);
         let p95 = percentile(&latencies, 0.95);
+        let p99 = percentile(&latencies, 0.99);
 
         CoreMetricsSnapshot {
             ops_total: self.ops_total,
@@ -166,6 +178,7 @@ impl CoreMetrics {
             },
             latency_p50_us: p50,
             latency_p95_us: p95,
+            latency_p99_us: p99,
             queue_depth: self.queue_depth,
             errors_total: self.errors_total,
             command_mix: self.command_mix.clone(),
@@ -227,9 +240,23 @@ impl CoreExecutor {
 
     pub fn execute_batch(&mut self, cmds: &[CoreCommand]) -> Vec<CoreResponse> {
         self.metrics.record_batch(cmds.len());
+        let batch_start = self.now_us();
         let mut out = Vec::with_capacity(cmds.len());
+        let mut names: Vec<(&'static str, bool)> = Vec::with_capacity(cmds.len());
         for cmd in cmds {
-            out.push(self.execute(cmd));
+            let (resp, name) = self.execute_inner(cmd);
+            names.push((name, !resp.ok));
+            out.push(resp);
+        }
+        let batch_elapsed = self.now_us().saturating_sub(batch_start);
+        let per_cmd_us = if cmds.is_empty() {
+            0
+        } else {
+            batch_elapsed / cmds.len() as u64
+        };
+        let now = self.now_us();
+        for (name, is_error) in names {
+            self.metrics.record_op(now, name, per_cmd_us, is_error);
         }
         out
     }
@@ -330,10 +357,9 @@ impl CoreExecutor {
     fn now_us(&self) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
-            // std::time::{Instant,SystemTime}::now() can trap on
-            // wasm32-unknown-unknown depending on Rust / wasm-bindgen version.
-            // js_sys::Date::now() is always available in browser workers.
-            (js_sys::Date::now() * 1_000.0) as u64
+            // performance.now() returns DOMHighResTimeStamp in milliseconds
+            // with microsecond precision, available in both window and worker scopes.
+            (perf_now() * 1_000.0) as u64
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

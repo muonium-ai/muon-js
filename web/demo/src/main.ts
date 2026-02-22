@@ -27,6 +27,7 @@ const statEls = {
   batchAvg: must(document.querySelector<HTMLElement>("#batchAvg"), "#batchAvg"),
   latP50: must(document.querySelector<HTMLElement>("#latP50"), "#latP50"),
   latP95: must(document.querySelector<HTMLElement>("#latP95"), "#latP95"),
+  latP99: must(document.querySelector<HTMLElement>("#latP99"), "#latP99"),
   queueDepth: must(document.querySelector<HTMLElement>("#queueDepth"), "#queueDepth"),
   errorsTotal: must(document.querySelector<HTMLElement>("#errorsTotal"), "#errorsTotal"),
   renderFps: must(document.querySelector<HTMLElement>("#renderFps"), "#renderFps")
@@ -81,6 +82,7 @@ function updateStats(metrics: MiniRedisMetrics): void {
   statEls.batchAvg.textContent = metrics.batch_size_avg.toFixed(1);
   statEls.latP50.textContent = metrics.latency_p50_us.toLocaleString();
   statEls.latP95.textContent = metrics.latency_p95_us.toLocaleString();
+  statEls.latP99.textContent = metrics.latency_p99_us.toLocaleString();
   statEls.queueDepth.textContent = metrics.queue_depth.toLocaleString();
   statEls.errorsTotal.textContent = metrics.errors_total.toLocaleString();
 }
