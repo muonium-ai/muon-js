@@ -1359,15 +1359,24 @@ fn handle_command(
                 Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             }
         }
-        "SET" => match parse_set_args(args) {
-            Ok((key, value, expire_ms)) => {
-                let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-                db.set_string(key.as_ref().to_vec(), value, expire_at);
-                log_cmd!(state, *db_index, cmd, args);
-                RespValue::StaticSimple("OK")
-            }
-            Err(e) => RespValue::Error(e),
-        },
+        "SET" => {
+            let (key, value) = match (args.get(0), args.get(1)) {
+                (Some(k), Some(v)) => (k.as_ref(), v.clone()),
+                _ => return RespValue::Error("ERR wrong number of arguments for 'SET'".to_string()),
+            };
+            let expire_ms = if args.len() == 2 {
+                None
+            } else {
+                match parse_set_expire_ms(&args[2..]) {
+                    Ok(v) => v,
+                    Err(e) => return RespValue::Error(e),
+                }
+            };
+            let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
+            db.set_string(key.to_vec(), value, expire_at);
+            log_cmd!(state, *db_index, cmd, args);
+            RespValue::StaticSimple("OK")
+        }
         "DEL" => {
             let mut removed = 0;
             for key in args {
@@ -2511,21 +2520,16 @@ fn value_to_args(val: RespValue) -> Result<Vec<Arc<[u8]>>, String> {
     }
 }
 
-fn parse_set_args(args: &[Arc<[u8]>]) -> Result<(Arc<[u8]>, Arc<[u8]>, Option<u64>), String> {
-    if args.len() < 2 {
-        return Err("ERR wrong number of arguments for 'SET'".to_string());
-    }
-    let key = args[0].clone();
-    let value = args[1].clone();
+fn parse_set_expire_ms(args: &[Arc<[u8]>]) -> Result<Option<u64>, String> {
     let mut expire_ms = None;
-    let mut idx = 2;
+    let mut idx = 0;
     while idx < args.len() {
-        let opt = to_upper_ascii(args[idx].as_ref());
-        if opt == "EX" {
+        let opt = args[idx].as_ref();
+        if opt.eq_ignore_ascii_case(b"EX") {
             idx += 1;
             let sec = args.get(idx).ok_or_else(|| "ERR syntax error".to_string())?;
             expire_ms = Some(parse_u64(sec.as_ref()).unwrap_or(0).saturating_mul(1000));
-        } else if opt == "PX" {
+        } else if opt.eq_ignore_ascii_case(b"PX") {
             idx += 1;
             let ms = args.get(idx).ok_or_else(|| "ERR syntax error".to_string())?;
             expire_ms = Some(parse_u64(ms.as_ref()).unwrap_or(0));
@@ -2534,7 +2538,7 @@ fn parse_set_args(args: &[Arc<[u8]>]) -> Result<(Arc<[u8]>, Arc<[u8]>, Option<u6
         }
         idx += 1;
     }
-    Ok((key, value, expire_ms))
+    Ok(expire_ms)
 }
 
 fn parse_usize(input: &[u8]) -> Option<usize> {
