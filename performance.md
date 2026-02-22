@@ -1,53 +1,53 @@
 # Performance notes
 
-## Latest benchmark run (2026-02-22)
+## Latest benchmark run (2026-02-22 18:55)
 
 ### Redis vs mini-redis (pipelined)
 
 Command:
-`make pipelined-benchmark-compare MINI_REDIS_PIPE_BENCH_LOG=tmp/full_mini_pipe.log REDIS_PIPE_BENCH_LOG=tmp/full_redis_pipe.log`
+`make pipelined-benchmark-compare MINI_REDIS_PIPE_BENCH_LOG=tmp/full_mini_pipe_20260222_185459.log REDIS_PIPE_BENCH_LOG=tmp/full_redis_pipe_20260222_185459.log`
 
 Report:
-`tmp/benchmark_comparison_20260222_151853.txt`
+`tmp/benchmark_comparison_20260222_185532.txt`
 
 | Test | mini-redis RPS | Redis RPS | Ratio (redis/mini) |
 |------|----------------|-----------|---------------------|
-| GET | 1,769,911.50 | 1,904,762.00 | 1.08x |
-| HSET | 1,183,432.00 | 1,492,537.25 | 1.26x |
-| INCR | 760,456.25 | 1,724,138.00 | 2.27x |
-| LPOP | 1,769,911.50 | 1,428,571.38 | 0.81x |
-| LPUSH | 1,869,158.88 | 1,515,151.50 | 0.81x |
-| RPOP | 1,923,076.88 | 1,428,571.38 | 0.74x |
-| RPUSH | 1,851,851.75 | 1,639,344.25 | 0.89x |
-| SADD | 1,739,130.38 | 1,709,401.75 | 0.98x |
-| SET | 1,142,857.12 | 1,298,701.25 | 1.14x |
+| GET | 2,020,202.00 | 1,869,158.88 | 0.93x |
+| HSET | 1,250,000.00 | 1,459,854.12 | 1.17x |
+| INCR | 2,222,222.25 | 1,680,672.25 | 0.76x |
+| LPOP | 2,197,802.25 | 1,408,450.62 | 0.64x |
+| LPUSH | 2,000,000.00 | 1,459,854.12 | 0.73x |
+| RPOP | 2,222,222.25 | 1,515,151.50 | 0.68x |
+| RPUSH | 2,083,333.38 | 1,587,301.50 | 0.76x |
+| SADD | 2,105,263.25 | 1,666,666.75 | 0.79x |
+| SET | 1,282,051.25 | 1,324,503.38 | 1.03x |
 
 ### Lua vs MuonJS (3-round gate)
 
 Command:
-`make lua-js-perf-check LUA_JS_GATE_OUT=tmp/full_lua_js_perf.json`
+`make lua-js-perf-check LUA_JS_GATE_OUT=tmp/full_lua_js_perf_20260222_185532.json`
 
 Reports:
-- `tmp/full_lua_js_perf.json`
-- `tmp/full_lua_js_perf.txt`
+- `tmp/full_lua_js_perf_20260222_185532.json`
+- `tmp/full_lua_js_perf_20260222_185532.txt`
 
 Overall:
-- `overall_mean=1.9773x`
-- `overall_median=2.0065x`
+- `overall_mean=2.9894x`
+- `overall_median=2.9777x`
 - `check_status=PASS`
 
 Per-case median ratio (JS/Lua):
 
 | Case | Median |
 |------|--------|
-| hello | 3.76x |
-| redis_call | 3.10x |
-| incrby | 3.09x |
-| keys_argv | 2.58x |
-| lrange | 2.57x |
-| hash_sum | 0.25x |
-| set_members | 0.38x |
-| bulk_incr | 0.31x |
+| hello | 3.61x |
+| redis_call | 3.50x |
+| incrby | 3.67x |
+| keys_argv | 2.53x |
+| lrange | 3.25x |
+| hash_sum | 2.58x |
+| set_members | 2.80x |
+| bulk_incr | 2.25x |
 
 ## Current benchmark results (2026-02-21)
 
