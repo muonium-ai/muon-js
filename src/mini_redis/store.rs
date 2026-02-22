@@ -1,10 +1,55 @@
 //! In-memory multi-DB store with TTL support and internal key-sharding.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 const NUM_SHARDS: usize = 64;
+
+// ---------------------------------------------------------------------------
+// FNV-1a hasher — fast, non-cryptographic hash for short byte-slice keys.
+// Used for the inner HashMap in Hash values instead of the default SipHash.
+// ---------------------------------------------------------------------------
+
+pub struct FnvHasher(u64);
+
+impl Hasher for FnvHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= b as u64;
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FnvBuildHasher;
+
+impl BuildHasher for FnvBuildHasher {
+    type Hasher = FnvHasher;
+    #[inline]
+    fn build_hasher(&self) -> FnvHasher {
+        FnvHasher(0xcbf29ce484222325)
+    }
+}
+
+pub type FnvHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
+
+#[inline]
+fn new_fnv_map<K, V>() -> FnvHashMap<K, V> {
+    HashMap::with_hasher(FnvBuildHasher)
+}
+
+#[inline]
+fn new_fnv_map_with_capacity<K, V>(cap: usize) -> FnvHashMap<K, V> {
+    HashMap::with_capacity_and_hasher(cap, FnvBuildHasher)
+}
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -13,7 +58,7 @@ pub enum Value {
     Int(i64),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
-    Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
+    Hash(FnvHashMap<Arc<[u8]>, Arc<[u8]>>),
     ZSet(HashMap<Vec<u8>, f64>),
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
@@ -604,6 +649,7 @@ impl Shard {
     }
 
     /// HINCRBY: increment hash field by delta
+    #[inline]
     fn hash_incr_by(&mut self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -628,13 +674,14 @@ impl Shard {
         }
         let field_key: Arc<[u8]> = Arc::from(field);
         let new_val = delta;
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(new_val)
     }
 
     /// HSETNX: set hash field only if it doesn't already exist
+    #[inline]
     fn hash_set_nx(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -654,7 +701,7 @@ impl Shard {
                 _ => Err(()),
             };
         }
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(true)
@@ -867,6 +914,7 @@ impl Shard {
         }
     }
 
+    #[inline]
     fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -877,13 +925,14 @@ impl Shard {
                 _ => Err(()),
             };
         }
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(true)
     }
 
     /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    #[inline]
     fn hash_set_bytes(&mut self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -894,12 +943,13 @@ impl Shard {
                 _ => Err(()),
             };
         }
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(Arc::from(field), Arc::from(value));
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(true)
     }
 
+    #[inline]
     fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -1254,6 +1304,7 @@ impl Shard {
         }
     }
 
+    #[inline]
     fn is_expired(&self, key: &[u8]) -> bool {
         if self.expires.is_empty() {
             return false;
