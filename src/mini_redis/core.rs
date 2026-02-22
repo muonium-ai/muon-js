@@ -330,13 +330,10 @@ impl CoreExecutor {
     fn now_us(&self) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            // In browser WASM, `Instant` can trap depending on runtime plumbing.
-            // Use wall-clock micros for lightweight telemetry timestamps.
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64
+            // std::time::{Instant,SystemTime}::now() can trap on
+            // wasm32-unknown-unknown depending on Rust / wasm-bindgen version.
+            // js_sys::Date::now() is always available in browser workers.
+            (js_sys::Date::now() * 1_000.0) as u64
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
