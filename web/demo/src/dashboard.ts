@@ -141,7 +141,8 @@ export class MetricsDashboard {
   private readonly p99History: number[] = [];
   private commandMix: Record<string, number> = {};
 
-  private raf = 0;
+  private raf: number | ReturnType<typeof setTimeout> = 0;
+  private uncapped = false;
   private frameCount = 0;
   private fpsTs = performance.now();
   private fpsValue = 0;
@@ -264,11 +265,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return this.fpsValue;
   }
 
-  destroy(): void {
-    if (this.raf) {
-      cancelAnimationFrame(this.raf);
-      this.raf = 0;
+  setUncapped(uncapped: boolean): void {
+    if (this.uncapped === uncapped) {
+      return;
     }
+    this.uncapped = uncapped;
+    this.stopRenderLoop();
+    this.startRenderLoop();
+  }
+
+  destroy(): void {
+    this.stopRenderLoop();
+  }
+
+  private stopRenderLoop(): void {
+    if (!this.raf) {
+      return;
+    }
+    if (this.uncapped) {
+      clearTimeout(this.raf as ReturnType<typeof setTimeout>);
+    } else {
+      cancelAnimationFrame(this.raf as number);
+    }
+    this.raf = 0;
   }
 
   private startRenderLoop(): void {
@@ -282,10 +301,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
       }
 
       this.renderFrame();
-      this.raf = requestAnimationFrame(render);
+      this.raf = this.uncapped
+        ? setTimeout(render, 0)
+        : requestAnimationFrame(render);
     };
 
-    this.raf = requestAnimationFrame(render);
+    this.raf = this.uncapped
+      ? setTimeout(render, 0)
+      : requestAnimationFrame(render);
   }
 
   private renderFrame(): void {

@@ -16,6 +16,7 @@ function must<T>(value: T | null, id: string): T {
 const startBtn = must(document.querySelector<HTMLButtonElement>("#startBtn"), "#startBtn");
 const stopBtn = must(document.querySelector<HTMLButtonElement>("#stopBtn"), "#stopBtn");
 const resetBtn = must(document.querySelector<HTMLButtonElement>("#resetBtn"), "#resetBtn");
+const uncapBtn = must(document.querySelector<HTMLButtonElement>("#uncapBtn"), "#uncapBtn");
 const statusText = must(document.querySelector<HTMLElement>("#statusText"), "#statusText");
 const leaderboardList = must(document.querySelector<HTMLOListElement>("#leaderboardList"), "#leaderboardList");
 const gpuCanvas = must(document.querySelector<HTMLCanvasElement>("#gpuCanvas"), "#gpuCanvas");
@@ -207,6 +208,13 @@ stopBtn.addEventListener("click", () => {
 
 resetBtn.addEventListener("click", () => {
   void resetRuntime();
+});
+
+let fpsUncapped = false;
+uncapBtn.addEventListener("click", () => {
+  fpsUncapped = !fpsUncapped;
+  dashboard.setUncapped(fpsUncapped);
+  uncapBtn.textContent = fpsUncapped ? "Cap FPS" : "Uncap FPS";
 });
 
 window.addEventListener("beforeunload", () => {
