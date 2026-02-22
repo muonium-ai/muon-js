@@ -1840,11 +1840,13 @@ pub fn call_function_value(
     this_val: JSValue,
     args: &[JSValue],
 ) -> Option<JSValue> {
-    if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
-        return Some(result);
-    }
+    // Check C function FIRST — avoids 2 wasted property lookups in
+    // call_closure_with_this for every redis.call() iteration.
     if let Some((idx, params)) = ctx.c_function_info(func) {
         return Some(call_c_function(ctx, idx, params, this_val, args));
+    }
+    if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
+        return Some(result);
     }
     // Copy marker bytes to stack buffer to avoid heap allocation
     let mut marker_buf = [0u8; 64];
@@ -8900,6 +8902,18 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 // ============================================================================
 // Handles calls to C functions registered via JS_SetCFunctionTable.
 // Supports multiple calling conventions (generic, constructor, magic, etc.)
+
+/// Direct C function dispatch — public for VM inline fast path.
+#[inline]
+pub fn call_c_function_direct(
+    ctx: &mut JSContextImpl,
+    func_idx: i32,
+    params: JSValue,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    call_c_function(ctx, func_idx, params, this_val, args)
+}
 
 fn call_c_function(
     _ctx: &mut JSContextImpl,
