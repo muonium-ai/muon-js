@@ -134,7 +134,8 @@ async fn graceful_shutdown(
         let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for (_, value, _) in items.iter() {
             match value {
-                crate::mini_redis::store::Value::String(_) => counts.0 += 1,
+                crate::mini_redis::store::Value::String(_)
+                | crate::mini_redis::store::Value::Int(_) => counts.0 += 1,
                 crate::mini_redis::store::Value::List(_) => counts.1 += 1,
                 crate::mini_redis::store::Value::Set(_) => counts.2 += 1,
                 crate::mini_redis::store::Value::Hash(_) => counts.3 += 1,

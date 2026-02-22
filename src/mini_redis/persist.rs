@@ -221,6 +221,15 @@ impl LibsqlPersist {
                             (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
+                    Value::Int(n) => {
+                        // Serialize Int as string bytes — transparent to restore
+                        let mut out = Vec::with_capacity(20);
+                        crate::mini_redis::store::write_i64_bytes_pub(&mut out, n);
+                        self.conn.execute(
+                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (idx as i64, key, 0i64, out, exp_val),
+                        ).await.map_err(to_io)?;
+                    }
                     Value::List(items) => {
                         self.conn.execute(
                             "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",

@@ -9,6 +9,8 @@ const NUM_SHARDS: usize = 64;
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Arc<[u8]>),
+    /// Integer values stored natively — avoids parse/format/alloc on INCR paths.
+    Int(i64),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
     Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
@@ -184,7 +186,7 @@ impl Shard {
             return None;
         }
         match self.data.get(key) {
-            Some(Value::String(_)) => Some("string"),
+            Some(Value::String(_)) | Some(Value::Int(_)) => Some("string"),
             Some(Value::List(_)) => Some("list"),
             Some(Value::Set(_)) => Some("set"),
             Some(Value::Hash(_)) => Some("hash"),
@@ -769,6 +771,12 @@ impl Shard {
         }
         match self.data.get(key) {
             Some(Value::String(val)) => Ok(Some(val.clone())),
+            Some(Value::Int(n)) => {
+                // Serialize integer to bytes on read
+                let mut out = Vec::with_capacity(20);
+                write_i64_bytes(&mut out, *n);
+                Ok(Some(Arc::from(out)))
+            }
             Some(_) => Err(()),
             None => Ok(None),
         }
@@ -807,6 +815,16 @@ impl Shard {
                 *buf = Arc::from(v);
                 Ok(len as i64)
             }
+            Some(entry @ Value::Int(_)) => {
+                // Convert Int to String, then append
+                let n = if let Value::Int(n) = entry { *n } else { unreachable!() };
+                let mut v = Vec::with_capacity(20 + value.len());
+                write_i64_bytes(&mut v, n);
+                v.extend_from_slice(value);
+                let len = v.len();
+                *entry = Value::String(Arc::from(v));
+                Ok(len as i64)
+            }
             Some(_) => Err(()),
             None => {
                 self.data.insert(key.clone(), Value::String(Arc::from(value)));
@@ -820,21 +838,31 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get_mut(key) {
-            Some(Value::String(buf)) => {
-                let n = parse_i64_bytes(buf)?;
+            Some(entry @ Value::Int(_)) => {
+                // Fast path — zero allocation
+                if let Value::Int(n) = entry {
+                    let next = n.saturating_add(delta);
+                    *n = next;
+                    Ok(next)
+                } else {
+                    unreachable!()
+                }
+            }
+            Some(entry @ Value::String(_)) => {
+                // Parse string, then promote to Int for future fast-path
+                let n = if let Value::String(buf) = entry {
+                    parse_i64_bytes(buf)?
+                } else {
+                    unreachable!()
+                };
                 let next = n.saturating_add(delta);
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                *buf = Arc::from(out);
+                *entry = Value::Int(next);
                 Ok(next)
             }
             Some(_) => Err(()),
             None => {
-                let next = delta;
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                self.data.insert(key.to_vec(), Value::String(Arc::from(out)));
-                Ok(next)
+                self.data.insert(key.to_vec(), Value::Int(delta));
+                Ok(delta)
             }
         }
     }
@@ -1657,6 +1685,11 @@ fn write_i64_bytes(buf: &mut Vec<u8>, n: i64) {
         tmp[idx] = b'-';
     }
     buf.extend_from_slice(&tmp[idx..]);
+}
+
+/// Public wrapper for persistence layer to serialize Int values.
+pub fn write_i64_bytes_pub(buf: &mut Vec<u8>, n: i64) {
+    write_i64_bytes(buf, n);
 }
 
 fn now_ms() -> u64 {
