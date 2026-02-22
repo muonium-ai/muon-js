@@ -1920,28 +1920,30 @@ impl ScriptRuntime {
     fn set_keys_argv(&mut self, keys: &[Arc<[u8]>], argv: &[Arc<[u8]>]) {
         let global = JS_GetGlobalObject(&mut self.ctx);
         // Always set KEYS and ARGV (even if empty) for script compatibility.
-        // But avoid per-element overhead when empty.
+        // Use bare arrays (no push/pop setup) and direct element writes.
+        // Use ctx.set_property_str() directly to skip setter check overhead in
+        // JS_SetPropertyStr (which does format!("__set__KEYS") heap alloc).
         if keys.is_empty() {
-            let keys_arr = JS_NewArray(&mut self.ctx, 0);
-            let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
+            let keys_arr = self.ctx.new_array_bare(0).unwrap_or(JSValue::UNDEFINED);
+            self.ctx.set_property_str(global, b"KEYS", keys_arr);
         } else {
-            let keys_arr = JS_NewArray(&mut self.ctx, keys.len() as i32);
+            let keys_arr = self.ctx.new_array_bare(keys.len()).unwrap_or(JSValue::UNDEFINED);
             for (idx, key) in keys.iter().enumerate() {
                 let v = JS_NewStringLen(&mut self.ctx, key.as_ref());
-                let _ = JS_SetPropertyUint32(&mut self.ctx, keys_arr, idx as u32, v);
+                self.ctx.array_direct_set(keys_arr, idx as u32, v);
             }
-            let _ = JS_SetPropertyStr(&mut self.ctx, global, "KEYS", keys_arr);
+            self.ctx.set_property_str(global, b"KEYS", keys_arr);
         }
         if argv.is_empty() {
-            let argv_arr = JS_NewArray(&mut self.ctx, 0);
-            let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
+            let argv_arr = self.ctx.new_array_bare(0).unwrap_or(JSValue::UNDEFINED);
+            self.ctx.set_property_str(global, b"ARGV", argv_arr);
         } else {
-            let argv_arr = JS_NewArray(&mut self.ctx, argv.len() as i32);
+            let argv_arr = self.ctx.new_array_bare(argv.len()).unwrap_or(JSValue::UNDEFINED);
             for (idx, arg) in argv.iter().enumerate() {
                 let v = JS_NewStringLen(&mut self.ctx, arg.as_ref());
-                let _ = JS_SetPropertyUint32(&mut self.ctx, argv_arr, idx as u32, v);
+                self.ctx.array_direct_set(argv_arr, idx as u32, v);
             }
-            let _ = JS_SetPropertyStr(&mut self.ctx, global, "ARGV", argv_arr);
+            self.ctx.set_property_str(global, b"ARGV", argv_arr);
         }
     }
 }
@@ -2168,7 +2170,76 @@ unsafe fn redis_call_fast(
                 });
             }
         }
+        5 => {
+            // LPUSH — key borrowed, values go to Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"LPUSH") && argc >= 3 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let mut values: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 2) as usize);
+                for i in 2..argc {
+                    let mut vbuf = [0u8; 12];
+                    values.push(Arc::from(
+                        js_value_as_bytes(ctx, *argv.add(i as usize), &mut vbuf),
+                    ));
+                }
+                return Some(match db.list_push(key, &values, true) {
+                    Ok(len) => JS_NewInt64(ctx, len),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // RPUSH — same pattern, right push
+            if cmd_bytes.eq_ignore_ascii_case(b"RPUSH") && argc >= 3 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let mut values: Vec<Arc<[u8]>> = Vec::with_capacity((argc - 2) as usize);
+                for i in 2..argc {
+                    let mut vbuf = [0u8; 12];
+                    values.push(Arc::from(
+                        js_value_as_bytes(ctx, *argv.add(i as usize), &mut vbuf),
+                    ));
+                }
+                return Some(match db.list_push(key, &values, false) {
+                    Ok(len) => JS_NewInt64(ctx, len),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+        }
         6 => {
+            // LRANGE — key borrowed, start/stop parsed as i64
+            if cmd_bytes.eq_ignore_ascii_case(b"LRANGE") && argc == 4 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let start_val = *argv.add(2);
+                let stop_val = *argv.add(3);
+                let start = if start_val.is_int() {
+                    start_val.int32().unwrap_or(0) as i64
+                } else {
+                    let mut sbuf = [0u8; 12];
+                    let s = js_value_as_bytes(ctx, start_val, &mut sbuf);
+                    core::str::from_utf8(s).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
+                };
+                let stop = if stop_val.is_int() {
+                    stop_val.int32().unwrap_or(0) as i64
+                } else {
+                    let mut sbuf = [0u8; 12];
+                    let s = js_value_as_bytes(ctx, stop_val, &mut sbuf);
+                    core::str::from_utf8(s).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
+                };
+                return Some(match db.list_range(key, start, stop) {
+                    Ok(items) => {
+                        let arr = ctx.new_array_bare(items.len()).unwrap_or(JSValue::UNDEFINED);
+                        for (idx, item) in items.iter().enumerate() {
+                            let v = JS_NewStringLen(ctx, item.as_ref());
+                            ctx.array_direct_set(arr, idx as u32, v);
+                        }
+                        arr
+                    }
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
             // INCRBY — key borrowed, delta parsed from int or string
             if cmd_bytes.eq_ignore_ascii_case(b"INCRBY") && argc == 3 {
                 let mut ibuf = [0u8; 12];
@@ -2215,10 +2286,10 @@ unsafe fn redis_call_fast(
                 if key.is_empty() { return None; }
                 return Some(match db.set_members(key) {
                     Ok(members) => {
-                        let arr = JS_NewArray(ctx, members.len() as i32);
+                        let arr = ctx.new_array_bare(members.len()).unwrap_or(JSValue::UNDEFINED);
                         for (idx, member) in members.iter().enumerate() {
                             let v = JS_NewStringLen(ctx, member.as_ref());
-                            let _ = JS_SetPropertyUint32(ctx, arr, idx as u32, v);
+                            ctx.array_direct_set(arr, idx as u32, v);
                         }
                         arr
                     }
@@ -2324,10 +2395,10 @@ fn resp_to_js(ctx: &mut JSContextImpl, resp: RespValue, is_pcall: bool) -> JSVal
         RespValue::Integer(n) => JS_NewInt64(ctx, n),
         RespValue::Null => JSValue::NULL,
         RespValue::Array(items) => {
-            let arr = JS_NewArray(ctx, items.len() as i32);
+            let arr = ctx.new_array_bare(items.len()).unwrap_or(JSValue::UNDEFINED);
             for (idx, item) in items.into_iter().enumerate() {
                 let v = resp_to_js(ctx, item, is_pcall);
-                let _ = JS_SetPropertyUint32(ctx, arr, idx as u32, v);
+                ctx.array_direct_set(arr, idx as u32, v);
             }
             arr
         }
@@ -2355,43 +2426,54 @@ fn resp_to_js(ctx: &mut JSContextImpl, resp: RespValue, is_pcall: bool) -> JSVal
 }
 
 fn js_to_resp(ctx: &mut JSContextImpl, val: JSValue) -> RespValue {
-    if JS_IsNull(ctx, val) != 0 || JS_IsUndefined(ctx, val) != 0 {
+    // Fast path: inline integer (most common for redis integer results)
+    if val.is_int() {
+        return RespValue::Integer(val.int32().unwrap_or(0) as i64);
+    }
+    // Fast path: special values (null, undefined, bool) — no pointer deref needed
+    if val.is_null() || val.is_undefined() {
         return RespValue::Null;
     }
-    if JS_IsBool(ctx, val) != 0 {
-        let num = JS_ToNumber(ctx, val).unwrap_or(0.0);
-        return RespValue::Integer(if num != 0.0 { 1 } else { 0 });
+    if val.is_bool() {
+        return RespValue::Integer(if val == JSValue::TRUE { 1 } else { 0 });
     }
-    if JS_IsNumber(ctx, val) != 0 {
-        let num = JS_ToNumber(ctx, val).unwrap_or(0.0);
-        if (num.fract() - 0.0).abs() < f64::EPSILON {
-            return RespValue::Integer(num as i64);
+    // Heap object: string, array, float, or object — dereference once to classify.
+    if val.is_ptr() {
+        // Try string first (most common return type for redis data)
+        unsafe {
+            let (ptr, len) = js_value_raw_bytes(ctx, val);
+            if !ptr.is_null() {
+                let bytes = core::slice::from_raw_parts(ptr, len);
+                return RespValue::Blob(Arc::from(bytes));
+            }
         }
-        return RespValue::Blob(num.to_string().into_bytes().into());
-    }
-    if JS_IsString(ctx, val) != 0 {
-        let s = js_value_to_string(ctx, val);
-        return RespValue::Blob(s.into_bytes().into());
-    }
-    if ctx.object_class_id(val) == Some(crate::JSObjectClassEnum::Array as u32) {
-        let len_val = crate::JS_GetPropertyStr(ctx, val, "length");
-        let len = crate::JS_ToUint32(ctx, len_val).unwrap_or(0);
-        let mut out = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            let item = crate::JS_GetPropertyUint32(ctx, val, i);
-            out.push(js_to_resp(ctx, item));
+        // Try array via direct access (avoids class_id + GetPropertyStr("length") overhead)
+        if let Some(len) = ctx.array_direct_len(val) {
+            let mut out = Vec::with_capacity(len as usize);
+            for i in 0..len {
+                let item = ctx.array_direct_get(val, i).unwrap_or(JSValue::UNDEFINED);
+                out.push(js_to_resp(ctx, item));
+            }
+            return RespValue::Array(out);
         }
-        return RespValue::Array(out);
-    }
-    let err = crate::JS_GetPropertyStr(ctx, val, "err");
-    if JS_IsUndefined(ctx, err) == 0 && JS_IsNull(ctx, err) == 0 {
-        let msg = js_value_to_string(ctx, err);
-        return RespValue::Error(msg);
-    }
-    let ok = crate::JS_GetPropertyStr(ctx, val, "ok");
-    if JS_IsUndefined(ctx, ok) == 0 && JS_IsNull(ctx, ok) == 0 {
-        let msg = js_value_to_string(ctx, ok);
-        return RespValue::Simple(msg);
+        // Try float
+        if let Some(num) = ctx.float_value(val) {
+            if (num.fract() - 0.0).abs() < f64::EPSILON {
+                return RespValue::Integer(num as i64);
+            }
+            return RespValue::Blob(num.to_string().into_bytes().into());
+        }
+        // Object: check for error/ok
+        let err = crate::JS_GetPropertyStr(ctx, val, "err");
+        if !err.is_undefined() && !err.is_null() {
+            let msg = js_value_to_string(ctx, err);
+            return RespValue::Error(msg);
+        }
+        let ok = crate::JS_GetPropertyStr(ctx, val, "ok");
+        if !ok.is_undefined() && !ok.is_null() {
+            let msg = js_value_to_string(ctx, ok);
+            return RespValue::Simple(msg);
+        }
     }
     let s = js_value_to_string(ctx, val);
     RespValue::Blob(s.into_bytes().into())
