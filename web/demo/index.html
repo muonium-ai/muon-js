@@ -19,6 +19,7 @@
         <button id="startBtn">Start Simulation</button>
         <button id="stopBtn" disabled>Stop</button>
         <button id="resetBtn">Reset Runtime</button>
+        <button id="uncapBtn">Uncap FPS</button>
         <span id="statusText">idle</span>
       </section>
 
@@ -28,19 +29,22 @@
         <div class="stat-card"><span>Batch Avg</span><strong id="batchAvg">0</strong></div>
         <div class="stat-card"><span>Latency p50 (us)</span><strong id="latP50">0</strong></div>
         <div class="stat-card"><span>Latency p95 (us)</span><strong id="latP95">0</strong></div>
+        <div class="stat-card"><span>Latency p99 (us)</span><strong id="latP99">0</strong></div>
         <div class="stat-card"><span>Queue Depth</span><strong id="queueDepth">0</strong></div>
         <div class="stat-card"><span>Errors</span><strong id="errorsTotal">0</strong></div>
         <div class="stat-card"><span>Render FPS</span><strong id="renderFps">0</strong></div>
       </section>
 
-      <section class="dashboard-wrap">
-        <div id="gpuWarning" class="gpu-warning hidden"></div>
-        <canvas id="gpuCanvas" width="1200" height="520"></canvas>
-      </section>
+      <section class="dashboard-row">
+        <div class="dashboard-wrap">
+          <div id="gpuWarning" class="gpu-warning hidden"></div>
+          <canvas id="gpuCanvas" width="900" height="400"></canvas>
+        </div>
 
-      <section class="leaderboard-wrap">
-        <h2>Leaderboard Top 10</h2>
-        <ol id="leaderboardList"></ol>
+        <div class="leaderboard-wrap">
+          <h2>Leaderboard Top 10</h2>
+          <ol id="leaderboardList"></ol>
+        </div>
       </section>
     </div>
 

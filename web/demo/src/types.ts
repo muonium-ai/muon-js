@@ -31,6 +31,7 @@ export type MiniRedisMetrics = {
   batch_size_avg: number;
   latency_p50_us: number;
   latency_p95_us: number;
+  latency_p99_us: number;
   queue_depth: number;
   errors_total: number;
   command_mix: Record<string, number>;

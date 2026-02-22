@@ -138,9 +138,11 @@ export class MetricsDashboard {
   private readonly opsHistory: number[] = [];
   private readonly p50History: number[] = [];
   private readonly p95History: number[] = [];
+  private readonly p99History: number[] = [];
   private commandMix: Record<string, number> = {};
 
-  private raf = 0;
+  private raf: number | ReturnType<typeof setTimeout> = 0;
+  private uncapped = false;
   private frameCount = 0;
   private fpsTs = performance.now();
   private fpsValue = 0;
@@ -255,6 +257,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     append(this.opsHistory, metrics.ops_window_1s);
     append(this.p50History, metrics.latency_p50_us);
     append(this.p95History, metrics.latency_p95_us);
+    append(this.p99History, metrics.latency_p99_us);
     this.commandMix = metrics.command_mix;
   }
 
@@ -262,11 +265,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return this.fpsValue;
   }
 
-  destroy(): void {
-    if (this.raf) {
-      cancelAnimationFrame(this.raf);
-      this.raf = 0;
+  setUncapped(uncapped: boolean): void {
+    if (this.uncapped === uncapped) {
+      return;
     }
+    this.uncapped = uncapped;
+    this.stopRenderLoop();
+    this.startRenderLoop();
+  }
+
+  destroy(): void {
+    this.stopRenderLoop();
+  }
+
+  private stopRenderLoop(): void {
+    if (!this.raf) {
+      return;
+    }
+    if (this.uncapped) {
+      clearTimeout(this.raf as ReturnType<typeof setTimeout>);
+    } else {
+      cancelAnimationFrame(this.raf as number);
+    }
+    this.raf = 0;
   }
 
   private startRenderLoop(): void {
@@ -280,10 +301,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
       }
 
       this.renderFrame();
-      this.raf = requestAnimationFrame(render);
+      this.raf = this.uncapped
+        ? setTimeout(render, 0)
+        : requestAnimationFrame(render);
     };
 
-    this.raf = requestAnimationFrame(render);
+    this.raf = this.uncapped
+      ? setTimeout(render, 0)
+      : requestAnimationFrame(render);
   }
 
   private renderFrame(): void {
@@ -294,7 +319,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     const { device, context, linePipeline, triPipeline } = this.gpu;
 
     const opsMax = Math.max(10, ...this.opsHistory);
-    const latencyMax = Math.max(100, ...this.p95History);
+    const latencyMax = Math.max(100, ...this.p99History);
 
     const opsLine = buildLineVertices(
       this.opsHistory,
@@ -315,6 +340,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     const p95Line = buildLineVertices(
       this.p95History,
       [0.97, 0.33, 0.28, 0.95],
+      0.10,
+      -0.48,
+      0,
+      latencyMax
+    );
+    const p99Line = buildLineVertices(
+      this.p99History,
+      [0.85, 0.20, 0.55, 0.95],
       0.10,
       -0.48,
       0,
@@ -357,6 +390,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     drawLine(opsLine);
     drawLine(p50Line);
     drawLine(p95Line);
+    drawLine(p99Line);
 
     if (bars.length) {
       const buffer = device.createBuffer({

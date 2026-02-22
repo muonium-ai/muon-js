@@ -16,6 +16,7 @@ function must<T>(value: T | null, id: string): T {
 const startBtn = must(document.querySelector<HTMLButtonElement>("#startBtn"), "#startBtn");
 const stopBtn = must(document.querySelector<HTMLButtonElement>("#stopBtn"), "#stopBtn");
 const resetBtn = must(document.querySelector<HTMLButtonElement>("#resetBtn"), "#resetBtn");
+const uncapBtn = must(document.querySelector<HTMLButtonElement>("#uncapBtn"), "#uncapBtn");
 const statusText = must(document.querySelector<HTMLElement>("#statusText"), "#statusText");
 const leaderboardList = must(document.querySelector<HTMLOListElement>("#leaderboardList"), "#leaderboardList");
 const gpuCanvas = must(document.querySelector<HTMLCanvasElement>("#gpuCanvas"), "#gpuCanvas");
@@ -27,6 +28,7 @@ const statEls = {
   batchAvg: must(document.querySelector<HTMLElement>("#batchAvg"), "#batchAvg"),
   latP50: must(document.querySelector<HTMLElement>("#latP50"), "#latP50"),
   latP95: must(document.querySelector<HTMLElement>("#latP95"), "#latP95"),
+  latP99: must(document.querySelector<HTMLElement>("#latP99"), "#latP99"),
   queueDepth: must(document.querySelector<HTMLElement>("#queueDepth"), "#queueDepth"),
   errorsTotal: must(document.querySelector<HTMLElement>("#errorsTotal"), "#errorsTotal"),
   renderFps: must(document.querySelector<HTMLElement>("#renderFps"), "#renderFps")
@@ -81,6 +83,7 @@ function updateStats(metrics: MiniRedisMetrics): void {
   statEls.batchAvg.textContent = metrics.batch_size_avg.toFixed(1);
   statEls.latP50.textContent = metrics.latency_p50_us.toLocaleString();
   statEls.latP95.textContent = metrics.latency_p95_us.toLocaleString();
+  statEls.latP99.textContent = metrics.latency_p99_us.toLocaleString();
   statEls.queueDepth.textContent = metrics.queue_depth.toLocaleString();
   statEls.errorsTotal.textContent = metrics.errors_total.toLocaleString();
 }
@@ -205,6 +208,13 @@ stopBtn.addEventListener("click", () => {
 
 resetBtn.addEventListener("click", () => {
   void resetRuntime();
+});
+
+let fpsUncapped = false;
+uncapBtn.addEventListener("click", () => {
+  fpsUncapped = !fpsUncapped;
+  dashboard.setUncapped(fpsUncapped);
+  uncapBtn.textContent = fpsUncapped ? "Cap FPS" : "Uncap FPS";
 });
 
 window.addEventListener("beforeunload", () => {

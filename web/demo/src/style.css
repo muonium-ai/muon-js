@@ -113,6 +113,12 @@ button:disabled {
   font-family: var(--font-mono);
 }
 
+.dashboard-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
 .dashboard-wrap {
   background: #09151de0;
   border-radius: 16px;
@@ -120,6 +126,8 @@ button:disabled {
   padding: 8px;
   position: relative;
   overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
 .gpu-warning {
@@ -153,6 +161,8 @@ button:disabled {
   border-radius: 12px;
   border: 1px solid #c7d7c1;
   padding: 12px;
+  width: 220px;
+  flex-shrink: 0;
 }
 
 .leaderboard-wrap h2 {
@@ -163,11 +173,11 @@ button:disabled {
 #leaderboardList {
   margin: 0;
   padding-left: 22px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 6px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   font-family: var(--font-mono);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
 }
 
 @keyframes rise-in {
@@ -188,6 +198,14 @@ button:disabled {
 
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-row {
+    flex-direction: column;
+  }
+
+  .leaderboard-wrap {
+    width: 100%;
   }
 
   #gpuCanvas {
