@@ -7,6 +7,7 @@ import type { WorkerRequest, WorkerResponse } from "./types";
 const METRICS_PUSH_INTERVAL_MS = 100;
 
 let runtimePromise: Promise<WasmMiniRedis> | null = null;
+let runtimeQueue: Promise<void> = Promise.resolve();
 let pendingQueueDepth = 0;
 
 function getRuntime(): Promise<WasmMiniRedis> {
@@ -16,8 +17,25 @@ function getRuntime(): Promise<WasmMiniRedis> {
   return runtimePromise;
 }
 
+function enqueueRuntime<T>(fn: (runtime: WasmMiniRedis) => T | Promise<T>): Promise<T> {
+  const task = runtimeQueue.then(async () => {
+    const runtime = await getRuntime();
+    return fn(runtime);
+  });
+
+  runtimeQueue = task.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return task;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) {
+    if (err.stack) {
+      return `${err.message}\n${err.stack}`;
+    }
     return err.message;
   }
   if (typeof err === "string") {
@@ -31,9 +49,12 @@ async function pushMetrics(): Promise<void> {
     return;
   }
   try {
-    const runtime = await runtimePromise;
-    runtime.set_queue_depth(pendingQueueDepth);
-    const data = await runtime.metrics_snapshot();
+    const data = (await enqueueRuntime((runtime) => runtime.metrics_snapshot())) as {
+      queue_depth?: number;
+    };
+    if (data && typeof data === "object") {
+      data.queue_depth = pendingQueueDepth;
+    }
     self.postMessage({ kind: "metrics_push", data });
   } catch {
     // keep interval alive; request/response path reports actionable errors
@@ -45,50 +66,38 @@ setInterval(() => {
 }, METRICS_PUSH_INTERVAL_MS);
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  void (async () => {
-    const request = event.data;
-    pendingQueueDepth += 1;
+  const request = event.data;
+  pendingQueueDepth += 1;
 
-    const send = (payload: WorkerResponse): void => {
-      self.postMessage(payload);
-    };
+  const send = (payload: WorkerResponse): void => {
+    self.postMessage(payload);
+  };
 
-    try {
-      const runtime = await getRuntime();
-      runtime.set_queue_depth(pendingQueueDepth);
-
-      switch (request.kind) {
-        case "exec": {
-          const data = await runtime.exec(request.command as never);
-          send({ id: request.id, ok: true, data });
-          break;
-        }
-        case "batch": {
-          const data = await runtime.exec_batch(request.commands as never);
-          send({ id: request.id, ok: true, data });
-          break;
-        }
-        case "metrics": {
-          const data = await runtime.metrics_snapshot();
-          send({ id: request.id, ok: true, data });
-          break;
-        }
-        case "reset": {
-          runtime.reset();
-          send({ id: request.id, ok: true, data: { ok: true } });
-          break;
-        }
-      }
-    } catch (err) {
-      send({ id: request.id, ok: false, error: errorMessage(err) });
-    } finally {
-      pendingQueueDepth = Math.max(0, pendingQueueDepth - 1);
-      if (runtimePromise) {
-        const runtime = await runtimePromise;
-        runtime.set_queue_depth(pendingQueueDepth);
-      }
+  void enqueueRuntime((runtime) => {
+    switch (request.kind) {
+      case "exec":
+        return runtime.exec(request.command as never);
+      case "batch":
+        return runtime.exec_batch(request.commands as never);
+      case "metrics":
+        return runtime.metrics_snapshot();
+      case "reset":
+        runtime.reset();
+        return { ok: true };
     }
-  })();
+  })
+    .then((data) => {
+      if (request.kind === "metrics" && data && typeof data === "object") {
+        (data as { queue_depth?: number }).queue_depth = pendingQueueDepth;
+      }
+      send({ id: request.id, ok: true, data });
+    })
+    .catch((err) => {
+      send({ id: request.id, ok: false, error: errorMessage(err) });
+    })
+    .finally(() => {
+      pendingQueueDepth = Math.max(0, pendingQueueDepth - 1);
+    });
 };
 
 export {};

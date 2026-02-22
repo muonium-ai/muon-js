@@ -1,6 +1,8 @@
 //! Socketless mini-redis core command executor for embedded/WASM use.
 
 use std::collections::{HashMap, VecDeque};
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use crate::mini_redis::store::Db;
@@ -183,6 +185,7 @@ pub struct CoreExecutor {
     dbs: Vec<Db>,
     current_db: usize,
     metrics: CoreMetrics,
+    #[cfg(not(target_arch = "wasm32"))]
     start: Instant,
 }
 
@@ -197,6 +200,7 @@ impl CoreExecutor {
             dbs,
             current_db: 0,
             metrics: CoreMetrics::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             start: Instant::now(),
         }
     }
@@ -210,7 +214,7 @@ impl CoreExecutor {
         }
         self.current_db = 0;
         self.metrics = CoreMetrics::default();
-        self.start = Instant::now();
+        self.reset_clock();
     }
 
     pub fn set_queue_depth(&mut self, depth: u32) {
@@ -324,8 +328,29 @@ impl CoreExecutor {
     }
 
     fn now_us(&self) -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            // In browser WASM, `Instant` can trap depending on runtime plumbing.
+            // Use wall-clock micros for lightweight telemetry timestamps.
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         self.start.elapsed().as_micros() as u64
+        }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reset_clock(&mut self) {
+        self.start = Instant::now();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn reset_clock(&mut self) {}
 }
 
 #[cfg(test)]

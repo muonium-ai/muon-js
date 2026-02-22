@@ -5,7 +5,7 @@ declare module "./wasm/muon_js.js" {
     exec(commandJson: unknown): unknown;
     exec_batch(commandsJson: unknown): unknown;
     metrics_snapshot(): unknown;
-    reset(): void;
-    set_queue_depth(depth: number): void;
+    reset(): unknown;
+    set_queue_depth(depth: number): unknown;
   }
 }

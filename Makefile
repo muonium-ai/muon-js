@@ -2,10 +2,7 @@ SHELL := /bin/sh
 
 CARGO ?= cargo
 RUSTUP ?= rustup
-WASM_BINDGEN ?= wasm-bindgen
-NPM ?= npm
-STABLE_CARGO ?= $(shell $(RUSTUP) which cargo --toolchain stable)
-STABLE_RUSTC ?= $(shell $(RUSTUP) which rustc --toolchain stable)
+WEB_DEMO_DIR ?= web/demo
 
 .PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare web-demo-wasm web-demo-dev web-demo-build web-demo-test
 
@@ -53,9 +50,6 @@ JS_BENCH_CHECK_RUNS ?= 3
 JS_BENCH_BASELINE ?= devdocs/js_runtime_benchmark_baseline.json
 JS_BENCH_CHECK_OUT ?= tmp/comparison/js_runtime_benchmark_check_$(shell date +%Y%m%d_%H%M%S).json
 JS_BENCH_MAX_REGRESSION ?= 0.20
-WEB_DEMO_DIR ?= web/demo
-WEB_DEMO_WASM_OUT ?= $(WEB_DEMO_DIR)/src/wasm
-WEB_DEMO_WASM_TARGET ?= target/wasm32-unknown-unknown/release/muon_js.wasm
 
 sync-version:
 	./scripts/sync_version.sh
@@ -84,21 +78,16 @@ release: sync-version
 	$(CARGO) build --release
 
 web-demo-wasm: sync-version
-	@mkdir -p $(WEB_DEMO_WASM_OUT)
-	RUSTC=$(STABLE_RUSTC) $(STABLE_CARGO) build --release --target wasm32-unknown-unknown --features mini-redis-wasm
-	$(WASM_BINDGEN) --target web --out-dir $(WEB_DEMO_WASM_OUT) $(WEB_DEMO_WASM_TARGET)
+	$(MAKE) -C $(WEB_DEMO_DIR) wasm
 
 web-demo-dev: web-demo-wasm
-	cd $(WEB_DEMO_DIR) && $(NPM) install
-	cd $(WEB_DEMO_DIR) && $(NPM) run dev
+	$(MAKE) -C $(WEB_DEMO_DIR) dev
 
 web-demo-build: web-demo-wasm
-	cd $(WEB_DEMO_DIR) && $(NPM) install
-	cd $(WEB_DEMO_DIR) && $(NPM) run build
+	$(MAKE) -C $(WEB_DEMO_DIR) build
 
 web-demo-test: web-demo-wasm
-	cd $(WEB_DEMO_DIR) && $(NPM) install
-	cd $(WEB_DEMO_DIR) && $(NPM) run test
+	$(MAKE) -C $(WEB_DEMO_DIR) test
 
 js-runtime-bench: sync-version
 	@mkdir -p tmp/comparison

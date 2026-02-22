@@ -162,17 +162,18 @@ The repo includes a socketless browser demo under `web/demo`:
 ### Browser demo targets
 
 ```bash
-# Build wasm module into web/demo/src/wasm
+# Root-level wrappers
 make web-demo-wasm
-
-# Run Vite dev server
 make web-demo-dev
-
-# Production build
 make web-demo-build
-
-# Web demo typecheck/test
 make web-demo-test
+
+# Or run directly from the dedicated web/demo Makefile
+cd web/demo
+make wasm
+make dev
+make build
+make test
 ```
 
 ### Browser demo workflow
