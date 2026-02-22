@@ -1,8 +1,10 @@
 SHELL := /bin/sh
 
 CARGO ?= cargo
+RUSTUP ?= rustup
+WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare web-demo-wasm web-demo-dev web-demo-build web-demo-test
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -74,6 +76,18 @@ test-all: test test-integration test-mquickjs-detailed
 
 release: sync-version
 	$(CARGO) build --release
+
+web-demo-wasm: sync-version
+	$(MAKE) -C $(WEB_DEMO_DIR) wasm
+
+web-demo-dev: web-demo-wasm
+	$(MAKE) -C $(WEB_DEMO_DIR) dev
+
+web-demo-build: web-demo-wasm
+	$(MAKE) -C $(WEB_DEMO_DIR) build
+
+web-demo-test: web-demo-wasm
+	$(MAKE) -C $(WEB_DEMO_DIR) test
 
 js-runtime-bench: sync-version
 	@mkdir -p tmp/comparison

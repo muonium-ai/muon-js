@@ -11,7 +11,12 @@ mod api;
 mod context;
 mod types;
 mod value;
-#[cfg(feature = "mini-redis")]
+#[cfg(any(
+    feature = "mini-redis",
+    feature = "mini-redis-core",
+    feature = "mini-redis-libsql",
+    feature = "mini-redis-wasm",
+))]
 pub mod mini_redis;
 
 pub use api::*;
