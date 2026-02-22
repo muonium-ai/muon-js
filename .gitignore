@@ -9,3 +9,4 @@ web/demo/dist/
 web/demo/src/wasm/*.js
 web/demo/src/wasm/*.wasm
 web/demo/src/wasm/*.d.ts
+.claude/settings.local.json
