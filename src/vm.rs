@@ -5,7 +5,8 @@ use crate::bytecode::{BytecodeModule, OpCode};
 use crate::types::{JSObjectClassEnum, JSValue};
 use crate::{api::{js_throw_error, js_to_number, js_to_string, js_value_to_atom,
                    js_get_property_str, js_get_property_uint32, js_new_string, js_new_string_len,
-                   js_is_string, js_is_function, js_is_number}, JSContextImpl};
+                   js_is_string, js_is_function, js_is_number, int_to_decimal_bytes}, JSContextImpl};
+use crate::value::Value;
 
 pub struct VM;
 
@@ -150,39 +151,71 @@ impl VM {
                 OpCode::Add => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    // String concatenation if either side is a string
-                    let a_is_str = ctx.string_bytes(a).is_some();
-                    let b_is_str = ctx.string_bytes(b).is_some();
-                    if a_is_str || b_is_str {
-                        let ls = js_to_string(ctx, a);
-                        let rs = js_to_string(ctx, b);
-                        let lb = ctx.string_bytes(ls).unwrap_or(b"");
-                        let rb = ctx.string_bytes(rs).unwrap_or(b"");
-                        let mut out = Vec::with_capacity(lb.len() + rb.len());
-                        out.extend_from_slice(lb);
-                        out.extend_from_slice(rb);
-                        stack.push(js_new_string_len(ctx, &out));
+                    // Fast path: int + int (avoids string_bytes checks)
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        stack.push(crate::helpers::number_to_value(ctx, ai as f64 + bi as f64));
                     } else {
-                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                        stack.push(crate::helpers::number_to_value(ctx, an + bn));
+                        let a_is_str = ctx.string_bytes(a).is_some();
+                        if a_is_str && b.is_int() {
+                            // Fast path: string + int — avoid intermediate string alloc
+                            let n = b.int32().unwrap_or(0);
+                            let mut int_buf = [0u8; 12];
+                            let int_bytes = int_to_decimal_bytes(n, &mut int_buf);
+                            if let Some(header) = ctx.alloc_string_concat_val(a, int_bytes) {
+                                stack.push(Value::from_ptr(header));
+                            } else {
+                                return js_throw_error(ctx, JSObjectClassEnum::InternalError, "out of memory");
+                            }
+                        } else if a_is_str || ctx.string_bytes(b).is_some() {
+                            let ls = js_to_string(ctx, a);
+                            let rs = js_to_string(ctx, b);
+                            let lb = ctx.string_bytes(ls).unwrap_or(b"");
+                            let rb = ctx.string_bytes(rs).unwrap_or(b"");
+                            let mut out = Vec::with_capacity(lb.len() + rb.len());
+                            out.extend_from_slice(lb);
+                            out.extend_from_slice(rb);
+                            stack.push(js_new_string_len(ctx, &out));
+                        } else {
+                            let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                            let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                            stack.push(crate::helpers::number_to_value(ctx, an + bn));
+                        }
                     }
                 }
 
                 OpCode::Sub => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, an - bn));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        stack.push(crate::helpers::number_to_value(ctx, ai as f64 - bi as f64));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, an - bn));
+                    }
                 }
 
                 OpCode::Mul => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, an * bn));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0) as i64;
+                        let bi = b.int32().unwrap_or(0) as i64;
+                        let result = ai * bi;
+                        if result >= i32::MIN as i64 && result <= i32::MAX as i64 {
+                            stack.push(JSValue::from_int32(result as i32));
+                        } else {
+                            stack.push(crate::helpers::number_to_value(ctx, result as f64));
+                        }
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, an * bn));
+                    }
                 }
 
                 OpCode::Div => {
@@ -238,7 +271,9 @@ impl VM {
                 OpCode::Lt => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::new_bool(a.int32().unwrap_or(0) < b.int32().unwrap_or(0)));
+                    } else if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la < lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -250,7 +285,9 @@ impl VM {
                 OpCode::Gt => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::new_bool(a.int32().unwrap_or(0) > b.int32().unwrap_or(0)));
+                    } else if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la > lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -262,7 +299,9 @@ impl VM {
                 OpCode::Le => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::new_bool(a.int32().unwrap_or(0) <= b.int32().unwrap_or(0)));
+                    } else if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la <= lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -274,7 +313,9 @@ impl VM {
                 OpCode::Ge => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::new_bool(a.int32().unwrap_or(0) >= b.int32().unwrap_or(0)));
+                    } else if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
                         stack.push(JSValue::new_bool(la >= lb));
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
@@ -343,13 +384,106 @@ impl VM {
                     let args_start = stack.len() - argc;
                     let func_idx = args_start - 1;
                     let func_val = stack[func_idx];
-                    let args: Vec<JSValue> = stack[args_start..].to_vec();
-                    stack.truncate(func_idx);
+                    // Fast path: direct C function dispatch
+                    if let Some((cf_idx, cf_params)) = ctx.c_function_info(func_val) {
+                        let result = if argc <= 8 {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[..argc].copy_from_slice(&stack[args_start..]);
+                            stack.truncate(func_idx);
+                            crate::api::call_c_function_direct(ctx, cf_idx, cf_params, global, &args_buf[..argc])
+                        } else {
+                            let args: Vec<JSValue> = stack[args_start..].to_vec();
+                            stack.truncate(func_idx);
+                            crate::api::call_c_function_direct(ctx, cf_idx, cf_params, global, &args)
+                        };
+                        stack.push(result);
+                    } else if argc == 1 {
+                        // Inline fast path for common single-arg builtins: Number(v)
+                        let arg0 = stack[args_start];
+                        let mut handled = false;
+                        if let Some(marker_bytes) = ctx.string_bytes(func_val) {
+                            if marker_bytes == b"__builtin_Number__" {
+                                stack.truncate(func_idx);
+                                if arg0.is_int() {
+                                    stack.push(arg0);
+                                } else {
+                                    let n = match js_to_number(ctx, arg0) { Ok(n) => n, Err(e) => return e };
+                                    stack.push(crate::helpers::number_to_value(ctx, n));
+                                }
+                                handled = true;
+                            }
+                        }
+                        if !handled {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[0] = arg0;
+                            stack.truncate(func_idx);
+                            let result = crate::api::call_function_value(ctx, func_val, global, &args_buf[..1]);
+                            if let Some(result) = result {
+                                stack.push(result);
+                            } else {
+                                return js_throw_error(ctx, JSObjectClassEnum::TypeError, "not a function");
+                            }
+                        }
+                    } else {
+                        // Use stack buffer for small arg counts to avoid Vec heap allocation
+                        let result = if argc <= 8 {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[..argc].copy_from_slice(&stack[args_start..]);
+                            stack.truncate(func_idx);
+                            crate::api::call_function_value(ctx, func_val, global, &args_buf[..argc])
+                        } else {
+                            let args: Vec<JSValue> = stack[args_start..].to_vec();
+                            stack.truncate(func_idx);
+                            crate::api::call_function_value(ctx, func_val, global, &args)
+                        };
+                        if let Some(result) = result {
+                            stack.push(result);
+                        } else {
+                            return js_throw_error(ctx, JSObjectClassEnum::TypeError, "not a function");
+                        }
+                    }
+                }
 
-                    if let Some(result) = crate::api::call_function_value(ctx, func_val, global, &args) {
+                OpCode::CallMethod => {
+                    let argc = ins.a as usize;
+                    // Stack: [... this_obj, func, arg0, arg1, ..., argN-1]
+                    if stack.len() < argc + 2 {
+                        return js_throw_error(ctx, JSObjectClassEnum::InternalError, "bytecode stack underflow in call_method");
+                    }
+                    let args_start = stack.len() - argc;
+                    let func_idx = args_start - 1;
+                    let this_idx = func_idx - 1;
+                    let func_val = stack[func_idx];
+                    let this_val = stack[this_idx];
+                    // Fast path: direct C function dispatch (skips call_function_value overhead)
+                    if let Some((cf_idx, cf_params)) = ctx.c_function_info(func_val) {
+                        let result = if argc <= 8 {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[..argc].copy_from_slice(&stack[args_start..]);
+                            stack.truncate(this_idx);
+                            crate::api::call_c_function_direct(ctx, cf_idx, cf_params, this_val, &args_buf[..argc])
+                        } else {
+                            let args: Vec<JSValue> = stack[args_start..].to_vec();
+                            stack.truncate(this_idx);
+                            crate::api::call_c_function_direct(ctx, cf_idx, cf_params, this_val, &args)
+                        };
                         stack.push(result);
                     } else {
-                        return js_throw_error(ctx, JSObjectClassEnum::TypeError, "not a function");
+                        let result = if argc <= 8 {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[..argc].copy_from_slice(&stack[args_start..]);
+                            stack.truncate(this_idx);
+                            crate::api::call_function_value(ctx, func_val, this_val, &args_buf[..argc])
+                        } else {
+                            let args: Vec<JSValue> = stack[args_start..].to_vec();
+                            stack.truncate(this_idx);
+                            crate::api::call_function_value(ctx, func_val, this_val, &args)
+                        };
+                        if let Some(result) = result {
+                            stack.push(result);
+                        } else {
+                            return js_throw_error(ctx, JSObjectClassEnum::TypeError, "not a function");
+                        }
                     }
                 }
 
@@ -357,19 +491,45 @@ impl VM {
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
                     if let Some(key_bytes) = ctx.string_bytes(key) {
-                        // Copy bytes once to release the ctx borrow before property lookup.
-                        let key_buf = key_bytes.to_vec();
-                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
-                        let val = js_get_property_str(ctx, obj, key_str);
-                        stack.push(val);
+                        // Copy to stack buffer to release ctx borrow (avoid heap alloc).
+                        let mut key_stack = [0u8; 64];
+                        let key_len = key_bytes.len().min(64);
+                        key_stack[..key_len].copy_from_slice(&key_bytes[..key_len]);
+                        let key_buf = &key_stack[..key_len];
+                        // Check if obj is a builtin marker (e.g. __builtin_console__)
+                        let is_marker = ctx.string_bytes(obj)
+                            .map(|b| b.len() >= 13 && b.starts_with(b"__builtin_") && b.ends_with(b"__"))
+                            .unwrap_or(false);
+                        if is_marker {
+                            let val = resolve_builtin_marker_prop(ctx, obj, key_buf);
+                            stack.push(val);
+                        } else {
+                            let key_str = core::str::from_utf8(key_buf).unwrap_or("");
+                            let val = js_get_property_str(ctx, obj, key_str);
+                            // If property is undefined and obj is a string,
+                            // resolve as a string method marker for CallMethod dispatch
+                            if val.is_undefined() && ctx.string_bytes(obj).is_some() {
+                                let marker = resolve_string_method_marker(ctx, key_buf);
+                                stack.push(marker);
+                            } else {
+                                stack.push(val);
+                            }
+                        }
                     } else if key.is_int() {
                         let idx = key.int32().unwrap_or(0) as u32;
                         let val = js_get_property_uint32(ctx, obj, idx);
                         stack.push(val);
                     } else {
                         let key_s = js_to_string(ctx, key);
-                        let key_buf = ctx.string_bytes(key_s).unwrap_or(b"").to_vec();
-                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
+                        let mut key_stack = [0u8; 64];
+                        let key_len;
+                        if let Some(kb) = ctx.string_bytes(key_s) {
+                            key_len = kb.len().min(64);
+                            key_stack[..key_len].copy_from_slice(&kb[..key_len]);
+                        } else {
+                            key_len = 0;
+                        }
+                        let key_str = core::str::from_utf8(&key_stack[..key_len]).unwrap_or("");
                         let val = js_get_property_str(ctx, obj, key_str);
                         stack.push(val);
                     }
@@ -380,9 +540,11 @@ impl VM {
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
                     if let Some(key_bytes) = ctx.string_bytes(key) {
-                        // Copy bytes once to release the ctx borrow before property set.
-                        let key_buf = key_bytes.to_vec();
-                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
+                        // Copy to stack buffer to release ctx borrow.
+                        let mut key_stack = [0u8; 64];
+                        let key_len = key_bytes.len().min(64);
+                        key_stack[..key_len].copy_from_slice(&key_bytes[..key_len]);
+                        let key_str = core::str::from_utf8(&key_stack[..key_len]).unwrap_or("");
                         crate::api::js_set_property_str(ctx, obj, key_str, value);
                     }
                     stack.push(value);
@@ -396,9 +558,11 @@ impl VM {
                         let val = js_get_property_uint32(ctx, obj, i);
                         stack.push(val);
                     } else if let Some(idx_bytes) = ctx.string_bytes(idx) {
-                        // Copy bytes once to release the ctx borrow before property lookup.
-                        let idx_buf = idx_bytes.to_vec();
-                        let idx_str = core::str::from_utf8(&idx_buf).unwrap_or("");
+                        // Copy to stack buffer to release ctx borrow.
+                        let mut idx_stack = [0u8; 64];
+                        let idx_len = idx_bytes.len().min(64);
+                        idx_stack[..idx_len].copy_from_slice(&idx_bytes[..idx_len]);
+                        let idx_str = core::str::from_utf8(&idx_stack[..idx_len]).unwrap_or("");
                         let val = js_get_property_str(ctx, obj, idx_str);
                         stack.push(val);
                     } else {
@@ -412,14 +576,26 @@ impl VM {
                 OpCode::Concat => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let ls = js_to_string(ctx, a);
-                    let rs = js_to_string(ctx, b);
-                    let lb = ctx.string_bytes(ls).unwrap_or(b"");
-                    let rb = ctx.string_bytes(rs).unwrap_or(b"");
-                    let mut out = Vec::with_capacity(lb.len() + rb.len());
-                    out.extend_from_slice(lb);
-                    out.extend_from_slice(rb);
-                    stack.push(js_new_string_len(ctx, &out));
+                    // Fast path: string + int — avoid intermediate string alloc
+                    if ctx.string_bytes(a).is_some() && b.is_int() {
+                        let n = b.int32().unwrap_or(0);
+                        let mut int_buf = [0u8; 12];
+                        let int_bytes = int_to_decimal_bytes(n, &mut int_buf);
+                        if let Some(header) = ctx.alloc_string_concat_val(a, int_bytes) {
+                            stack.push(Value::from_ptr(header));
+                        } else {
+                            return js_throw_error(ctx, JSObjectClassEnum::InternalError, "out of memory");
+                        }
+                    } else {
+                        let ls = js_to_string(ctx, a);
+                        let rs = js_to_string(ctx, b);
+                        let lb = ctx.string_bytes(ls).unwrap_or(b"");
+                        let rb = ctx.string_bytes(rs).unwrap_or(b"");
+                        let mut out = Vec::with_capacity(lb.len() + rb.len());
+                        out.extend_from_slice(lb);
+                        out.extend_from_slice(rb);
+                        stack.push(js_new_string_len(ctx, &out));
+                    }
                 }
 
                 OpCode::ToNumber => {
@@ -558,5 +734,63 @@ fn vm_strict_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
         l == r
     } else {
         false
+    }
+}
+
+/// Resolve a property access on a builtin marker string.
+/// e.g. __builtin_console__ + "log" → __builtin_console_log__
+/// Handles special numeric constants like Math.PI, Math.E.
+fn resolve_builtin_marker_prop(ctx: &mut JSContextImpl, obj: JSValue, prop: &[u8]) -> JSValue {
+    // Copy marker base to stack buffer to release ctx borrow
+    let mut base_buf = [0u8; 32];
+    let base_len = {
+        let obj_bytes = ctx.string_bytes(obj).unwrap_or(b"");
+        let blen = if obj_bytes.len() >= 12 { obj_bytes.len() - 12 } else { 0 };
+        if blen > 0 && blen <= 32 {
+            base_buf[..blen].copy_from_slice(&obj_bytes[10..obj_bytes.len() - 2]);
+        }
+        blen
+    };
+    // Handle Math numeric constants (return actual values, not markers)
+    if base_len == 4 && &base_buf[..4] == b"Math" {
+        match prop {
+            b"PI" => return crate::helpers::number_to_value(ctx, core::f64::consts::PI),
+            b"E" => return crate::helpers::number_to_value(ctx, core::f64::consts::E),
+            b"LN2" => return crate::helpers::number_to_value(ctx, core::f64::consts::LN_2),
+            b"LN10" => return crate::helpers::number_to_value(ctx, core::f64::consts::LN_10),
+            b"LOG2E" => return crate::helpers::number_to_value(ctx, core::f64::consts::LOG2_E),
+            b"LOG10E" => return crate::helpers::number_to_value(ctx, core::f64::consts::LOG10_E),
+            b"SQRT2" => return crate::helpers::number_to_value(ctx, core::f64::consts::SQRT_2),
+            _ => {}
+        }
+    }
+    // General case: construct __builtin_{base}_{prop}__ marker
+    let needed = 10 + base_len + 1 + prop.len() + 2;
+    let mut buf = [0u8; 80];
+    if needed <= buf.len() && base_len > 0 {
+        buf[..10].copy_from_slice(b"__builtin_");
+        buf[10..10 + base_len].copy_from_slice(&base_buf[..base_len]);
+        buf[10 + base_len] = b'_';
+        buf[11 + base_len..11 + base_len + prop.len()].copy_from_slice(prop);
+        buf[11 + base_len + prop.len()..needed].copy_from_slice(b"__");
+        js_new_string_len(ctx, &buf[..needed])
+    } else {
+        JSValue::UNDEFINED
+    }
+}
+
+/// Construct a __builtin_string_{method}__ marker for string method dispatch.
+fn resolve_string_method_marker(ctx: &mut JSContextImpl, method: &[u8]) -> JSValue {
+    let prefix = b"__builtin_string_";
+    let suffix = b"__";
+    let needed = prefix.len() + method.len() + suffix.len();
+    let mut buf = [0u8; 80];
+    if needed <= buf.len() {
+        buf[..prefix.len()].copy_from_slice(prefix);
+        buf[prefix.len()..prefix.len() + method.len()].copy_from_slice(method);
+        buf[prefix.len() + method.len()..needed].copy_from_slice(suffix);
+        js_new_string_len(ctx, &buf[..needed])
+    } else {
+        JSValue::UNDEFINED
     }
 }

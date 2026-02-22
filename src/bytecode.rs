@@ -52,6 +52,7 @@ pub enum OpCode {
     BitNot,
     IncLocal,      // a = local slot, b = amount (as i32 encoded in u32)
     Pop,           // alias for Drop semantically - pop and discard
+    CallMethod,    // a = argc; stack: [... this_obj, func, arg0..argN-1] → [result]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2040,27 +2040,9 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
     };
     let result = match bc_cached {
         Some(Some(ref module)) => {
-            let has_unsupported_ops = module
-                .functions
-                .get(module.main)
-                .map(|f| {
-                    f.code.iter().any(|ins| {
-                        matches!(
-                            ins.op,
-                            crate::bytecode::OpCode::GetProp
-                                | crate::bytecode::OpCode::GetElem
-                                | crate::bytecode::OpCode::SetProp
-                        )
-                    })
-                })
-                .unwrap_or(true);
-            if has_unsupported_ops {
-                None
-            } else {
-                // Already compiled — run via VM
-                let mut vm = crate::vm::VM::new();
-                Some(vm.run_module_with_locals(ctx, module, args))
-            }
+            // Run cached bytecode via VM (GetProp/GetElem/SetProp now supported)
+            let mut vm = crate::vm::VM::new();
+            Some(vm.run_module_with_locals(ctx, module, args))
         }
         Some(None) => {
             // Previously tried and failed to compile — fall back
@@ -2072,29 +2054,11 @@ pub fn call_closure_with_this(ctx: &mut JSContextImpl, func: JSValue, this_val: 
             sc.add_params(&param_names);
             match sc.compile_stmts(&cached_stmts) {
                 Ok(module) => {
-                    let has_unsupported_ops = module
-                        .functions
-                        .get(module.main)
-                        .map(|f| {
-                            f.code.iter().any(|ins| {
-                                matches!(
-                                    ins.op,
-                                    crate::bytecode::OpCode::GetProp
-                                        | crate::bytecode::OpCode::GetElem
-                                        | crate::bytecode::OpCode::SetProp
-                                )
-                            })
-                        })
-                        .unwrap_or(true);
-                    if has_unsupported_ops {
-                        ctx.set_bytecode_cache(body_key, None);
-                        None
-                    } else {
-                        let mut vm = crate::vm::VM::new();
-                        let result = vm.run_module_with_locals(ctx, &module, args);
-                        ctx.set_bytecode_cache(body_key, Some(module));
-                        Some(result)
-                    }
+                    // Compile succeeded — run via VM (GetProp/GetElem/SetProp now supported)
+                    let mut vm = crate::vm::VM::new();
+                    let result = vm.run_module_with_locals(ctx, &module, args);
+                    ctx.set_bytecode_cache(body_key, Some(module));
+                    Some(result)
                 }
                 Err(_) => {
                     ctx.set_bytecode_cache(body_key, None);

@@ -1,17 +1,64 @@
 //! In-memory multi-DB store with TTL support and internal key-sharding.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 const NUM_SHARDS: usize = 64;
 
+// ---------------------------------------------------------------------------
+// FNV-1a hasher — fast, non-cryptographic hash for short byte-slice keys.
+// Used for the inner HashMap in Hash values instead of the default SipHash.
+// ---------------------------------------------------------------------------
+
+pub struct FnvHasher(u64);
+
+impl Hasher for FnvHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= b as u64;
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FnvBuildHasher;
+
+impl BuildHasher for FnvBuildHasher {
+    type Hasher = FnvHasher;
+    #[inline]
+    fn build_hasher(&self) -> FnvHasher {
+        FnvHasher(0xcbf29ce484222325)
+    }
+}
+
+pub type FnvHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
+
+#[inline]
+fn new_fnv_map<K, V>() -> FnvHashMap<K, V> {
+    HashMap::with_hasher(FnvBuildHasher)
+}
+
+#[inline]
+fn new_fnv_map_with_capacity<K, V>(cap: usize) -> FnvHashMap<K, V> {
+    HashMap::with_capacity_and_hasher(cap, FnvBuildHasher)
+}
+
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Arc<[u8]>),
+    /// Integer values stored natively — avoids parse/format/alloc on INCR paths.
+    Int(i64),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
-    Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
+    Hash(FnvHashMap<Arc<[u8]>, Arc<[u8]>>),
     ZSet(HashMap<Vec<u8>, f64>),
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
@@ -184,7 +231,7 @@ impl Shard {
             return None;
         }
         match self.data.get(key) {
-            Some(Value::String(_)) => Some("string"),
+            Some(Value::String(_)) | Some(Value::Int(_)) => Some("string"),
             Some(Value::List(_)) => Some("list"),
             Some(Value::Set(_)) => Some("set"),
             Some(Value::Hash(_)) => Some("hash"),
@@ -602,6 +649,7 @@ impl Shard {
     }
 
     /// HINCRBY: increment hash field by delta
+    #[inline]
     fn hash_incr_by(&mut self, key: &[u8], field: &[u8], delta: i64) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -626,13 +674,14 @@ impl Shard {
         }
         let field_key: Arc<[u8]> = Arc::from(field);
         let new_val = delta;
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(new_val)
     }
 
     /// HSETNX: set hash field only if it doesn't already exist
+    #[inline]
     fn hash_set_nx(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -652,7 +701,7 @@ impl Shard {
                 _ => Err(()),
             };
         }
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(true)
@@ -769,6 +818,12 @@ impl Shard {
         }
         match self.data.get(key) {
             Some(Value::String(val)) => Ok(Some(val.clone())),
+            Some(Value::Int(n)) => {
+                // Serialize integer to bytes on read
+                let mut out = Vec::with_capacity(20);
+                write_i64_bytes(&mut out, *n);
+                Ok(Some(Arc::from(out)))
+            }
             Some(_) => Err(()),
             None => Ok(None),
         }
@@ -807,6 +862,16 @@ impl Shard {
                 *buf = Arc::from(v);
                 Ok(len as i64)
             }
+            Some(entry @ Value::Int(_)) => {
+                // Convert Int to String, then append
+                let n = if let Value::Int(n) = entry { *n } else { unreachable!() };
+                let mut v = Vec::with_capacity(20 + value.len());
+                write_i64_bytes(&mut v, n);
+                v.extend_from_slice(value);
+                let len = v.len();
+                *entry = Value::String(Arc::from(v));
+                Ok(len as i64)
+            }
             Some(_) => Err(()),
             None => {
                 self.data.insert(key.clone(), Value::String(Arc::from(value)));
@@ -820,25 +885,36 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get_mut(key) {
-            Some(Value::String(buf)) => {
-                let n = parse_i64_bytes(buf)?;
+            Some(entry @ Value::Int(_)) => {
+                // Fast path — zero allocation
+                if let Value::Int(n) = entry {
+                    let next = n.saturating_add(delta);
+                    *n = next;
+                    Ok(next)
+                } else {
+                    unreachable!()
+                }
+            }
+            Some(entry @ Value::String(_)) => {
+                // Parse string, then promote to Int for future fast-path
+                let n = if let Value::String(buf) = entry {
+                    parse_i64_bytes(buf)?
+                } else {
+                    unreachable!()
+                };
                 let next = n.saturating_add(delta);
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                *buf = Arc::from(out);
+                *entry = Value::Int(next);
                 Ok(next)
             }
             Some(_) => Err(()),
             None => {
-                let next = delta;
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                self.data.insert(key.to_vec(), Value::String(Arc::from(out)));
-                Ok(next)
+                self.data.insert(key.to_vec(), Value::Int(delta));
+                Ok(delta)
             }
         }
     }
 
+    #[inline]
     fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -849,12 +925,31 @@ impl Shard {
                 _ => Err(()),
             };
         }
-        let mut map = HashMap::new();
+        let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
         self.data.insert(key.to_vec(), Value::Hash(map));
         Ok(true)
     }
 
+    /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    #[inline]
+    fn hash_set_bytes(&mut self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => Ok(map.insert(Arc::from(field), Arc::from(value)).is_none()),
+                _ => Err(()),
+            };
+        }
+        let mut map = new_fnv_map_with_capacity(1);
+        map.insert(Arc::from(field), Arc::from(value));
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(true)
+    }
+
+    #[inline]
     fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -955,6 +1050,30 @@ impl Shard {
         }
         self.data.insert(key.to_vec(), Value::Set(set));
         Ok(added)
+    }
+
+    /// Single-member SADD: takes borrowed bytes, only creates Arc when inserting.
+    fn set_add_single_bytes(&mut self, key: &[u8], member: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Set(set) => {
+                    if set.contains(member) {
+                        Ok(0)
+                    } else {
+                        set.insert(Arc::from(member));
+                        Ok(1)
+                    }
+                }
+                _ => Err(()),
+            };
+        }
+        let mut set = HashSet::new();
+        set.insert(Arc::from(member));
+        self.data.insert(key.to_vec(), Value::Set(set));
+        Ok(1)
     }
 
     fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
@@ -1185,6 +1304,7 @@ impl Shard {
         }
     }
 
+    #[inline]
     fn is_expired(&self, key: &[u8]) -> bool {
         if self.expires.is_empty() {
             return false;
@@ -1356,6 +1476,11 @@ impl Db {
         self.shard(key).hash_set(key, field, value)
     }
 
+    /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    pub fn hash_set_bytes(&self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
+        self.shard(key).hash_set_bytes(key, field, value)
+    }
+
     pub fn hash_get(&self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         self.shard(key).hash_get(key, field)
     }
@@ -1380,6 +1505,11 @@ impl Db {
 
     pub fn set_add(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         self.shard(key).set_add(key, members)
+    }
+
+    /// Single-member SADD: takes borrowed bytes, avoids Vec and Arc alloc when member exists.
+    pub fn set_add_single_bytes(&self, key: &[u8], member: &[u8]) -> Result<i64, ()> {
+        self.shard(key).set_add_single_bytes(key, member)
     }
 
     pub fn set_remove(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
@@ -1606,6 +1736,11 @@ fn write_i64_bytes(buf: &mut Vec<u8>, n: i64) {
         tmp[idx] = b'-';
     }
     buf.extend_from_slice(&tmp[idx..]);
+}
+
+/// Public wrapper for persistence layer to serialize Int values.
+pub fn write_i64_bytes_pub(buf: &mut Vec<u8>, n: i64) {
+    write_i64_bytes(buf, n);
 }
 
 fn now_ms() -> u64 {

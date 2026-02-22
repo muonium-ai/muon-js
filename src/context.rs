@@ -583,6 +583,36 @@ impl Context {
         }
     }
 
+    /// Allocate a new string that concatenates a JS string value with extra bytes.
+    /// Uses raw pointer to the string's data on the bump-allocated heap,
+    /// avoiding the need for an intermediate Vec and an extra js_to_string call.
+    pub fn alloc_string_concat_val(&mut self, str_val: crate::value::Value, extra: &[u8]) -> Option<*mut u8> {
+        // Read raw pointer info before mutable alloc (safe: bump allocator never moves data)
+        let (a_ptr, a_len) = unsafe {
+            let ptr = str_val.as_ptr() as *const StringHeader;
+            if (*ptr).tag != HEAP_TAG_STRING {
+                return None;
+            }
+            let len = (*ptr).len as usize;
+            let data = (ptr as *const u8).add(core::mem::size_of::<StringHeader>());
+            (data, len)
+        };
+        let total_len = a_len + extra.len();
+        let alloc_size = core::mem::size_of::<StringHeader>() + total_len + 1;
+        let raw = self.mem.alloc(alloc_size, core::mem::align_of::<usize>())?;
+        self.gc_objects.push(raw);
+        unsafe {
+            let header = raw as *mut StringHeader;
+            (*header).tag = HEAP_TAG_STRING;
+            (*header).len = total_len as u32;
+            let data = raw.add(core::mem::size_of::<StringHeader>());
+            core::ptr::copy_nonoverlapping(a_ptr, data, a_len);
+            core::ptr::copy_nonoverlapping(extra.as_ptr(), data.add(a_len), extra.len());
+            *data.add(total_len) = 0;
+            Some(raw)
+        }
+    }
+
     pub fn string_bytes(&self, val: crate::value::Value) -> Option<&[u8]> {
         if !val.is_ptr() {
             return None;

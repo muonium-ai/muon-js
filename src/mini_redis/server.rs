@@ -134,7 +134,8 @@ async fn graceful_shutdown(
         let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for (_, value, _) in items.iter() {
             match value {
-                crate::mini_redis::store::Value::String(_) => counts.0 += 1,
+                crate::mini_redis::store::Value::String(_)
+                | crate::mini_redis::store::Value::Int(_) => counts.0 += 1,
                 crate::mini_redis::store::Value::List(_) => counts.1 += 1,
                 crate::mini_redis::store::Value::Set(_) => counts.2 += 1,
                 crate::mini_redis::store::Value::Hash(_) => counts.3 += 1,
@@ -2105,8 +2106,22 @@ unsafe fn redis_call_fast(
             }
         }
         4 => {
-            // HSET — key borrowed, field/value go to Arc from slices
-            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 4 && argc % 2 == 0 {
+            // HSET single field-value — borrow directly, skip Arc alloc
+            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc == 4 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let mut fbuf = [0u8; 12];
+                let mut vbuf = [0u8; 12];
+                let field = js_value_as_bytes(ctx, *argv.add(2), &mut fbuf);
+                let value = js_value_as_bytes(ctx, *argv.add(3), &mut vbuf);
+                return Some(match db.hash_set_bytes(key, field, value) {
+                    Ok(is_new) => JS_NewInt64(ctx, if is_new { 1 } else { 0 }),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // HSET multi field-value — key borrowed, field/value go to Arc from slices
+            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 6 && argc % 2 == 0 {
                 let mut ibuf = [0u8; 12];
                 let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
                 if key.is_empty() { return None; }
@@ -2152,8 +2167,20 @@ unsafe fn redis_call_fast(
                     Err(_) => int_range_error(ctx, magic),
                 });
             }
-            // SADD — key borrowed, members go to Arc
-            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 3 {
+            // SADD single member — borrow bytes directly, skip Vec+Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc == 3 {
+                let mut ibuf = [0u8; 12];
+                let mut mbuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let member = js_value_as_bytes(ctx, *argv.add(2), &mut mbuf);
+                return Some(match db.set_add_single_bytes(key, member) {
+                    Ok(added) => JS_NewInt64(ctx, added),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // SADD multi member — key borrowed, members go to Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 4 {
                 let mut ibuf = [0u8; 12];
                 let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
                 if key.is_empty() { return None; }

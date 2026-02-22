@@ -1,4 +1,8 @@
 #[cfg(feature = "mini-redis")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "mini-redis")]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     use std::env;
