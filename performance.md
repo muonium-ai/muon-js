@@ -1,5 +1,54 @@
 # Performance notes
 
+## Latest benchmark run (2026-02-22)
+
+### Redis vs mini-redis (pipelined)
+
+Command:
+`make pipelined-benchmark-compare MINI_REDIS_PIPE_BENCH_LOG=tmp/full_mini_pipe.log REDIS_PIPE_BENCH_LOG=tmp/full_redis_pipe.log`
+
+Report:
+`tmp/benchmark_comparison_20260222_151853.txt`
+
+| Test | mini-redis RPS | Redis RPS | Ratio (redis/mini) |
+|------|----------------|-----------|---------------------|
+| GET | 1,769,911.50 | 1,904,762.00 | 1.08x |
+| HSET | 1,183,432.00 | 1,492,537.25 | 1.26x |
+| INCR | 760,456.25 | 1,724,138.00 | 2.27x |
+| LPOP | 1,769,911.50 | 1,428,571.38 | 0.81x |
+| LPUSH | 1,869,158.88 | 1,515,151.50 | 0.81x |
+| RPOP | 1,923,076.88 | 1,428,571.38 | 0.74x |
+| RPUSH | 1,851,851.75 | 1,639,344.25 | 0.89x |
+| SADD | 1,739,130.38 | 1,709,401.75 | 0.98x |
+| SET | 1,142,857.12 | 1,298,701.25 | 1.14x |
+
+### Lua vs MuonJS (3-round gate)
+
+Command:
+`make lua-js-perf-check LUA_JS_GATE_OUT=tmp/full_lua_js_perf.json`
+
+Reports:
+- `tmp/full_lua_js_perf.json`
+- `tmp/full_lua_js_perf.txt`
+
+Overall:
+- `overall_mean=1.9773x`
+- `overall_median=2.0065x`
+- `check_status=PASS`
+
+Per-case median ratio (JS/Lua):
+
+| Case | Median |
+|------|--------|
+| hello | 3.76x |
+| redis_call | 3.10x |
+| incrby | 3.09x |
+| keys_argv | 2.58x |
+| lrange | 2.57x |
+| hash_sum | 0.25x |
+| set_members | 0.38x |
+| bulk_incr | 0.31x |
+
 ## Current benchmark results (2026-02-21)
 
 **mini-redis + MuonJS vs Redis + Lua scripting — 3-round median ratios**
