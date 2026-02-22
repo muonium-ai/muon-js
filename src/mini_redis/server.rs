@@ -819,9 +819,7 @@ fn handle_command(
             let mut added = 0;
             let mut idx = 1;
             while idx + 1 < args.len() {
-                let field = args[idx].clone();
-                let value = args[idx + 1].clone();
-                match db.hash_set(key.as_ref(), field, value) {
+                match db.hash_set_ref(key.as_ref(), &args[idx], &args[idx + 1]) {
                     Ok(is_new) => {
                         if is_new {
                             added += 1;
@@ -1360,15 +1358,25 @@ fn handle_command(
                 Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             }
         }
-        "SET" => match parse_set_args(args) {
-            Ok((key, value, expire_ms)) => {
-                let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-                db.set_string(key.as_ref().to_vec(), value, expire_at);
+        "SET" => {
+            // Hot path for plain SET key value (redis-benchmark default):
+            // avoids parse_set_args cloning and option parsing.
+            if args.len() == 2 {
+                db.set_string(args[0].as_ref().to_vec(), Arc::clone(&args[1]), None);
                 log_cmd!(state, *db_index, cmd, args);
                 RespValue::StaticSimple("OK")
+            } else {
+                match parse_set_args(args) {
+                    Ok((key, value, expire_ms)) => {
+                        let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
+                        db.set_string(key.as_ref().to_vec(), value, expire_at);
+                        log_cmd!(state, *db_index, cmd, args);
+                        RespValue::StaticSimple("OK")
+                    }
+                    Err(e) => RespValue::Error(e),
+                }
             }
-            Err(e) => RespValue::Error(e),
-        },
+        }
         "DEL" => {
             let mut removed = 0;
             for key in args {

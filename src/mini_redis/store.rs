@@ -931,6 +931,33 @@ impl Shard {
         Ok(true)
     }
 
+    /// Hash set path that borrows Arc arguments to avoid unnecessary field clones
+    /// on updates where the field already exists.
+    #[inline]
+    fn hash_set_ref(&mut self, key: &[u8], field: &Arc<[u8]>, value: &Arc<[u8]>) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => {
+                    if let Some(slot) = map.get_mut(field.as_ref()) {
+                        *slot = Arc::clone(value);
+                        Ok(false)
+                    } else {
+                        map.insert(Arc::clone(field), Arc::clone(value));
+                        Ok(true)
+                    }
+                }
+                _ => Err(()),
+            };
+        }
+        let mut map = new_fnv_map_with_capacity(1);
+        map.insert(Arc::clone(field), Arc::clone(value));
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(true)
+    }
+
     /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
     #[inline]
     fn hash_set_bytes(&mut self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
@@ -1474,6 +1501,11 @@ impl Db {
 
     pub fn hash_set(&self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         self.shard(key).hash_set(key, field, value)
+    }
+
+    /// Hash set path for already-owned Arc args from RESP parsing.
+    pub fn hash_set_ref(&self, key: &[u8], field: &Arc<[u8]>, value: &Arc<[u8]>) -> Result<bool, ()> {
+        self.shard(key).hash_set_ref(key, field, value)
     }
 
     /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
