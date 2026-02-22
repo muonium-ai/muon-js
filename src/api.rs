@@ -1355,6 +1355,21 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
     } else if _val.is_undefined() {
         Ok(f64::NAN)
     } else if let Some(bytes) = _ctx.string_bytes(_val) {
+        // Fast path: simple integer strings (very common in redis scripting)
+        if !bytes.is_empty() && bytes.len() <= 10 {
+            let (start, neg) = if bytes[0] == b'-' { (1, true) } else { (0, false) };
+            if start < bytes.len() && bytes[start..].iter().all(|b| b.is_ascii_digit()) {
+                let mut n: i64 = 0;
+                for &b in &bytes[start..] {
+                    n = n * 10 + (b - b'0') as i64;
+                }
+                if neg { n = -n; }
+                if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                    return Ok(n as f64);
+                }
+                return Ok(n as f64);
+            }
+        }
         if let Ok(s) = core::str::from_utf8(bytes) {
             let trimmed = s.trim();
             if trimmed.is_empty() {
@@ -1762,6 +1777,28 @@ fn call_builtin_global_marker(
     args: &[JSValue],
 ) -> Option<JSValue> {
     match marker {
+        "__builtin_Number__" => {
+            if args.is_empty() {
+                Some(Value::from_int32(0))
+            } else {
+                let n = js_to_number(ctx, args[0]).unwrap_or(f64::NAN);
+                Some(number_to_value(ctx, n))
+            }
+        }
+        "__builtin_String__" => {
+            if args.is_empty() {
+                Some(js_new_string(ctx, ""))
+            } else {
+                Some(js_to_string(ctx, args[0]))
+            }
+        }
+        "__builtin_Boolean__" => {
+            if args.is_empty() {
+                Some(Value::FALSE)
+            } else {
+                Some(Value::new_bool(crate::evals::is_truthy(ctx, args[0])))
+            }
+        }
         "__builtin_parseInt__" => {
             if args.len() >= 1 {
                 if let Some(str_bytes) = ctx.string_bytes(args[0]) {
@@ -1840,39 +1877,33 @@ pub fn call_function_value(
     this_val: JSValue,
     args: &[JSValue],
 ) -> Option<JSValue> {
-    if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
-        return Some(result);
-    }
+    // Check C function FIRST — avoids 2 wasted property lookups in
+    // call_closure_with_this for every redis.call() iteration.
     if let Some((idx, params)) = ctx.c_function_info(func) {
         return Some(call_c_function(ctx, idx, params, this_val, args));
     }
-    // Copy marker bytes to stack buffer to avoid heap allocation
-    let mut marker_buf = [0u8; 64];
-    let marker_len;
-    let has_marker;
+    // Detect string markers early — skip call_closure_with_this entirely
+    // for builtin markers (Number, String, parseInt, etc.).
+    // Markers are always strings; closures are always objects.
     if let Some(bytes) = ctx.string_bytes(func) {
-        if bytes.len() <= 64 {
-            marker_len = bytes.len();
-            marker_buf[..marker_len].copy_from_slice(bytes);
-            has_marker = true;
-        } else {
-            marker_len = 0;
-            has_marker = false;
+        let mut marker_buf = [0u8; 64];
+        let blen = bytes.len();
+        if blen <= 64 {
+            marker_buf[..blen].copy_from_slice(bytes);
+            if let Ok(marker) = core::str::from_utf8(&marker_buf[..blen]) {
+                if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
+                    return Some(val);
+                }
+                let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
+                if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
+                    return Some(val);
+                }
+            }
         }
-    } else {
-        marker_len = 0;
-        has_marker = false;
+        return None;
     }
-    if has_marker {
-        if let Ok(marker) = core::str::from_utf8(&marker_buf[..marker_len]) {
-            if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
-                return Some(val);
-            }
-            let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
-            if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
-                return Some(val);
-            }
-        }
+    if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
+        return Some(result);
     }
     None
 }
@@ -2284,7 +2315,7 @@ pub fn JS_DumpMemory(ctx: &mut JSContextImpl, is_long: JSBool) {
     js_dump_memory(ctx, is_long)
 }
 
-fn int_to_decimal_bytes(value: i32, buf: &mut [u8; 12]) -> &[u8] {
+pub(crate) fn int_to_decimal_bytes(value: i32, buf: &mut [u8; 12]) -> &[u8] {
     if value == 0 {
         buf[0] = b'0';
         return &buf[0..1];
@@ -8453,6 +8484,36 @@ fn eval_script_body(ctx: &mut JSContextImpl, src: &str) -> JSValue {
         trimmed_stmts
     };
 
+    // --- Bytecode fast path: compile whole script to bytecode ---
+    // Try to compile the script statements to bytecode and run via VM.
+    // This avoids re-parsing condition/update/body text every loop iteration.
+    let bc_cached = ctx.get_bytecode_cache(script_hash).cloned();
+    match bc_cached {
+        Some(Some(ref module)) => {
+            // Run cached bytecode
+            let mut vm = crate::vm::VM::new();
+            return vm.run_module(ctx, module);
+        }
+        Some(None) => {
+            // Previously tried and failed to compile — fall through
+        }
+        None => {
+            let sc = crate::compiler::StmtCompiler::new(ctx);
+            #[allow(unused_mut)]
+            match sc.compile_stmts(&stmts) {
+                Ok(module) => {
+                    let mut vm = crate::vm::VM::new();
+                    let result = vm.run_module(ctx, &module);
+                    ctx.set_bytecode_cache(script_hash, Some(module));
+                    return result;
+                }
+                Err(_) => {
+                    ctx.set_bytecode_cache(script_hash, None);
+                }
+            }
+        }
+    }
+
     let mut last = Value::UNDEFINED;
     for stmt in &stmts {
         let trimmed = stmt.as_str();
@@ -8870,6 +8931,18 @@ pub fn eval_program(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
 // ============================================================================
 // Handles calls to C functions registered via JS_SetCFunctionTable.
 // Supports multiple calling conventions (generic, constructor, magic, etc.)
+
+/// Direct C function dispatch — public for VM inline fast path.
+#[inline]
+pub fn call_c_function_direct(
+    ctx: &mut JSContextImpl,
+    func_idx: i32,
+    params: JSValue,
+    this_val: JSValue,
+    args: &[JSValue],
+) -> JSValue {
+    call_c_function(ctx, func_idx, params, this_val, args)
+}
 
 fn call_c_function(
     _ctx: &mut JSContextImpl,
@@ -9702,14 +9775,34 @@ impl<'a> ArithParser<'a> {
         // Copy marker bytes to stack buffer to release ctx borrow (avoids heap alloc from .to_string()).
         let mut marker_buf = [0u8; 64];
         let marker_len;
+        let is_marker;
         if let Some(bytes) = ctx.string_bytes(method) {
             let blen = bytes.len();
             if blen > 64 {
+                // Not a recognized marker; try closure fallback
+                let closure_marker = js_get_property_str(ctx, method, "__closure__");
+                if closure_marker == Value::TRUE {
+                    if let Some(val) = call_closure(ctx, method, args) {
+                        return Ok(val);
+                    }
+                }
                 return Err(());
             }
             marker_len = blen;
             marker_buf[..marker_len].copy_from_slice(bytes);
+            is_marker = true;
         } else {
+            marker_len = 0;
+            is_marker = false;
+        }
+        if !is_marker {
+            // Not a string; check if it's a closure (custom function)
+            let closure_marker = js_get_property_str(ctx, method, "__closure__");
+            if closure_marker == Value::TRUE {
+                if let Some(val) = call_closure(ctx, method, args) {
+                    return Ok(val);
+                }
+            }
             return Err(());
         }
         let marker: &str = match core::str::from_utf8(&marker_buf[..marker_len]) {
@@ -10962,6 +11055,83 @@ impl<'a> ArithParser<'a> {
                         }
                         return Ok(Value::from_int32(-1));
                     }
+                }
+
+                // JSON methods
+                if marker == "__builtin_JSON_stringify__" {
+                    if args.is_empty() {
+                        return Ok(Value::UNDEFINED);
+                    }
+                    if let Some(json_str) = crate::json::json_stringify_value(ctx, args[0]) {
+                        return Ok(js_new_string(ctx, &json_str));
+                    }
+                    return Ok(Value::UNDEFINED);
+                } else if marker == "__builtin_JSON_parse__" {
+                    if args.is_empty() {
+                        js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "Unexpected end of JSON input");
+                        return Err(());
+                    }
+                    if let Some(json_bytes) = ctx.string_bytes(args[0]) {
+                        let json_str = core::str::from_utf8(json_bytes).unwrap_or("").to_string();
+                        match parse_json(ctx, &json_str) {
+                            Some(parsed_val) => return Ok(parsed_val),
+                            None => {
+                                js_throw_error(ctx, JSObjectClassEnum::SyntaxError, "Unexpected token in JSON");
+                                return Err(());
+                            }
+                        }
+                    } else {
+                        js_throw_error(ctx, JSObjectClassEnum::TypeError, "Cannot convert to string");
+                        return Err(());
+                    }
+                }
+
+                // Error constructors
+                if marker == "__builtin_Error__" || marker == "__builtin_TypeError__"
+                    || marker == "__builtin_RangeError__" || marker == "__builtin_SyntaxError__"
+                    || marker == "__builtin_ReferenceError__"
+                {
+                    let msg = if !args.is_empty() {
+                        js_to_string(ctx, args[0])
+                    } else {
+                        js_new_string(ctx, "")
+                    };
+                    let class_id = match marker {
+                        "__builtin_TypeError__" => JSObjectClassEnum::TypeError,
+                        "__builtin_RangeError__" => JSObjectClassEnum::RangeError,
+                        "__builtin_SyntaxError__" => JSObjectClassEnum::SyntaxError,
+                        "__builtin_ReferenceError__" => JSObjectClassEnum::ReferenceError,
+                        _ => JSObjectClassEnum::Error,
+                    };
+                    let err_obj = js_new_object(ctx);
+                    js_set_property_str(ctx, err_obj, "message", msg);
+                    // Set the class/tag on error object so toString works
+                    let class_name = match class_id {
+                        JSObjectClassEnum::TypeError => "TypeError",
+                        JSObjectClassEnum::RangeError => "RangeError",
+                        JSObjectClassEnum::SyntaxError => "SyntaxError",
+                        JSObjectClassEnum::ReferenceError => "ReferenceError",
+                        _ => "Error",
+                    };
+                    let name_val = js_new_string(ctx, class_name);
+                    js_set_property_str(ctx, err_obj, "name", name_val);
+                    return Ok(err_obj);
+                }
+
+                // Object static methods
+                if marker == "__builtin_Object_keys__" {
+                    if !args.is_empty() {
+                        return Ok(js_object_keys(ctx, args[0]));
+                    }
+                    return Ok(js_new_array(ctx, 0));
+                } else if marker == "__builtin_Array_isArray__" {
+                    if args.len() == 1 {
+                        if let Some(class_id) = ctx.object_class_id(args[0]) {
+                            return Ok(Value::new_bool(class_id == JSObjectClassEnum::Array as u32));
+                        }
+                        return Ok(Value::FALSE);
+                    }
+                    return Ok(Value::FALSE);
                 }
         }
 

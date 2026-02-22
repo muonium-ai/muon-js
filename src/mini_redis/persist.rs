@@ -221,10 +221,13 @@ impl LibsqlPersist {
                             (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
-                    Value::Integer(n) => {
+                    Value::Int(n) => {
+                        // Serialize Int as string bytes — transparent to restore
+                        let mut out = Vec::with_capacity(20);
+                        crate::mini_redis::store::write_i64_bytes_pub(&mut out, n);
                         self.conn.execute(
                             "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key, 0i64, n.to_string().into_bytes(), exp_val),
+                            (idx as i64, key, 0i64, out, exp_val),
                         ).await.map_err(to_io)?;
                     }
                     Value::List(items) => {
@@ -425,12 +428,12 @@ async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resul
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashMap<std::sync::Arc<[u8]>, std::sync::Arc<[u8]>>> {
+async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<crate::mini_redis::store::FnvHashMap<std::sync::Arc<[u8]>, std::sync::Arc<[u8]>>> {
     let mut rows = conn
         .query("SELECT field, value FROM hash_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
         .await
         .map_err(to_io)?;
-    let mut out = std::collections::HashMap::new();
+    let mut out = std::collections::HashMap::with_hasher(crate::mini_redis::store::FnvBuildHasher);
     while let Some(row) = rows.next().await.map_err(to_io)? {
         let field: Vec<u8> = row.get(0).map_err(to_io)?;
         let value: Vec<u8> = row.get(1).map_err(to_io)?;

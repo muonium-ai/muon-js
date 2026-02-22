@@ -622,8 +622,39 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
             if self.consume(b'.') {
                 let prop = self.parse_identifier()
                     .ok_or_else(|| CompileError { message: "expected property name after '.'".to_string() })?;
-                self.emit_string_const(&prop);
-                self.emit_op(OpCode::GetProp);
+                self.skip_ws();
+                if self.check(b'(') {
+                    // Method call: obj.method(args) — preserve `this` (obj) for CallMethod
+                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0, c: 0 });
+                    self.emit_string_const(&prop);
+                    self.emit_op(OpCode::GetProp);
+                    // Now parse the call arguments
+                    self.consume(b'(');
+                    let mut argc: u32 = 0;
+                    self.skip_ws();
+                    if !self.check(b')') {
+                        self.parse_conditional()?;
+                        argc += 1;
+                        loop {
+                            self.skip_ws();
+                            if self.consume(b',') {
+                                self.parse_conditional()?;
+                                argc += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.skip_ws();
+                    if !self.consume(b')') {
+                        return Err(CompileError { message: "expected ')'".to_string() });
+                    }
+                    self.sc.func.code.push(Instruction { op: OpCode::CallMethod, a: argc, b: 0, c: 0 });
+                } else {
+                    // Property access: obj.prop
+                    self.emit_string_const(&prop);
+                    self.emit_op(OpCode::GetProp);
+                }
             } else if self.consume(b'[') {
                 self.parse_comma()?;
                 self.skip_ws();

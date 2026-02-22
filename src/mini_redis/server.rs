@@ -134,8 +134,8 @@ async fn graceful_shutdown(
         let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for (_, value, _) in items.iter() {
             match value {
-                crate::mini_redis::store::Value::String(_) => counts.0 += 1,
-                crate::mini_redis::store::Value::Integer(_) => counts.0 += 1,
+                crate::mini_redis::store::Value::String(_)
+                | crate::mini_redis::store::Value::Int(_) => counts.0 += 1,
                 crate::mini_redis::store::Value::List(_) => counts.1 += 1,
                 crate::mini_redis::store::Value::Set(_) => counts.2 += 1,
                 crate::mini_redis::store::Value::Hash(_) => counts.3 += 1,
@@ -1360,24 +1360,15 @@ fn handle_command(
                 Err(_) => RespValue::StaticError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             }
         }
-        "SET" => {
-            let (key, value) = match (args.get(0), args.get(1)) {
-                (Some(k), Some(v)) => (k.as_ref(), v.clone()),
-                _ => return RespValue::Error("ERR wrong number of arguments for 'SET'".to_string()),
-            };
-            let expire_ms = if args.len() == 2 {
-                None
-            } else {
-                match parse_set_expire_ms(&args[2..]) {
-                    Ok(v) => v,
-                    Err(e) => return RespValue::Error(e),
-                }
-            };
-            let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-            db.set_string(key.to_vec(), value, expire_at);
-            log_cmd!(state, *db_index, cmd, args);
-            RespValue::StaticSimple("OK")
-        }
+        "SET" => match parse_set_args(args) {
+            Ok((key, value, expire_ms)) => {
+                let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
+                db.set_string(key.as_ref().to_vec(), value, expire_at);
+                log_cmd!(state, *db_index, cmd, args);
+                RespValue::StaticSimple("OK")
+            }
+            Err(e) => RespValue::Error(e),
+        },
         "DEL" => {
             let mut removed = 0;
             for key in args {
@@ -2115,8 +2106,22 @@ unsafe fn redis_call_fast(
             }
         }
         4 => {
-            // HSET — key borrowed, field/value go to Arc from slices
-            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 4 && argc % 2 == 0 {
+            // HSET single field-value — borrow directly, skip Arc alloc
+            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc == 4 {
+                let mut ibuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let mut fbuf = [0u8; 12];
+                let mut vbuf = [0u8; 12];
+                let field = js_value_as_bytes(ctx, *argv.add(2), &mut fbuf);
+                let value = js_value_as_bytes(ctx, *argv.add(3), &mut vbuf);
+                return Some(match db.hash_set_bytes(key, field, value) {
+                    Ok(is_new) => JS_NewInt64(ctx, if is_new { 1 } else { 0 }),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // HSET multi field-value — key borrowed, field/value go to Arc from slices
+            if cmd_bytes.eq_ignore_ascii_case(b"HSET") && argc >= 6 && argc % 2 == 0 {
                 let mut ibuf = [0u8; 12];
                 let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
                 if key.is_empty() { return None; }
@@ -2162,8 +2167,20 @@ unsafe fn redis_call_fast(
                     Err(_) => int_range_error(ctx, magic),
                 });
             }
-            // SADD — key borrowed, members go to Arc
-            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 3 {
+            // SADD single member — borrow bytes directly, skip Vec+Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc == 3 {
+                let mut ibuf = [0u8; 12];
+                let mut mbuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let member = js_value_as_bytes(ctx, *argv.add(2), &mut mbuf);
+                return Some(match db.set_add_single_bytes(key, member) {
+                    Ok(added) => JS_NewInt64(ctx, added),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // SADD multi member — key borrowed, members go to Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 4 {
                 let mut ibuf = [0u8; 12];
                 let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
                 if key.is_empty() { return None; }
@@ -2521,16 +2538,21 @@ fn value_to_args(val: RespValue) -> Result<Vec<Arc<[u8]>>, String> {
     }
 }
 
-fn parse_set_expire_ms(args: &[Arc<[u8]>]) -> Result<Option<u64>, String> {
+fn parse_set_args(args: &[Arc<[u8]>]) -> Result<(Arc<[u8]>, Arc<[u8]>, Option<u64>), String> {
+    if args.len() < 2 {
+        return Err("ERR wrong number of arguments for 'SET'".to_string());
+    }
+    let key = args[0].clone();
+    let value = args[1].clone();
     let mut expire_ms = None;
-    let mut idx = 0;
+    let mut idx = 2;
     while idx < args.len() {
-        let opt = args[idx].as_ref();
-        if opt.eq_ignore_ascii_case(b"EX") {
+        let opt = to_upper_ascii(args[idx].as_ref());
+        if opt == "EX" {
             idx += 1;
             let sec = args.get(idx).ok_or_else(|| "ERR syntax error".to_string())?;
             expire_ms = Some(parse_u64(sec.as_ref()).unwrap_or(0).saturating_mul(1000));
-        } else if opt.eq_ignore_ascii_case(b"PX") {
+        } else if opt == "PX" {
             idx += 1;
             let ms = args.get(idx).ok_or_else(|| "ERR syntax error".to_string())?;
             expire_ms = Some(parse_u64(ms.as_ref()).unwrap_or(0));
@@ -2539,7 +2561,7 @@ fn parse_set_expire_ms(args: &[Arc<[u8]>]) -> Result<Option<u64>, String> {
         }
         idx += 1;
     }
-    Ok(expire_ms)
+    Ok((key, value, expire_ms))
 }
 
 fn parse_usize(input: &[u8]) -> Option<usize> {
