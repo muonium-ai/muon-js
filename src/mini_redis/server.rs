@@ -2152,8 +2152,20 @@ unsafe fn redis_call_fast(
                     Err(_) => int_range_error(ctx, magic),
                 });
             }
-            // SADD — key borrowed, members go to Arc
-            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 3 {
+            // SADD single member — borrow bytes directly, skip Vec+Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc == 3 {
+                let mut ibuf = [0u8; 12];
+                let mut mbuf = [0u8; 12];
+                let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
+                if key.is_empty() { return None; }
+                let member = js_value_as_bytes(ctx, *argv.add(2), &mut mbuf);
+                return Some(match db.set_add_single_bytes(key, member) {
+                    Ok(added) => JS_NewInt64(ctx, added),
+                    Err(_) => wrongtype_error(ctx, magic),
+                });
+            }
+            // SADD multi member — key borrowed, members go to Arc
+            if cmd_bytes.eq_ignore_ascii_case(b"SADD") && argc >= 4 {
                 let mut ibuf = [0u8; 12];
                 let key = js_value_as_bytes(ctx, *argv.add(1), &mut ibuf);
                 if key.is_empty() { return None; }

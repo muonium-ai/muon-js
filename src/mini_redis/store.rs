@@ -957,6 +957,30 @@ impl Shard {
         Ok(added)
     }
 
+    /// Single-member SADD: takes borrowed bytes, only creates Arc when inserting.
+    fn set_add_single_bytes(&mut self, key: &[u8], member: &[u8]) -> Result<i64, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Set(set) => {
+                    if set.contains(member) {
+                        Ok(0)
+                    } else {
+                        set.insert(Arc::from(member));
+                        Ok(1)
+                    }
+                }
+                _ => Err(()),
+            };
+        }
+        let mut set = HashSet::new();
+        set.insert(Arc::from(member));
+        self.data.insert(key.to_vec(), Value::Set(set));
+        Ok(1)
+    }
+
     fn set_remove(&mut self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -1380,6 +1404,11 @@ impl Db {
 
     pub fn set_add(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
         self.shard(key).set_add(key, members)
+    }
+
+    /// Single-member SADD: takes borrowed bytes, avoids Vec and Arc alloc when member exists.
+    pub fn set_add_single_bytes(&self, key: &[u8], member: &[u8]) -> Result<i64, ()> {
+        self.shard(key).set_add_single_bytes(key, member)
     }
 
     pub fn set_remove(&self, key: &[u8], members: &[Arc<[u8]>]) -> Result<i64, ()> {
