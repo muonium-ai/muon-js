@@ -855,6 +855,23 @@ impl Shard {
         Ok(true)
     }
 
+    /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    fn hash_set_bytes(&mut self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
+        if self.is_expired(key) {
+            self.remove(key);
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            return match entry {
+                Value::Hash(map) => Ok(map.insert(Arc::from(field), Arc::from(value)).is_none()),
+                _ => Err(()),
+            };
+        }
+        let mut map = HashMap::new();
+        map.insert(Arc::from(field), Arc::from(value));
+        self.data.insert(key.to_vec(), Value::Hash(map));
+        Ok(true)
+    }
+
     fn hash_get(&mut self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {
         if self.is_expired(key) {
             self.remove(key);
@@ -1378,6 +1395,11 @@ impl Db {
 
     pub fn hash_set(&self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
         self.shard(key).hash_set(key, field, value)
+    }
+
+    /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    pub fn hash_set_bytes(&self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
+        self.shard(key).hash_set_bytes(key, field, value)
     }
 
     pub fn hash_get(&self, key: &[u8], field: &[u8]) -> Result<Option<Arc<[u8]>>, ()> {

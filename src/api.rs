@@ -1355,6 +1355,21 @@ pub fn js_to_number(_ctx: &mut JSContextImpl, _val: JSValue) -> Result<f64, JSVa
     } else if _val.is_undefined() {
         Ok(f64::NAN)
     } else if let Some(bytes) = _ctx.string_bytes(_val) {
+        // Fast path: simple integer strings (very common in redis scripting)
+        if !bytes.is_empty() && bytes.len() <= 10 {
+            let (start, neg) = if bytes[0] == b'-' { (1, true) } else { (0, false) };
+            if start < bytes.len() && bytes[start..].iter().all(|b| b.is_ascii_digit()) {
+                let mut n: i64 = 0;
+                for &b in &bytes[start..] {
+                    n = n * 10 + (b - b'0') as i64;
+                }
+                if neg { n = -n; }
+                if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                    return Ok(n as f64);
+                }
+                return Ok(n as f64);
+            }
+        }
         if let Ok(s) = core::str::from_utf8(bytes) {
             let trimmed = s.trim();
             if trimmed.is_empty() {
@@ -1762,6 +1777,28 @@ fn call_builtin_global_marker(
     args: &[JSValue],
 ) -> Option<JSValue> {
     match marker {
+        "__builtin_Number__" => {
+            if args.is_empty() {
+                Some(Value::from_int32(0))
+            } else {
+                let n = js_to_number(ctx, args[0]).unwrap_or(f64::NAN);
+                Some(number_to_value(ctx, n))
+            }
+        }
+        "__builtin_String__" => {
+            if args.is_empty() {
+                Some(js_new_string(ctx, ""))
+            } else {
+                Some(js_to_string(ctx, args[0]))
+            }
+        }
+        "__builtin_Boolean__" => {
+            if args.is_empty() {
+                Some(Value::FALSE)
+            } else {
+                Some(Value::new_bool(crate::evals::is_truthy(ctx, args[0])))
+            }
+        }
         "__builtin_parseInt__" => {
             if args.len() >= 1 {
                 if let Some(str_bytes) = ctx.string_bytes(args[0]) {
@@ -1845,36 +1882,28 @@ pub fn call_function_value(
     if let Some((idx, params)) = ctx.c_function_info(func) {
         return Some(call_c_function(ctx, idx, params, this_val, args));
     }
+    // Detect string markers early — skip call_closure_with_this entirely
+    // for builtin markers (Number, String, parseInt, etc.).
+    // Markers are always strings; closures are always objects.
+    if let Some(bytes) = ctx.string_bytes(func) {
+        let mut marker_buf = [0u8; 64];
+        let blen = bytes.len();
+        if blen <= 64 {
+            marker_buf[..blen].copy_from_slice(bytes);
+            if let Ok(marker) = core::str::from_utf8(&marker_buf[..blen]) {
+                if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
+                    return Some(val);
+                }
+                let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
+                if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
+                    return Some(val);
+                }
+            }
+        }
+        return None;
+    }
     if let Some(result) = crate::parser::call_closure_with_this(ctx, func, this_val, args) {
         return Some(result);
-    }
-    // Copy marker bytes to stack buffer to avoid heap allocation
-    let mut marker_buf = [0u8; 64];
-    let marker_len;
-    let has_marker;
-    if let Some(bytes) = ctx.string_bytes(func) {
-        if bytes.len() <= 64 {
-            marker_len = bytes.len();
-            marker_buf[..marker_len].copy_from_slice(bytes);
-            has_marker = true;
-        } else {
-            marker_len = 0;
-            has_marker = false;
-        }
-    } else {
-        marker_len = 0;
-        has_marker = false;
-    }
-    if has_marker {
-        if let Ok(marker) = core::str::from_utf8(&marker_buf[..marker_len]) {
-            if let Some(val) = call_builtin_global_marker(ctx, marker, args) {
-                return Some(val);
-            }
-            let mut parser = ArithParser::new(ctx, b"", ctx.current_stmt_offset());
-            if let Ok(val) = parser.call_builtin_method(ctx, func, this_val, args) {
-                return Some(val);
-            }
-        }
     }
     None
 }

@@ -397,6 +397,33 @@ impl VM {
                             crate::api::call_c_function_direct(ctx, cf_idx, cf_params, global, &args)
                         };
                         stack.push(result);
+                    } else if argc == 1 {
+                        // Inline fast path for common single-arg builtins: Number(v)
+                        let arg0 = stack[args_start];
+                        let mut handled = false;
+                        if let Some(marker_bytes) = ctx.string_bytes(func_val) {
+                            if marker_bytes == b"__builtin_Number__" {
+                                stack.truncate(func_idx);
+                                if arg0.is_int() {
+                                    stack.push(arg0);
+                                } else {
+                                    let n = match js_to_number(ctx, arg0) { Ok(n) => n, Err(e) => return e };
+                                    stack.push(crate::helpers::number_to_value(ctx, n));
+                                }
+                                handled = true;
+                            }
+                        }
+                        if !handled {
+                            let mut args_buf = [JSValue::UNDEFINED; 8];
+                            args_buf[0] = arg0;
+                            stack.truncate(func_idx);
+                            let result = crate::api::call_function_value(ctx, func_val, global, &args_buf[..1]);
+                            if let Some(result) = result {
+                                stack.push(result);
+                            } else {
+                                return js_throw_error(ctx, JSObjectClassEnum::TypeError, "not a function");
+                            }
+                        }
                     } else {
                         // Use stack buffer for small arg counts to avoid Vec heap allocation
                         let result = if argc <= 8 {
