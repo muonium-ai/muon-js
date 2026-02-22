@@ -221,6 +221,12 @@ impl LibsqlPersist {
                             (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
+                    Value::Integer(n) => {
+                        self.conn.execute(
+                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (idx as i64, key, 0i64, n.to_string().into_bytes(), exp_val),
+                        ).await.map_err(to_io)?;
+                    }
                     Value::List(items) => {
                         self.conn.execute(
                             "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",

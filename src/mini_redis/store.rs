@@ -9,6 +9,7 @@ const NUM_SHARDS: usize = 64;
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Arc<[u8]>),
+    Integer(i64),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
     Hash(HashMap<Arc<[u8]>, Arc<[u8]>>),
@@ -184,7 +185,7 @@ impl Shard {
             return None;
         }
         match self.data.get(key) {
-            Some(Value::String(_)) => Some("string"),
+            Some(Value::String(_) | Value::Integer(_)) => Some("string"),
             Some(Value::List(_)) => Some("list"),
             Some(Value::Set(_)) => Some("set"),
             Some(Value::Hash(_)) => Some("hash"),
@@ -769,6 +770,7 @@ impl Shard {
         }
         match self.data.get(key) {
             Some(Value::String(val)) => Ok(Some(val.clone())),
+            Some(Value::Integer(n)) => Ok(Some(i64_to_arc_bytes(*n))),
             Some(_) => Err(()),
             None => Ok(None),
         }
@@ -799,15 +801,25 @@ impl Shard {
             self.remove(&key);
         }
         match self.data.get_mut(&key) {
-            Some(Value::String(buf)) => {
-                let mut v = Vec::with_capacity(buf.len() + value.len());
-                v.extend_from_slice(buf);
-                v.extend_from_slice(value);
-                let len = v.len();
-                *buf = Arc::from(v);
-                Ok(len as i64)
-            }
-            Some(_) => Err(()),
+            Some(entry) => match entry {
+                Value::String(buf) => {
+                    let mut v = Vec::with_capacity(buf.len() + value.len());
+                    v.extend_from_slice(buf);
+                    v.extend_from_slice(value);
+                    let len = v.len();
+                    *buf = Arc::from(v);
+                    Ok(len as i64)
+                }
+                Value::Integer(n) => {
+                    let mut v = Vec::with_capacity(20 + value.len());
+                    write_i64_bytes(&mut v, *n);
+                    v.extend_from_slice(value);
+                    let len = v.len();
+                    *entry = Value::String(Arc::from(v));
+                    Ok(len as i64)
+                }
+                _ => Err(()),
+            },
             None => {
                 self.data.insert(key.clone(), Value::String(Arc::from(value)));
                 Ok(value.len() as i64)
@@ -820,20 +832,24 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get_mut(key) {
-            Some(Value::String(buf)) => {
-                let n = parse_i64_bytes(buf)?;
+            Some(Value::Integer(n)) => {
                 let next = n.saturating_add(delta);
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                *buf = Arc::from(out);
+                *n = next;
+                Ok(next)
+            }
+            Some(entry @ Value::String(_)) => {
+                let n = match entry {
+                    Value::String(buf) => parse_i64_bytes(buf.as_ref())?,
+                    _ => unreachable!(),
+                };
+                let next = n.saturating_add(delta);
+                *entry = Value::Integer(next);
                 Ok(next)
             }
             Some(_) => Err(()),
             None => {
                 let next = delta;
-                let mut out = Vec::with_capacity(20);
-                write_i64_bytes(&mut out, next);
-                self.data.insert(key.to_vec(), Value::String(Arc::from(out)));
+                self.data.insert(key.to_vec(), Value::Integer(next));
                 Ok(next)
             }
         }
@@ -1606,6 +1622,13 @@ fn write_i64_bytes(buf: &mut Vec<u8>, n: i64) {
         tmp[idx] = b'-';
     }
     buf.extend_from_slice(&tmp[idx..]);
+}
+
+#[inline]
+fn i64_to_arc_bytes(n: i64) -> Arc<[u8]> {
+    let mut out = Vec::with_capacity(20);
+    write_i64_bytes(&mut out, n);
+    Arc::from(out)
 }
 
 fn now_ms() -> u64 {
