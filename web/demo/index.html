@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Muon Mini-Redis Browser Demo</title>
+  </head>
+  <body>
+    <div class="layout">
+      <header class="hero">
+        <h1>Muon Mini-Redis Browser Demo</h1>
+        <p>
+          Socketless in-browser mini-redis running in a worker through Rust/WASM,
+          with a WebGPU metrics dashboard.
+        </p>
+      </header>
+
+      <section class="controls">
+        <button id="startBtn">Start Simulation</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="resetBtn">Reset Runtime</button>
+        <span id="statusText">idle</span>
+      </section>
+
+      <section class="stats-grid">
+        <div class="stat-card"><span>OPS Total</span><strong id="opsTotal">0</strong></div>
+        <div class="stat-card"><span>OPS/s (1s)</span><strong id="opsWindow">0</strong></div>
+        <div class="stat-card"><span>Batch Avg</span><strong id="batchAvg">0</strong></div>
+        <div class="stat-card"><span>Latency p50 (us)</span><strong id="latP50">0</strong></div>
+        <div class="stat-card"><span>Latency p95 (us)</span><strong id="latP95">0</strong></div>
+        <div class="stat-card"><span>Queue Depth</span><strong id="queueDepth">0</strong></div>
+        <div class="stat-card"><span>Errors</span><strong id="errorsTotal">0</strong></div>
+        <div class="stat-card"><span>Render FPS</span><strong id="renderFps">0</strong></div>
+      </section>
+
+      <section class="dashboard-wrap">
+        <div id="gpuWarning" class="gpu-warning hidden"></div>
+        <canvas id="gpuCanvas" width="1200" height="520"></canvas>
+      </section>
+
+      <section class="leaderboard-wrap">
+        <h2>Leaderboard Top 10</h2>
+        <ol id="leaderboardList"></ol>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

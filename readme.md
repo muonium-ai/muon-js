@@ -150,6 +150,38 @@ make js-runtime-bench-check
 
 Latest benchmark notes and captured reports are tracked in `performance.md` and `tmp/` artifacts.
 
+## Browser Demo (WASM + WebGPU)
+
+The repo includes a socketless browser demo under `web/demo`:
+
+- mini-redis runs inside a dedicated Web Worker.
+- Rust/WASM exposes a typed command API (`exec`, `exec_batch`, `metrics_snapshot`).
+- The UI uses a typed JS client and renders metrics on a WebGPU canvas.
+- No disk persistence, no TCP sockets, no RESP networking in the browser path.
+
+### Browser demo targets
+
+```bash
+# Build wasm module into web/demo/src/wasm
+make web-demo-wasm
+
+# Run Vite dev server
+make web-demo-dev
+
+# Production build
+make web-demo-build
+
+# Web demo typecheck/test
+make web-demo-test
+```
+
+### Browser demo workflow
+
+1. Run `make web-demo-dev`.
+2. Open the Vite URL (default `http://127.0.0.1:5173`).
+3. Click `Start Simulation`.
+4. Watch live throughput/latency/command-mix metrics update every 100ms.
+
 ## Project Notes
 
 - Compatibility with mquickjs behavior is the primary goal.
