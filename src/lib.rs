@@ -1539,4 +1539,54 @@ mod tests {
         let negn = JS_ToNumber(&mut ctx, negv).unwrap();
         assert!(negn.is_infinite() && negn.is_sign_negative());
     }
+
+    #[test]
+    fn strict_equality_no_type_coercion() {
+        let mut mem = vec![0u8; 64 * 1024];
+        let mut ctx = JS_NewContext(&mut mem);
+
+        // 1 === true must be false (number vs bool)
+        let r = eval_ret(&mut ctx, "1 === true");
+        assert_eq!(r, JSValue::FALSE, "1 === true should be false");
+
+        // 0 === false must be false (number vs bool)
+        let r = eval_ret(&mut ctx, "0 === false");
+        assert_eq!(r, JSValue::FALSE, "0 === false should be false");
+
+        // null === undefined must be false (different types)
+        let r = eval_ret(&mut ctx, "null === undefined");
+        assert_eq!(r, JSValue::FALSE, "null === undefined should be false");
+
+        // '' === false must be false (string vs bool)
+        let r = eval_ret(&mut ctx, "'' === false");
+        assert_eq!(r, JSValue::FALSE, "'' === false should be false");
+
+        // 0 === '' must be false (number vs string)
+        let r = eval_ret(&mut ctx, "0 === ''");
+        assert_eq!(r, JSValue::FALSE, "0 === '' should be false");
+
+        // Same-type comparisons should still work
+        let r = eval_ret(&mut ctx, "1 === 1");
+        assert_eq!(r, JSValue::TRUE, "1 === 1 should be true");
+
+        let r = eval_ret(&mut ctx, "true === true");
+        assert_eq!(r, JSValue::TRUE, "true === true should be true");
+
+        let r = eval_ret(&mut ctx, "null === null");
+        assert_eq!(r, JSValue::TRUE, "null === null should be true");
+
+        // !== should be the inverse
+        let r = eval_ret(&mut ctx, "1 !== true");
+        assert_eq!(r, JSValue::TRUE, "1 !== true should be true");
+
+        let r = eval_ret(&mut ctx, "1 !== 1");
+        assert_eq!(r, JSValue::FALSE, "1 !== 1 should be false");
+
+        // Loose equality should still coerce (sanity check)
+        let r = eval_ret(&mut ctx, "1 == true");
+        assert_eq!(r, JSValue::TRUE, "1 == true should be true (loose)");
+
+        let r = eval_ret(&mut ctx, "null == undefined");
+        assert_eq!(r, JSValue::TRUE, "null == undefined should be true (loose)");
+    }
 }

@@ -718,22 +718,46 @@ fn vm_loose_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
 }
 
 /// Strict equality (===) for the VM.
+/// Per ES spec: different types → false, no type coercion.
 fn vm_strict_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
-    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
-        return la == lb;
-    }
+    // Identical bit patterns are always equal (covers ints, bools, null, undefined, same-ptr objects)
     if a.0 == b.0 {
         return true;
     }
-    if ctx.object_class_id(a).is_some() || ctx.object_class_id(b).is_some() {
+    // String comparison by content (two different pointers can hold the same string)
+    if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
+        return la == lb;
+    }
+    // Different types → false. Check type tags to prevent cross-type numeric coercion.
+    // A bool must not equal a number, null must not equal undefined, etc.
+    if js_type_tag(ctx, a) != js_type_tag(ctx, b) {
         return false;
     }
+    // Same type, different bit pattern — only numbers (int vs float) need further check
     let ln = js_to_number(ctx, a).ok();
     let rn = js_to_number(ctx, b).ok();
     if let (Some(l), Some(r)) = (ln, rn) {
         l == r
     } else {
         false
+    }
+}
+
+/// Return a type discriminant for strict equality type-checking.
+/// Values: 0=undefined, 1=null, 2=bool, 3=number, 4=string, 5=object/function
+fn js_type_tag(ctx: &mut JSContextImpl, v: JSValue) -> u8 {
+    if v.is_undefined() {
+        0
+    } else if v.is_null() {
+        1
+    } else if v.is_bool() {
+        2
+    } else if v.is_int() || ctx.float_value(v).is_some() {
+        3
+    } else if ctx.string_bytes(v).is_some() {
+        4
+    } else {
+        5
     }
 }
 
