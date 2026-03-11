@@ -205,65 +205,78 @@ impl LibsqlPersist {
     }
 
     async fn snapshot_inner(&self, dbs: &[Db]) -> io::Result<()> {
-        self.conn.execute("DELETE FROM kv", ()).await.map_err(to_io)?;
-        self.conn.execute("DELETE FROM list_items", ()).await.map_err(to_io)?;
-        self.conn.execute("DELETE FROM set_items", ()).await.map_err(to_io)?;
-        self.conn.execute("DELETE FROM hash_items", ()).await.map_err(to_io)?;
-        self.conn.execute("DELETE FROM zset_items", ()).await.map_err(to_io)?;
-        self.conn.execute("DELETE FROM stream_entries", ()).await.map_err(to_io)?;
+        // Upsert all current data and collect live (db, key) pairs.
+        // After upserting, delete stale rows that no longer exist.
+        // This avoids the costly DELETE-all + re-INSERT pattern which
+        // rewrites every row even when most data is unchanged.
+        let mut live_keys: Vec<(i64, Vec<u8>)> = Vec::new();
         for (idx, db) in dbs.iter().enumerate() {
             for (key, value, exp) in db.snapshot_items() {
+                let db_idx = idx as i64;
                 let exp_val = exp.map(|v| v as i64);
+                live_keys.push((db_idx, key.clone()));
                 match value {
                     Value::String(bytes) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key, 0i64, bytes.to_vec(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key, 0i64, bytes.to_vec(), exp_val),
                         ).await.map_err(to_io)?;
                     }
                     Value::Int(n) => {
-                        // Serialize Int as string bytes — transparent to restore
                         let mut out = Vec::with_capacity(20);
                         crate::mini_redis::store::write_i64_bytes_pub(&mut out, n);
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key, 0i64, out, exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key, 0i64, out, exp_val),
                         ).await.map_err(to_io)?;
                     }
                     Value::List(items) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key.clone(), 1i64, Vec::<u8>::new(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key.clone(), 1i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        // Clear old list items for this key, then re-insert
+                        self.conn.execute(
+                            "DELETE FROM list_items WHERE db = ? AND key = ?",
+                            (db_idx, key.clone()),
                         ).await.map_err(to_io)?;
                         for (i, item) in items.iter().enumerate() {
                             self.conn.execute(
                                 "INSERT INTO list_items (db, key, idx, value) VALUES (?, ?, ?, ?)",
-                                (idx as i64, key.clone(), i as i64, item.as_ref().to_vec()),
+                                (db_idx, key.clone(), i as i64, item.as_ref().to_vec()),
                             ).await.map_err(to_io)?;
                         }
                     }
                     Value::Set(items) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key.clone(), 2i64, Vec::<u8>::new(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key.clone(), 2i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        self.conn.execute(
+                            "DELETE FROM set_items WHERE db = ? AND key = ?",
+                            (db_idx, key.clone()),
                         ).await.map_err(to_io)?;
                         for item in items.iter() {
                             self.conn.execute(
                                 "INSERT INTO set_items (db, key, value) VALUES (?, ?, ?)",
-                                (idx as i64, key.clone(), item.as_ref().to_vec()),
+                                (db_idx, key.clone(), item.as_ref().to_vec()),
                             ).await.map_err(to_io)?;
                         }
                     }
                     Value::Hash(items) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key.clone(), 3i64, Vec::<u8>::new(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key.clone(), 3i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        self.conn.execute(
+                            "DELETE FROM hash_items WHERE db = ? AND key = ?",
+                            (db_idx, key.clone()),
                         ).await.map_err(to_io)?;
                         for (field, val) in items.iter() {
                             self.conn.execute(
                                 "INSERT INTO hash_items (db, key, field, value) VALUES (?, ?, ?, ?)",
                                 (
-                                    idx as i64,
+                                    db_idx,
                                     key.clone(),
                                     field.as_ref().to_vec(),
                                     val.as_ref().to_vec(),
@@ -273,31 +286,68 @@ impl LibsqlPersist {
                     }
                     Value::ZSet(items) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key.clone(), 4i64, Vec::<u8>::new(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key.clone(), 4i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        self.conn.execute(
+                            "DELETE FROM zset_items WHERE db = ? AND key = ?",
+                            (db_idx, key.clone()),
                         ).await.map_err(to_io)?;
                         for (member, score) in items.iter() {
                             self.conn.execute(
                                 "INSERT INTO zset_items (db, key, member, score) VALUES (?, ?, ?, ?)",
-                                (idx as i64, key.clone(), member.clone(), *score),
+                                (db_idx, key.clone(), member.clone(), *score),
                             ).await.map_err(to_io)?;
                         }
                     }
                     Value::Stream(items) => {
                         self.conn.execute(
-                            "INSERT INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
-                            (idx as i64, key.clone(), 5i64, Vec::<u8>::new(), exp_val),
+                            "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
+                            (db_idx, key.clone(), 5i64, Vec::<u8>::new(), exp_val),
+                        ).await.map_err(to_io)?;
+                        self.conn.execute(
+                            "DELETE FROM stream_entries WHERE db = ? AND key = ?",
+                            (db_idx, key.clone()),
                         ).await.map_err(to_io)?;
                         for (entry_id, fields) in items.iter() {
                             for (field_idx, (field, val)) in fields.iter().enumerate() {
                                 self.conn.execute(
                                     "INSERT INTO stream_entries (db, key, entry_id, field_idx, field, value) VALUES (?, ?, ?, ?, ?, ?)",
-                                    (idx as i64, key.clone(), entry_id.as_bytes().to_vec(), field_idx as i64, field.clone(), val.clone()),
+                                    (db_idx, key.clone(), entry_id.as_bytes().to_vec(), field_idx as i64, field.clone(), val.clone()),
                                 ).await.map_err(to_io)?;
                             }
                         }
                     }
                 }
+            }
+        }
+        // Remove stale keys that were deleted since the last snapshot.
+        // For each db, delete kv rows (and their collection items) that
+        // are not in the live set.
+        for (idx, _db) in dbs.iter().enumerate() {
+            let db_idx = idx as i64;
+            let db_live: Vec<&[u8]> = live_keys.iter()
+                .filter(|(d, _)| *d == db_idx)
+                .map(|(_, k)| k.as_slice())
+                .collect();
+            // Fetch all stored keys for this db
+            let mut rows = self.conn.query(
+                "SELECT key FROM kv WHERE db = ?", (db_idx,)
+            ).await.map_err(to_io)?;
+            let mut stale_keys: Vec<Vec<u8>> = Vec::new();
+            while let Some(row) = rows.next().await.map_err(to_io)? {
+                let key: Vec<u8> = row.get(0).map_err(to_io)?;
+                if !db_live.contains(&key.as_slice()) {
+                    stale_keys.push(key);
+                }
+            }
+            for key in &stale_keys {
+                self.conn.execute("DELETE FROM kv WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
+                self.conn.execute("DELETE FROM list_items WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
+                self.conn.execute("DELETE FROM set_items WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
+                self.conn.execute("DELETE FROM hash_items WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
+                self.conn.execute("DELETE FROM zset_items WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
+                self.conn.execute("DELETE FROM stream_entries WHERE db = ? AND key = ?", (db_idx, key.clone())).await.map_err(to_io)?;
             }
         }
         Ok(())
