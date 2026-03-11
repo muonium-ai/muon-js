@@ -53,7 +53,11 @@ pub struct ServerState {
     script_runtime: ScriptRuntimeConfig,
 }
 
-type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<mpsc::UnboundedSender<RespValue>>>;
+type PubSubState = std::collections::HashMap<Arc<[u8]>, Vec<mpsc::Sender<RespValue>>>;
+
+/// Maximum number of buffered pub/sub messages per subscriber before
+/// messages are dropped. Prevents unbounded memory growth from slow consumers.
+const PUBSUB_CHANNEL_CAPACITY: usize = 1024;
 type ScriptCacheState = std::collections::HashMap<String, String>;
 type PersistState = Option<Persist>;
 type DbsState = Vec<Db>;
@@ -178,7 +182,7 @@ async fn handle_client(
     let mut current_db: usize = 0;
     let mut in_multi = false;
     let mut queued: Vec<(String, Vec<Arc<[u8]>>)> = Vec::new();
-    let (pub_tx, mut pub_rx) = mpsc::unbounded_channel::<RespValue>();
+    let (pub_tx, mut pub_rx) = mpsc::channel::<RespValue>(PUBSUB_CHANNEL_CAPACITY);
     let mut script_runtime: Option<ScriptRuntime> = None;
     let db_count = dbs_state.len();
     let script_runtime_config = state.script_runtime.clone();
@@ -403,7 +407,7 @@ async fn handle_lrange_fast(
 
 async fn handle_subscribe(
     pubsub_state: &Arc<Mutex<PubSubState>>,
-    sender: &mpsc::UnboundedSender<RespValue>,
+    sender: &mpsc::Sender<RespValue>,
     channels: &[Arc<[u8]>],
 ) -> RespValue {
     if channels.is_empty() {
@@ -440,7 +444,7 @@ async fn handle_publish(pubsub_state: &Arc<Mutex<PubSubState>>, args: &[Arc<[u8]
     let mut delivered = 0;
     for tx in receivers {
         if tx
-            .send(RespValue::Array(vec![
+            .try_send(RespValue::Array(vec![
                 RespValue::Blob(b"message".to_vec().into()),
                 RespValue::Blob(channel.clone().into()),
                 RespValue::Blob(message.clone().into()),
