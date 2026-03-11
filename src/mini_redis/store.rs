@@ -1779,3 +1779,425 @@ fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(s: &str) -> Arc<[u8]> {
+        s.as_bytes().into()
+    }
+
+    // ---------------------------------------------------------------
+    // String operations
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn get_set_string_basic() {
+        let db = Db::new();
+        assert_eq!(db.get_string(b"k").unwrap(), None);
+        db.set_string(b"k".to_vec(), b("hello"), None);
+        assert_eq!(db.get_string(b"k").unwrap().unwrap().as_ref(), b"hello");
+    }
+
+    #[test]
+    fn get_set_empty_string() {
+        let db = Db::new();
+        db.set_string(b"empty".to_vec(), b(""), None);
+        assert_eq!(db.get_string(b"empty").unwrap().unwrap().as_ref(), b"");
+    }
+
+    #[test]
+    fn set_overwrites_previous() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("a"), None);
+        db.set_string(b"k".to_vec(), b("b"), None);
+        assert_eq!(db.get_string(b"k").unwrap().unwrap().as_ref(), b"b");
+    }
+
+    #[test]
+    fn set_nx_does_not_overwrite() {
+        let db = Db::new();
+        assert_eq!(db.set_nx(b"k".to_vec(), b("first")).unwrap(), true);
+        assert_eq!(db.set_nx(b"k".to_vec(), b("second")).unwrap(), false);
+        assert_eq!(db.get_string(b"k").unwrap().unwrap().as_ref(), b"first");
+    }
+
+    #[test]
+    fn append_creates_and_extends() {
+        let db = Db::new();
+        assert_eq!(db.append(b"k".to_vec(), b"hello").unwrap(), 5);
+        assert_eq!(db.append(b"k".to_vec(), b" world").unwrap(), 11);
+        assert_eq!(db.get_string(b"k").unwrap().unwrap().as_ref(), b"hello world");
+    }
+
+    #[test]
+    fn incr_by_creates_and_increments() {
+        let db = Db::new();
+        assert_eq!(db.incr_by(b"counter", 1).unwrap(), 1);
+        assert_eq!(db.incr_by(b"counter", 5).unwrap(), 6);
+        assert_eq!(db.incr_by(b"counter", -10).unwrap(), -4);
+    }
+
+    #[test]
+    fn incr_by_on_string_integer() {
+        let db = Db::new();
+        db.set_string(b"n".to_vec(), b("42"), None);
+        assert_eq!(db.incr_by(b"n", 8).unwrap(), 50);
+    }
+
+    #[test]
+    fn incr_by_type_mismatch() {
+        let db = Db::new();
+        db.list_push(b"mylist", &[b("a")], false).unwrap();
+        assert!(db.incr_by(b"mylist", 1).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // TTL / Expiry
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn ttl_no_expiry_returns_neg1() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert_eq!(db.ttl_ms(b"k"), Some(-1));
+    }
+
+    #[test]
+    fn ttl_missing_key_returns_none() {
+        let db = Db::new();
+        assert_eq!(db.ttl_ms(b"missing"), None);
+    }
+
+    #[test]
+    fn set_expire_and_check_ttl() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert!(db.set_expire_ms(b"k", 60_000));
+        let ttl = db.ttl_ms(b"k").unwrap();
+        assert!(ttl > 0 && ttl <= 60_000);
+    }
+
+    #[test]
+    fn persist_removes_ttl() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        db.set_expire_ms(b"k", 60_000);
+        assert_eq!(db.persist(b"k"), 1);
+        assert_eq!(db.ttl_ms(b"k"), Some(-1));
+    }
+
+    #[test]
+    fn expired_key_not_visible() {
+        let db = Db::new();
+        // Set with an expiry timestamp in the past
+        let past = now_ms().saturating_sub(1000);
+        db.set_string(b"old".to_vec(), b("stale"), Some(past));
+        assert!(!db.exists(b"old"));
+        assert_eq!(db.get_string(b"old").unwrap(), None);
+    }
+
+    // ---------------------------------------------------------------
+    // Key operations: exists, remove, type, keys, flush, len
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn exists_and_remove() {
+        let db = Db::new();
+        assert!(!db.exists(b"k"));
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert!(db.exists(b"k"));
+        assert!(db.remove(b"k"));
+        assert!(!db.exists(b"k"));
+        assert!(!db.remove(b"k"));
+    }
+
+    #[test]
+    fn value_type_detection() {
+        let db = Db::new();
+        db.set_string(b"s".to_vec(), b("hello"), None);
+        assert_eq!(db.value_type(b"s"), Some("string"));
+
+        db.list_push(b"l", &[b("a")], false).unwrap();
+        assert_eq!(db.value_type(b"l"), Some("list"));
+
+        db.set_add(b"st", &[b("x")]).unwrap();
+        assert_eq!(db.value_type(b"st"), Some("set"));
+
+        db.hash_set(b"h", b("f"), b("v")).unwrap();
+        assert_eq!(db.value_type(b"h"), Some("hash"));
+
+        assert_eq!(db.value_type(b"missing"), None);
+    }
+
+    #[test]
+    fn len_and_flush() {
+        let db = Db::new();
+        assert_eq!(db.len(), 0);
+        db.set_string(b"a".to_vec(), b("1"), None);
+        db.set_string(b"b".to_vec(), b("2"), None);
+        assert_eq!(db.len(), 2);
+        let flushed = db.flush();
+        assert_eq!(flushed, 2);
+        assert_eq!(db.len(), 0);
+    }
+
+    #[test]
+    fn keys_and_keys_matching() {
+        let db = Db::new();
+        db.set_string(b"user:1".to_vec(), b("a"), None);
+        db.set_string(b"user:2".to_vec(), b("b"), None);
+        db.set_string(b"order:1".to_vec(), b("c"), None);
+        assert_eq!(db.keys().len(), 3);
+        let matched = db.keys_matching(b"user:*");
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains(&b"user:1".to_vec()));
+        assert!(matched.contains(&b"user:2".to_vec()));
+    }
+
+    // ---------------------------------------------------------------
+    // Type mismatch errors
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn get_string_on_list_is_err() {
+        let db = Db::new();
+        db.list_push(b"k", &[b("x")], false).unwrap();
+        assert!(db.get_string(b"k").is_err());
+    }
+
+    #[test]
+    fn list_push_on_string_is_err() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert!(db.list_push(b"k", &[b("x")], false).is_err());
+    }
+
+    #[test]
+    fn hash_set_on_string_is_err() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert!(db.hash_set(b"k", b("f"), b("v")).is_err());
+    }
+
+    #[test]
+    fn set_add_on_string_is_err() {
+        let db = Db::new();
+        db.set_string(b"k".to_vec(), b("v"), None);
+        assert!(db.set_add(b"k", &[b("m")]).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // List operations
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn list_push_pop_left_right() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("a"), b("b")], false).unwrap(); // rpush: [a, b]
+        db.list_push(b"l", &[b("z")], true).unwrap();          // lpush: [z, a, b]
+        assert_eq!(db.list_len(b"l").unwrap(), 3);
+
+        assert_eq!(db.list_pop(b"l", true).unwrap().unwrap().as_ref(), b"z");   // lpop
+        assert_eq!(db.list_pop(b"l", false).unwrap().unwrap().as_ref(), b"b");  // rpop
+        assert_eq!(db.list_len(b"l").unwrap(), 1);
+    }
+
+    #[test]
+    fn list_range_basic() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("a"), b("b"), b("c"), b("d")], false).unwrap();
+        let range = db.list_range(b"l", 1, 2).unwrap();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].as_ref(), b"b");
+        assert_eq!(range[1].as_ref(), b"c");
+    }
+
+    #[test]
+    fn list_range_negative_indices() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("a"), b("b"), b("c")], false).unwrap();
+        let range = db.list_range(b"l", -2, -1).unwrap();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].as_ref(), b"b");
+        assert_eq!(range[1].as_ref(), b"c");
+    }
+
+    #[test]
+    fn list_index_positive_and_negative() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("x"), b("y"), b("z")], false).unwrap();
+        assert_eq!(db.list_index(b"l", 0).unwrap().unwrap().as_ref(), b"x");
+        assert_eq!(db.list_index(b"l", -1).unwrap().unwrap().as_ref(), b"z");
+        assert_eq!(db.list_index(b"l", 99).unwrap(), None);
+    }
+
+    #[test]
+    fn list_set_and_insert() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("a"), b("b"), b("c")], false).unwrap();
+        db.list_set(b"l", 1, b"B").unwrap();
+        assert_eq!(db.list_index(b"l", 1).unwrap().unwrap().as_ref(), b"B");
+
+        db.list_insert(b"l", true, b"B", b"X").unwrap(); // insert X before B
+        let all = db.list_range(b"l", 0, -1).unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[1].as_ref(), b"X");
+        assert_eq!(all[2].as_ref(), b"B");
+    }
+
+    #[test]
+    fn list_pop_removes_empty_key() {
+        let db = Db::new();
+        db.list_push(b"l", &[b("only")], false).unwrap();
+        db.list_pop(b"l", true).unwrap();
+        assert!(!db.exists(b"l"));
+        assert_eq!(db.len(), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Hash operations
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn hash_set_get_del() {
+        let db = Db::new();
+        assert_eq!(db.hash_set(b"h", b("f1"), b("v1")).unwrap(), true); // new field
+        assert_eq!(db.hash_set(b"h", b("f1"), b("v2")).unwrap(), false); // update
+        assert_eq!(db.hash_get(b"h", b"f1").unwrap().unwrap().as_ref(), b"v2");
+        assert_eq!(db.hash_del(b"h", &[b("f1")]).unwrap(), 1);
+        assert_eq!(db.hash_get(b"h", b"f1").unwrap(), None);
+    }
+
+    #[test]
+    fn hash_len_exists_getall() {
+        let db = Db::new();
+        db.hash_set(b"h", b("a"), b("1")).unwrap();
+        db.hash_set(b"h", b("b"), b("2")).unwrap();
+        assert_eq!(db.hash_len(b"h").unwrap(), 2);
+        assert!(db.hash_exists(b"h", b"a").unwrap());
+        assert!(!db.hash_exists(b"h", b"missing").unwrap());
+        let all = db.hash_getall(b"h").unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn hash_incr_by() {
+        let db = Db::new();
+        assert_eq!(db.hash_incr_by(b"h", b"counter", 5).unwrap(), 5);
+        assert_eq!(db.hash_incr_by(b"h", b"counter", -2).unwrap(), 3);
+    }
+
+    #[test]
+    fn hash_set_nx() {
+        let db = Db::new();
+        assert_eq!(db.hash_set_nx(b"h", b("f"), b("v1")).unwrap(), true);
+        assert_eq!(db.hash_set_nx(b"h", b("f"), b("v2")).unwrap(), false);
+        assert_eq!(db.hash_get(b"h", b"f").unwrap().unwrap().as_ref(), b"v1");
+    }
+
+    // ---------------------------------------------------------------
+    // Set operations
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn set_add_remove_members() {
+        let db = Db::new();
+        assert_eq!(db.set_add(b"s", &[b("a"), b("b"), b("a")]).unwrap(), 2); // 'a' counted once
+        assert_eq!(db.set_card(b"s").unwrap(), 2);
+        assert!(db.set_is_member(b"s", b"a").unwrap());
+        assert_eq!(db.set_remove(b"s", &[b("a")]).unwrap(), 1);
+        assert!(!db.set_is_member(b"s", b"a").unwrap());
+    }
+
+    #[test]
+    fn set_members_returns_all() {
+        let db = Db::new();
+        db.set_add(b"s", &[b("x"), b("y")]).unwrap();
+        let members = db.set_members(b"s").unwrap();
+        assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn set_union_and_inter() {
+        let db = Db::new();
+        db.set_add(b"s1", &[b("a"), b("b"), b("c")]).unwrap();
+        db.set_add(b"s2", &[b("b"), b("c"), b("d")]).unwrap();
+
+        let union = db.set_union(&[b"s1", b"s2"]).unwrap();
+        assert_eq!(union.len(), 4); // a, b, c, d
+
+        let inter = db.set_inter(&[b"s1", b"s2"]).unwrap();
+        assert_eq!(inter.len(), 2); // b, c
+    }
+
+    #[test]
+    fn set_move_between_sets() {
+        let db = Db::new();
+        db.set_add(b"src", &[b("a"), b("b")]).unwrap();
+        db.set_add(b"dst", &[b("c")]).unwrap();
+        assert!(db.set_move(b"src", b"dst", b"a").unwrap());
+        assert!(!db.set_is_member(b"src", b"a").unwrap());
+        assert!(db.set_is_member(b"dst", b"a").unwrap());
+    }
+
+    // ---------------------------------------------------------------
+    // Large values
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn large_string_value() {
+        let db = Db::new();
+        let big: Vec<u8> = vec![0x42; 1024 * 1024]; // 1 MB
+        let big_arc: Arc<[u8]> = big.into();
+        db.set_string(b"big".to_vec(), big_arc.clone(), None);
+        assert_eq!(db.get_string(b"big").unwrap().unwrap().len(), 1024 * 1024);
+    }
+
+    // ---------------------------------------------------------------
+    // Concurrent shard access
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn concurrent_writes_to_different_shards() {
+        use std::thread;
+        let db = Arc::new(Db::new());
+        let mut handles = Vec::new();
+        for i in 0..16u8 {
+            let db = db.clone();
+            handles.push(thread::spawn(move || {
+                let key = format!("key_{}", i);
+                let val: Arc<[u8]> = format!("val_{}", i).into_bytes().into();
+                db.set_string(key.into_bytes(), val, None);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(db.len(), 16);
+        for i in 0..16u8 {
+            let key = format!("key_{}", i);
+            let expected = format!("val_{}", i);
+            assert_eq!(
+                db.get_string(key.as_bytes()).unwrap().unwrap().as_ref(),
+                expected.as_bytes()
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Snapshot
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn snapshot_excludes_expired() {
+        let db = Db::new();
+        let past = now_ms().saturating_sub(1000);
+        db.set_string(b"alive".to_vec(), b("yes"), None);
+        db.set_string(b"dead".to_vec(), b("no"), Some(past));
+        let items = db.snapshot_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].0, b"alive");
+    }
+}
