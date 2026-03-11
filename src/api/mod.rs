@@ -18,16 +18,7 @@ use crate::types::*;
 use crate::value::Value;
 
 // Import extracted functionality
-use crate::helpers::{number_to_value, is_identifier, flatten_array, contains_arith_op};
-use crate::json::parse_json;
-use crate::evals::{
-    eval_value,
-    split_top_level,
-    has_top_level_comma,
-    split_statements,
-    normalize_line_continuations,
-    is_truthy,
-};
+use crate::helpers::number_to_value;
 use crate::parser::*;
 
 // ============================================================================
@@ -40,7 +31,6 @@ pub mod eval_program;
 
 // Re-export so the rest of this module and sibling sub-modules can use symbols
 // without qualifying the path.
-use self::number_fmt::*;
 use self::typed_array::*;
 pub use self::eval_expr::eval_expr;
 pub use self::eval_program::*;
