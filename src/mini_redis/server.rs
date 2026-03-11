@@ -654,24 +654,8 @@ fn handle_command(
         };
     }
     match cmd {
-        "PING" => {
-            if let Some(arg) = args.get(0) {
-                RespValue::Blob(arg.clone())
-            } else {
-                RespValue::StaticSimple("PONG")
-            }
-        }
-        "ECHO" => match args.get(0) {
-            Some(arg) => RespValue::Blob(arg.clone()),
-            None => RespValue::StaticError("ERR wrong number of arguments for 'ECHO'"),
-        },
-        "SELECT" => match args.get(0).and_then(|v| parse_usize(v.as_ref())) {
-            Some(idx) if idx < db_count => {
-                *db_index = idx;
-                RespValue::StaticSimple("OK")
-            }
-            _ => RespValue::StaticError("ERR invalid DB index"),
-        },
+        // PING, ECHO, SELECT are handled by handle_no_db_command before
+        // reaching this function, so they are not matched here.
         "DBSIZE" => {
             RespValue::Integer(db.len() as i64)
         }
@@ -2407,6 +2391,12 @@ fn redis_call(
         let script_cache_state = &*exec.script_cache_state;
         let db_index = &mut *exec.db_index;
         let mut script = None;
+        // Try no-db commands first (PING, ECHO, SELECT, INFO, etc.)
+        if let Some(resp) = handle_no_db_command(
+            state, script_cache_state, db_index, db_count, &cmd, &args,
+        ) {
+            return resp_to_js(ctx, resp, magic == 1);
+        }
         // skip_aof=true: Redis logs EVAL, not individual redis.call() commands.
         if *db_index as isize == exec.held_db_index && !exec.held_db.is_null() {
             let db = &*exec.held_db;
