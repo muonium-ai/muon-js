@@ -57,6 +57,25 @@ fn string_units_equal(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> Option
     Some(ua == ub)
 }
 
+/// Return a type discriminant for strict equality type-checking.
+/// Per ES spec, === must return false for different types without coercion.
+/// Values: 0=undefined, 1=null, 2=bool, 3=number, 4=string, 5=object/function
+fn strict_eq_type_tag(ctx: &mut JSContextImpl, v: JSValue) -> u8 {
+    if v.is_undefined() {
+        0
+    } else if v.is_null() {
+        1
+    } else if v.is_bool() {
+        2
+    } else if v.is_int() || ctx.float_value(v).is_some() {
+        3
+    } else if ctx.string_bytes(v).is_some() {
+        4
+    } else {
+        5
+    }
+}
+
 fn object_to_string_value(ctx: &mut JSContextImpl, val: JSValue) -> JSValue {
     let tag = if val.is_undefined() {
         "Undefined"
@@ -11591,15 +11610,16 @@ impl<'a> ArithParser<'a> {
         } else if op.len() == 3 {
             match (op[0], op[1], op[2]) {
                 (b'=', b'=', b'=') => {
-                    // Simplified equality
-                    if let Some(eq) = string_units_equal(ctx, left, right) {
-                        eq
-                    } else
+                    // Strict equality — no type coercion per ES spec
                     if left.0 == right.0 {
                         true
-                    } else if ctx.object_class_id(left).is_some() || ctx.object_class_id(right).is_some() {
+                    } else if let Some(eq) = string_units_equal(ctx, left, right) {
+                        eq
+                    } else if strict_eq_type_tag(ctx, left) != strict_eq_type_tag(ctx, right) {
+                        // Different types → false (bool vs number, null vs undefined, etc.)
                         false
                     } else {
+                        // Same type, different bit pattern — compare as numbers (int vs float)
                         let ln = js_to_number(ctx, left).ok();
                         let rn = js_to_number(ctx, right).ok();
                         if let (Some(l), Some(r)) = (ln, rn) {
@@ -11610,15 +11630,16 @@ impl<'a> ArithParser<'a> {
                     }
                 }
                 (b'!', b'=', b'=') => {
-                    // Simplified inequality
-                    if let Some(eq) = string_units_equal(ctx, left, right) {
-                        !eq
-                    } else
+                    // Strict inequality — no type coercion per ES spec
                     if left.0 == right.0 {
                         false
-                    } else if ctx.object_class_id(left).is_some() || ctx.object_class_id(right).is_some() {
+                    } else if let Some(eq) = string_units_equal(ctx, left, right) {
+                        !eq
+                    } else if strict_eq_type_tag(ctx, left) != strict_eq_type_tag(ctx, right) {
+                        // Different types → true (not equal)
                         true
                     } else {
+                        // Same type, different bit pattern — compare as numbers (int vs float)
                         let ln = js_to_number(ctx, left).ok();
                         let rn = js_to_number(ctx, right).ok();
                         if let (Some(l), Some(r)) = (ln, rn) {
