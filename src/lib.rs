@@ -1611,4 +1611,34 @@ mod tests {
         let r = eval_ret(&mut ctx, &script);
         assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 99, "property key > 128 bytes should round-trip via heap");
     }
+
+    #[test]
+    fn string_escape_sequences_bytecode() {
+        let mut mem = vec![0u8; 128 * 1024];
+        let mut ctx = JS_NewContext(&mut mem);
+
+        // \b \f \v via charCodeAt
+        let r = eval_ret(&mut ctx, r#""\b".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 8, "\\b should be backspace (0x08)");
+        let r = eval_ret(&mut ctx, r#""\f".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 12, "\\f should be form feed (0x0C)");
+        let r = eval_ret(&mut ctx, r#""\v".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 11, "\\v should be vertical tab (0x0B)");
+
+        // \xHH
+        let r = eval_ret(&mut ctx, r#""\x41".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 65, "\\x41 should be 'A' (65)");
+
+        // \uHHHH
+        let r = eval_ret(&mut ctx, r#""\u0048".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 72, "\\u0048 should be 'H' (72)");
+
+        // \u{...} variable-length
+        let r = eval_ret(&mut ctx, r#""\u{6F}".charCodeAt(0)"#);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 111, "\\u{{6F}} should be 'o' (111)");
+
+        // Combined: verify string equality
+        let r = eval_ret(&mut ctx, r#""\x48\x69" === "Hi""#);
+        assert!(!r.is_undefined() && !r.is_null(), "\\xHH escape string comparison should work");
+    }
 }
