@@ -28,7 +28,7 @@ jobs:
           node-version: "20"
 
       - name: Install wasm-bindgen CLI
-        run: cargo install wasm-bindgen-cli --version 0.2.105 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
 
       - name: Rust build
         run: make build
