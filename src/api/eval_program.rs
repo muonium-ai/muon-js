@@ -4,20 +4,15 @@ use super::*;
 use super::number_fmt::*;
 #[allow(unused_imports)]
 use super::typed_array::*;
-use crate::types::*;
 use crate::value::Value;
-use crate::helpers::{number_to_value, is_identifier, flatten_array, contains_arith_op};
+use crate::helpers::{number_to_value, is_identifier};
 use crate::json::parse_json;
 use crate::evals::{
     eval_value,
-    split_top_level,
-    has_top_level_comma,
     split_statements,
     normalize_line_continuations,
     is_truthy,
 };
-use crate::parser::*;
-use fancy_regex::Regex;
 
 pub fn parse_body_to_stmts(body: &str) -> Option<Vec<String>> {
     let stripped = match crate::evals::strip_comments_checked(body) {
