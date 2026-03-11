@@ -780,10 +780,58 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                     b'n' => s.push('\n'),
                     b'r' => s.push('\r'),
                     b't' => s.push('\t'),
+                    b'b' => s.push('\u{0008}'),
+                    b'f' => s.push('\u{000C}'),
+                    b'v' => s.push('\u{000B}'),
                     b'\\' => s.push('\\'),
                     b'\'' => s.push('\''),
                     b'"' => s.push('"'),
                     b'0' => s.push('\0'),
+                    b'x' => {
+                        // \xHH - 2-digit hex escape
+                        self.pos += 1;
+                        if self.pos + 1 < self.input.len() {
+                            let hi = self.input[self.pos];
+                            let lo = self.input[self.pos + 1];
+                            let hex_str = [hi, lo];
+                            if let Ok(v) = u8::from_str_radix(
+                                core::str::from_utf8(&hex_str).unwrap_or(""),
+                                16,
+                            ) {
+                                s.push(v as char);
+                            }
+                            self.pos += 1; // second digit consumed by outer += 1
+                        }
+                    }
+                    b'u' => {
+                        self.pos += 1;
+                        if self.pos < self.input.len() && self.input[self.pos] == b'{' {
+                            // \u{...} - variable-length Unicode escape
+                            self.pos += 1;
+                            let start = self.pos;
+                            while self.pos < self.input.len() && self.input[self.pos] != b'}' {
+                                self.pos += 1;
+                            }
+                            let hex = core::str::from_utf8(&self.input[start..self.pos]).unwrap_or("");
+                            if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                                if let Some(ch) = char::from_u32(cp) {
+                                    s.push(ch);
+                                }
+                            }
+                            // self.pos now points at '}', outer += 1 moves past it
+                        } else {
+                            // \uHHHH - 4-digit Unicode escape
+                            if self.pos + 3 < self.input.len() {
+                                let hex = core::str::from_utf8(&self.input[self.pos..self.pos + 4]).unwrap_or("");
+                                if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                                    if let Some(ch) = char::from_u32(cp) {
+                                        s.push(ch);
+                                    }
+                                }
+                                self.pos += 3; // 4th char consumed by outer += 1
+                            }
+                        }
+                    }
                     other => { s.push('\\'); s.push(other as char); }
                 }
                 self.pos += 1;
