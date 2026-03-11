@@ -506,16 +506,27 @@ fn handle_no_db_command(
                     RespValue::StaticSimple("OK")
                 }
                 "LOAD" => {
-                    if args.len() != 2 {
+                    if args.len() < 2 {
                         return Some(RespValue::StaticError("ERR wrong number of arguments for 'FUNCTION LOAD'"));
                     }
-                    let script = match std::str::from_utf8(args[1].as_ref()) {
+                    // Accept optional REPLACE flag before the body
+                    let body_arg = if args.len() == 3
+                        && to_upper_ascii(args[1].as_ref()) == "REPLACE"
+                    {
+                        args[2].as_ref()
+                    } else {
+                        args[1].as_ref()
+                    };
+                    let script = match std::str::from_utf8(body_arg) {
                         Ok(s) => s,
                         Err(_) => return Some(RespValue::StaticError("ERR invalid function")),
                     };
-                    let sha = sha1_hex(script.as_bytes());
+                    // Strip Redis/Lua shebang header (#!lua name=<lib>\n...)
+                    // so the remaining body can be executed as JS.
+                    let js_body = strip_lua_shebang(script);
+                    let sha = sha1_hex(js_body.as_bytes());
                     let mut cache = script_cache_state.lock().unwrap();
-                    cache.insert(sha, script.to_string());
+                    cache.insert(sha, js_body.to_string());
                     RespValue::StaticSimple("OK")
                 }
                 _ => RespValue::StaticError("ERR unknown subcommand for FUNCTION"),
@@ -685,16 +696,24 @@ fn handle_command(
                     RespValue::StaticSimple("OK")
                 }
                 "LOAD" => {
-                    if args.len() != 2 {
+                    if args.len() < 2 {
                         return RespValue::StaticError("ERR wrong number of arguments for 'FUNCTION LOAD'");
                     }
-                    let script = match std::str::from_utf8(args[1].as_ref()) {
+                    let body_arg = if args.len() == 3
+                        && to_upper_ascii(args[1].as_ref()) == "REPLACE"
+                    {
+                        args[2].as_ref()
+                    } else {
+                        args[1].as_ref()
+                    };
+                    let script = match std::str::from_utf8(body_arg) {
                         Ok(s) => s,
                         Err(_) => return RespValue::StaticError("ERR invalid function"),
                     };
-                    let sha = sha1_hex(script.as_bytes());
+                    let js_body = strip_lua_shebang(script);
+                    let sha = sha1_hex(js_body.as_bytes());
                     let mut cache = script_cache_state.lock().unwrap();
-                    cache.insert(sha, script.to_string());
+                    cache.insert(sha, js_body.to_string());
                     RespValue::StaticSimple("OK")
                 }
                 _ => RespValue::StaticError("ERR unknown subcommand for FUNCTION"),
@@ -881,6 +900,22 @@ fn eval_script_sha(
     )
 }
 
+/// Strip a Redis/Lua shebang header of the form `#!lua name=<lib>\n` (and optional
+/// engine/version lines) so the remainder can be treated as executable JS.
+/// Returns the body after the last contiguous shebang/comment line at the top.
+fn strip_lua_shebang(script: &str) -> &str {
+    let mut rest = script;
+    // Drop a leading `#!lua ...` or `#!js ...` line
+    if rest.starts_with("#!") {
+        if let Some(nl) = rest.find('\n') {
+            rest = &rest[nl + 1..];
+        } else {
+            return "";
+        }
+    }
+    rest
+}
+
 fn wrap_eval_script(script: &str) -> String {
     let mut wrapped = String::with_capacity(script.len() + 48);
     wrapped.push_str("function __redis_script__(){\n");
@@ -1064,14 +1099,16 @@ impl ScriptRuntime {
         // Use bare arrays (no push/pop setup) and direct element writes.
         // Use ctx.set_property_str() directly to skip setter check overhead in
         // JS_SetPropertyStr (which does format!("__set__KEYS") heap alloc).
+        // Use 1-based indexing (KEYS[1], ARGV[1]) to match Redis/Lua convention.
+        // The array length is set to len+1; index 0 is left as undefined.
         if keys.is_empty() {
             let keys_arr = self.ctx.new_array_bare(0).unwrap_or(JSValue::UNDEFINED);
             self.ctx.set_property_str(global, b"KEYS", keys_arr);
         } else {
-            let keys_arr = self.ctx.new_array_bare(keys.len()).unwrap_or(JSValue::UNDEFINED);
+            let keys_arr = self.ctx.new_array_bare(keys.len() + 1).unwrap_or(JSValue::UNDEFINED);
             for (idx, key) in keys.iter().enumerate() {
                 let v = JS_NewStringLen(&mut self.ctx, key.as_ref());
-                self.ctx.array_direct_set(keys_arr, idx as u32, v);
+                self.ctx.array_direct_set(keys_arr, (idx + 1) as u32, v);
             }
             self.ctx.set_property_str(global, b"KEYS", keys_arr);
         }
@@ -1079,10 +1116,10 @@ impl ScriptRuntime {
             let argv_arr = self.ctx.new_array_bare(0).unwrap_or(JSValue::UNDEFINED);
             self.ctx.set_property_str(global, b"ARGV", argv_arr);
         } else {
-            let argv_arr = self.ctx.new_array_bare(argv.len()).unwrap_or(JSValue::UNDEFINED);
+            let argv_arr = self.ctx.new_array_bare(argv.len() + 1).unwrap_or(JSValue::UNDEFINED);
             for (idx, arg) in argv.iter().enumerate() {
                 let v = JS_NewStringLen(&mut self.ctx, arg.as_ref());
-                self.ctx.array_direct_set(argv_arr, idx as u32, v);
+                self.ctx.array_direct_set(argv_arr, (idx + 1) as u32, v);
             }
             self.ctx.set_property_str(global, b"ARGV", argv_arr);
         }
