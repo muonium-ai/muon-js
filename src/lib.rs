@@ -1589,4 +1589,26 @@ mod tests {
         let r = eval_ret(&mut ctx, "null == undefined");
         assert_eq!(r, JSValue::TRUE, "null == undefined should be true (loose)");
     }
+
+    #[test]
+    fn long_property_key_not_truncated() {
+        let mut mem = vec![0u8; 128 * 1024];
+        let mut ctx = JS_NewContext(&mut mem);
+
+        // Property name > 64 bytes (old limit) and > 128 bytes (new stack buffer)
+        // to test both the stack and heap paths
+        let r = eval_ret(&mut ctx,
+            "var o = {}; o.abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnop = 42; o.abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnop"
+        );
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 42, "property key > 64 bytes should round-trip");
+
+        // Test a 200-byte key (exceeds 128-byte stack buffer, exercises heap path)
+        let long_key: String = "x".repeat(200);
+        let script = format!(
+            "var obj = {{}}; obj['{}'] = 99; obj['{}']",
+            long_key, long_key
+        );
+        let r = eval_ret(&mut ctx, &script);
+        assert_eq!(JS_ToInt32(&mut ctx, r).unwrap(), 99, "property key > 128 bytes should round-trip via heap");
+    }
 }

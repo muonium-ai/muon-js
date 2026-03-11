@@ -490,26 +490,24 @@ impl VM {
                 OpCode::GetProp => {
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
-                    if let Some(key_bytes) = ctx.string_bytes(key) {
-                        // Copy to stack buffer to release ctx borrow (avoid heap alloc).
-                        let mut key_stack = [0u8; 64];
-                        let key_len = key_bytes.len().min(64);
-                        key_stack[..key_len].copy_from_slice(&key_bytes[..key_len]);
-                        let key_buf = &key_stack[..key_len];
+                    if let Some(_key_bytes) = ctx.string_bytes(key) {
+                        // Copy key bytes to release ctx borrow. Stack buffer for short keys,
+                        // heap Vec for keys > 128 bytes.
+                        let key_buf = copy_string_bytes(ctx, key);
                         // Check if obj is a builtin marker (e.g. __builtin_console__)
                         let is_marker = ctx.string_bytes(obj)
                             .map(|b| b.len() >= 13 && b.starts_with(b"__builtin_") && b.ends_with(b"__"))
                             .unwrap_or(false);
                         if is_marker {
-                            let val = resolve_builtin_marker_prop(ctx, obj, key_buf);
+                            let val = resolve_builtin_marker_prop(ctx, obj, &key_buf);
                             stack.push(val);
                         } else {
-                            let key_str = core::str::from_utf8(key_buf).unwrap_or("");
+                            let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
                             let val = js_get_property_str(ctx, obj, key_str);
                             // If property is undefined and obj is a string,
                             // resolve as a string method marker for CallMethod dispatch
                             if val.is_undefined() && ctx.string_bytes(obj).is_some() {
-                                let marker = resolve_string_method_marker(ctx, key_buf);
+                                let marker = resolve_string_method_marker(ctx, &key_buf);
                                 stack.push(marker);
                             } else {
                                 stack.push(val);
@@ -521,15 +519,8 @@ impl VM {
                         stack.push(val);
                     } else {
                         let key_s = js_to_string(ctx, key);
-                        let mut key_stack = [0u8; 64];
-                        let key_len;
-                        if let Some(kb) = ctx.string_bytes(key_s) {
-                            key_len = kb.len().min(64);
-                            key_stack[..key_len].copy_from_slice(&kb[..key_len]);
-                        } else {
-                            key_len = 0;
-                        }
-                        let key_str = core::str::from_utf8(&key_stack[..key_len]).unwrap_or("");
+                        let key_buf = copy_string_bytes(ctx, key_s);
+                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
                         let val = js_get_property_str(ctx, obj, key_str);
                         stack.push(val);
                     }
@@ -539,12 +530,9 @@ impl VM {
                     let value = pop!(stack, ctx);
                     let key = pop!(stack, ctx);
                     let obj = pop!(stack, ctx);
-                    if let Some(key_bytes) = ctx.string_bytes(key) {
-                        // Copy to stack buffer to release ctx borrow.
-                        let mut key_stack = [0u8; 64];
-                        let key_len = key_bytes.len().min(64);
-                        key_stack[..key_len].copy_from_slice(&key_bytes[..key_len]);
-                        let key_str = core::str::from_utf8(&key_stack[..key_len]).unwrap_or("");
+                    if let Some(_key_bytes) = ctx.string_bytes(key) {
+                        let key_buf = copy_string_bytes(ctx, key);
+                        let key_str = core::str::from_utf8(&key_buf).unwrap_or("");
                         crate::api::js_set_property_str(ctx, obj, key_str, value);
                     }
                     stack.push(value);
@@ -557,12 +545,9 @@ impl VM {
                         let i = idx.int32().unwrap_or(0) as u32;
                         let val = js_get_property_uint32(ctx, obj, i);
                         stack.push(val);
-                    } else if let Some(idx_bytes) = ctx.string_bytes(idx) {
-                        // Copy to stack buffer to release ctx borrow.
-                        let mut idx_stack = [0u8; 64];
-                        let idx_len = idx_bytes.len().min(64);
-                        idx_stack[..idx_len].copy_from_slice(&idx_bytes[..idx_len]);
-                        let idx_str = core::str::from_utf8(&idx_stack[..idx_len]).unwrap_or("");
+                    } else if let Some(_idx_bytes) = ctx.string_bytes(idx) {
+                        let idx_buf = copy_string_bytes(ctx, idx);
+                        let idx_str = core::str::from_utf8(&idx_buf).unwrap_or("");
                         let val = js_get_property_str(ctx, obj, idx_str);
                         stack.push(val);
                     } else {
@@ -694,6 +679,40 @@ impl VM {
             pc += 1;
         }
         JSValue::UNDEFINED
+    }
+}
+
+/// Copy string bytes from a JSValue into an owned buffer, releasing the ctx borrow.
+/// Uses a stack-allocated array for keys up to 128 bytes (covers nearly all real-world
+/// property names), and falls back to a heap Vec for longer keys.
+enum KeyBuf {
+    Stack([u8; 128], usize),
+    Heap(Vec<u8>),
+}
+
+impl core::ops::Deref for KeyBuf {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        match self {
+            KeyBuf::Stack(buf, len) => &buf[..*len],
+            KeyBuf::Heap(vec) => vec.as_slice(),
+        }
+    }
+}
+
+fn copy_string_bytes(ctx: &mut JSContextImpl, val: JSValue) -> KeyBuf {
+    if let Some(bytes) = ctx.string_bytes(val) {
+        let len = bytes.len();
+        if len <= 128 {
+            let mut buf = [0u8; 128];
+            buf[..len].copy_from_slice(bytes);
+            KeyBuf::Stack(buf, len)
+        } else {
+            KeyBuf::Heap(bytes.to_vec())
+        }
+    } else {
+        KeyBuf::Stack([0u8; 128], 0)
     }
 }
 
