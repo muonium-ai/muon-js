@@ -162,26 +162,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.starts_with('{') && s.ends_with('}') {
         return eval_object_literal(ctx, s);
     }
-    if s == "null" {
-        return Some(Value::NULL);
-    }
-    if s == "undefined" {
-        return Some(Value::UNDEFINED);
-    }
-    if s == "true" {
-        return Some(Value::TRUE);
-    }
-    if s == "false" {
-        return Some(Value::FALSE);
-    }
-    // Handle `this` keyword - look it up in the current environment
-    if s == "this" {
-        if let Some((_, val)) = ctx.resolve_binding("this") {
-            return Some(val);
-        }
-        // If not bound, `this` is undefined in strict mode or global in sloppy mode
-        return Some(js_get_global_object(ctx));
-    }
     if let Some(pos) = find_arrow_top_level(s) {
         let (left, right) = s.split_at(pos);
         let params_src = left.trim();
@@ -239,43 +219,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
         return Some(func);
     }
-    let global = js_get_global_object(ctx);
-    if is_identifier(s) {
-        if let Some((_, val)) = ctx.resolve_binding(s) {
-            if val == Value::UNINITIALIZED {
-                return Some(js_throw_error(
-                    ctx,
-                    JSObjectClassEnum::ReferenceError,
-                    "cannot access before initialization",
-                ));
-            }
-            return Some(val);
-        }
-    }
-    let mut builtin_or_global = |name: &str, marker: &str| -> JSValue {
-        let val = js_get_property_str(ctx, global, name);
-        if val.is_undefined() && !ctx.has_property_str(global, name.as_bytes()) {
-            js_new_string(ctx, marker)
-        } else {
-            val
-        }
-    };
-    if let Some((builtin_name, marker)) = lookup_builtin_dispatch(s) {
-        return Some(builtin_or_global(builtin_name, marker));
-    }
-    if s == "globalThis" {
-        let val = js_get_property_str(ctx, global, "globalThis");
-        if val.is_undefined() && !ctx.has_property_str(global, b"globalThis") {
-            return Some(global);
-        }
-        return Some(val);
-    }
-    if s == "NaN" {
-        return Some(number_to_value(ctx, f64::NAN));
-    }
-    if s == "Infinity" {
-        return Some(number_to_value(ctx, f64::INFINITY));
-    }
     if is_simple_string_literal(s) {
         let inner = &s[1..s.len() - 1];
         let unescaped = unescape_string_literal(inner);
@@ -292,10 +235,6 @@ pub fn eval_value(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
     if s.starts_with('(') && s.ends_with(')') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
         return eval_expr(ctx, inner);
-    }
-    if is_identifier(s) {
-        let v = js_get_property_str(ctx, global, s);
-        return Some(v);
     }
     None
 }
