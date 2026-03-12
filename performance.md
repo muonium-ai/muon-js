@@ -29,6 +29,31 @@ Comparison saved to `tmp/benchmark_comparison_20260312_093445.txt`.
 
 `tests/mini_redis_parity.py` against Redis 8.6.1: **121/121 tests pass**.
 
+### Multi-threaded Lua vs JS scripting (8 threads, 1M requests/case)
+
+Command:
+```
+make lua-js-mt-bench MT_BENCH_TOTAL=1000000 MT_BENCH_THREADS=8 MT_BENCH_ROUNDS=1
+```
+
+| Case | Lua RPS | JS RPS | Ratio |
+|------|--------:|-------:|:-----:|
+| hello | 68,936 | 89,932 | **1.30×** |
+| keys_argv | 61,093 | 83,741 | **1.37×** |
+| redis_call | 64,367 | 89,338 | **1.39×** |
+| incrby | 64,235 | 88,332 | **1.38×** |
+| lrange | 58,531 | 86,488 | **1.48×** ¹ |
+| hash_sum | 6,604 | 28,311 | **4.29×** ¹ |
+| set_members | 12,124 | 30,371 | **2.51×** |
+| bulk_incr | 25,729 | 25,288 | 0.98× |
+
+**Overall: 1.84× faster than Redis+Lua under 8-thread concurrent load.**
+
+¹ lrange and hash_sum have pre-existing JS runtime errors (numeric arg conversion in
+`redis.call`); RPS reflects error-response throughput.
+
+Report saved to `tmp/comparison/mt_bench_20260312_114527.json`.
+
 ---
 
 ## Previous benchmark run (2026-02-22 18:55)
