@@ -314,17 +314,6 @@ pub fn eval_expr(ctx: &mut JSContextImpl, src: &str) -> Option<JSValue> {
         }
     }
     if let Some((lhs, rhs)) = split_assignment(s) {
-        if is_identifier(lhs) {
-            let env = ctx.resolve_binding_env(lhs);
-            let global = js_get_global_object(ctx);
-            let has_global = ctx.has_property_str(global, lhs.as_bytes());
-            if env.is_none() && !has_global {
-                if let Some(pos) = s.find(lhs) {
-                    ctx.set_error_offset(stmt_offset + pos);
-                }
-                return Some(js_throw_error(ctx, JSObjectClassEnum::ReferenceError, "not defined"));
-            }
-        }
         let rhs_val = eval_expr(ctx, rhs)?;
         let (base, key) = parse_lvalue(ctx, lhs)?;
         if let LValueKey::Name(name) = &key {
