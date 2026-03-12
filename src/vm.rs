@@ -151,11 +151,16 @@ impl VM {
                 OpCode::Add => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    // Fast path: int + int (avoids string_bytes checks)
+                    // Fast path: int + int — use checked_add to stay in i32,
+                    // only fall back to f64 on overflow.
                     if a.is_int() && b.is_int() {
                         let ai = a.int32().unwrap_or(0);
                         let bi = b.int32().unwrap_or(0);
-                        stack.push(crate::helpers::number_to_value(ctx, ai as f64 + bi as f64));
+                        if let Some(result) = ai.checked_add(bi) {
+                            stack.push(JSValue::from_int32(result));
+                        } else {
+                            stack.push(crate::helpers::number_to_value(ctx, ai as f64 + bi as f64));
+                        }
                     } else {
                         let a_is_str = ctx.string_bytes(a).is_some();
                         if a_is_str && b.is_int() {
@@ -191,7 +196,11 @@ impl VM {
                     if a.is_int() && b.is_int() {
                         let ai = a.int32().unwrap_or(0);
                         let bi = b.int32().unwrap_or(0);
-                        stack.push(crate::helpers::number_to_value(ctx, ai as f64 - bi as f64));
+                        if let Some(result) = ai.checked_sub(bi) {
+                            stack.push(JSValue::from_int32(result));
+                        } else {
+                            stack.push(crate::helpers::number_to_value(ctx, ai as f64 - bi as f64));
+                        }
                     } else {
                         let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
                         let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
