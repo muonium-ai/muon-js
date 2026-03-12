@@ -1,27 +1,27 @@
 Lua vs JavaScript scripting benchmark gate
-generated_at=2026-02-20 22:46:45
+generated_at=2026-03-12 10:56:08
 rounds=3
 
-Round 1 (redis_port=6385): avg_ratio=1.2223x
-  lua_log=tmp/comparison/lua_js_gate/redis_lua_round1_20260220_224637.log
-  js_log=tmp/comparison/lua_js_gate/mini_js_round1_20260220_224637.log
-Round 2 (redis_port=6386): avg_ratio=1.1830x
-  lua_log=tmp/comparison/lua_js_gate/redis_lua_round2_20260220_224640.log
-  js_log=tmp/comparison/lua_js_gate/mini_js_round2_20260220_224640.log
-Round 3 (redis_port=6387): avg_ratio=1.2000x
-  lua_log=tmp/comparison/lua_js_gate/redis_lua_round3_20260220_224643.log
-  js_log=tmp/comparison/lua_js_gate/mini_js_round3_20260220_224643.log
+Round 1 (redis_port=6385): avg_ratio=2.4539x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round1_20260312_105604.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round1_20260312_105604.log
+Round 2 (redis_port=6386): avg_ratio=2.5091x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round2_20260312_105605.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round2_20260312_105605.log
+Round 3 (redis_port=6387): avg_ratio=2.4910x
+  lua_log=tmp/comparison/lua_js_gate/redis_lua_round3_20260312_105606.log
+  js_log=tmp/comparison/lua_js_gate/mini_js_round3_20260312_105606.log
 
 CASE                     MEAN   MEDIAN      MIN      MAX
 --------------------------------------------------------
-bulk_incr                0.19     0.19     0.18     0.19
-hash_sum                 0.15     0.15     0.15     0.16
-hello                    2.07     2.15     1.91     2.16
-incrby                   1.87     1.83     1.80     1.99
-keys_argv                1.56     1.64     1.40     1.65
-lrange                   1.64     1.62     1.53     1.76
-redis_call               1.88     1.88     1.73     2.02
-set_members              0.25     0.25     0.24     0.25
+bulk_incr                1.92     1.91     1.89     1.95
+hash_sum                 2.47     2.48     2.39     2.56
+hello                    2.67     2.60     2.52     2.90
+incrby                   2.85     2.86     2.83     2.87
+keys_argv                2.16     2.15     2.14     2.18
+lrange                   2.53     2.55     2.49     2.55
+redis_call               2.91     2.89     2.83     3.02
+set_members              2.36     2.47     2.13     2.49
 
-overall_mean=1.2018x
-overall_median=1.2000x
+overall_mean=2.4847x
+overall_median=2.4910x
