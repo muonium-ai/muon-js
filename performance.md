@@ -29,6 +29,35 @@ Comparison saved to `tmp/benchmark_comparison_20260312_093445.txt`.
 
 `tests/mini_redis_parity.py` against Redis 8.6.1: **121/121 tests pass**.
 
+### Lua vs MuonJS scripting (3-round gate, 2026-03-12)
+
+Command:
+```
+make lua-js-perf-baseline
+# 3 rounds, redis-base-port=6385
+```
+
+| Case | Redis+Lua (rps) | mini-redis+MuonJS (rps) | Ratio (JS/Lua) | vs Feb-20 baseline |
+|------|----------------:|------------------------:|:--------------:|:------------------:|
+| hello       |  16,351 |  43,782 | **2.60x** | +21% (was 2.15x) |
+| keys_argv   |  12,806 |  27,648 | **2.15x** | +31% (was 1.64x) |
+| redis_call  |  16,508 |  48,041 | **2.89x** | +54% (was 1.88x) |
+| incrby      |  16,685 |  47,605 | **2.86x** | +56% (was 1.83x) |
+| lrange      |  13,993 |  35,371 | **2.55x** | +57% (was 1.62x) |
+| hash_sum    |   5,205 |  12,864 | **2.48x** | +1522% (was 0.15x) |
+| set_members |   8,061 |  19,031 | **2.47x** | +897% (was 0.25x) |
+| bulk_incr   |  12,379 |  23,741 | **1.91x** | +910% (was 0.19x) |
+
+**Overall mean: 2.49x faster than Redis+Lua. Median: 2.49x.**
+
+All 8 benchmarks faster than Redis+Lua (previously 5/8). The three critical
+hotspots that were slower than Lua (hash_sum, set_members, bulk_incr) are now
+all **1.9–2.5x faster** thanks to:
+- AtomTable HashMap index for O(1) atom lookup (#28)
+- Checked integer arithmetic in VM (#29)
+- `number_to_value` round-trip cast optimization (#30)
+- Array property alpha-skip optimization (#31)
+
 ---
 
 ## Previous benchmark run (2026-02-22 18:55)

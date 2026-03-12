@@ -1,3 +1,3 @@
-// Parameterization: return ARGV[0]
+// Parameterization: return ARGV[1]
 // Expected: "Hello"
-return ARGV[0];
+return ARGV[1];
