@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare web-demo-wasm web-demo-dev web-demo-build web-demo-test
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -50,6 +50,13 @@ JS_BENCH_CHECK_RUNS ?= 3
 JS_BENCH_BASELINE ?= devdocs/js_runtime_benchmark_baseline.json
 JS_BENCH_CHECK_OUT ?= tmp/comparison/js_runtime_benchmark_check_$(shell date +%Y%m%d_%H%M%S).json
 JS_BENCH_MAX_REGRESSION ?= 0.20
+PERF_BENCH_MINI_PORT ?= 6380
+PERF_BENCH_REDIS_PORT ?= 6379
+PERF_BENCH_CLIENTS ?= 50
+PERF_BENCH_REQUESTS ?= 1000000
+PERF_BENCH_PIPELINE ?= 16
+PERF_BENCH_RUNS ?= 5
+PERF_BENCH_TESTS ?= get,set,incr,lpush,rpush,lpop,rpop,sadd,hset
 
 sync-version:
 	./scripts/sync_version.sh
@@ -493,6 +500,36 @@ mini-redis-benchmark: sync-version
 	python3 scripts/mini_redis_benchmark.py --host $(MINI_REDIS_HOST) --port $$port 2>&1 | tee $(MINI_REDIS_BENCH_LOG); \
 	echo "=== stop mini-redis ==="; \
 	$(MAKE) -s mini-redis-stop || true
+
+# ── redis-benchmark pipelined performance gate ──────────────────────────────
+# Starts mini-redis, runs redis-benchmark with pipelining against it,
+# and optionally compares against a running Redis instance.
+#
+# make perf-benchmark             – mini-redis vs Redis (Redis must be running on PERF_BENCH_REDIS_PORT)
+# make perf-benchmark-no-redis    – mini-redis only (no Redis comparison)
+perf-benchmark: release
+	@mkdir -p tmp
+	@echo "Running pipelined performance benchmark (mini-redis vs Redis)"
+	@./tests/run_perf_benchmark.sh \
+		--mini-port $(PERF_BENCH_MINI_PORT) \
+		--redis-port $(PERF_BENCH_REDIS_PORT) \
+		--clients $(PERF_BENCH_CLIENTS) \
+		--requests $(PERF_BENCH_REQUESTS) \
+		--pipeline $(PERF_BENCH_PIPELINE) \
+		--runs $(PERF_BENCH_RUNS) \
+		--tests "$(PERF_BENCH_TESTS)"
+
+perf-benchmark-no-redis: release
+	@mkdir -p tmp
+	@echo "Running pipelined performance benchmark (mini-redis only)"
+	@./tests/run_perf_benchmark.sh \
+		--mini-port $(PERF_BENCH_MINI_PORT) \
+		--clients $(PERF_BENCH_CLIENTS) \
+		--requests $(PERF_BENCH_REQUESTS) \
+		--pipeline $(PERF_BENCH_PIPELINE) \
+		--runs $(PERF_BENCH_RUNS) \
+		--tests "$(PERF_BENCH_TESTS)" \
+		--no-redis
 
 clean:
 	$(CARGO) clean
