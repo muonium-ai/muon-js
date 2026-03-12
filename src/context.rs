@@ -1175,26 +1175,67 @@ fn parse_index(name: &[u8]) -> Option<u32> {
 
 struct AtomTable {
     entries: Vec<AtomEntry>,
+    /// Hash index: FNV-1a hash of bytes → atom id for O(1) lookup.
+    index: HashMap<u64, u32>,
+}
+
+/// FNV-1a hash for byte slices — fast, no dependencies.
+#[inline]
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 impl AtomTable {
     fn new() -> Self {
-        let mut table = Self { entries: Vec::new() };
+        let mut table = Self {
+            entries: Vec::new(),
+            index: HashMap::new(),
+        };
         table.entries.push(AtomEntry { bytes: core::ptr::null_mut(), ref_count: 1 });
         table
     }
 
     fn find(&self, bytes: &[u8]) -> Option<u32> {
-        for (idx, entry) in self.entries.iter().enumerate() {
-            if entry.bytes_equal(bytes) {
-                return Some(idx as u32);
+        let hash = fnv1a_hash(bytes);
+        if let Some(&id) = self.index.get(&hash) {
+            // Verify the match (hash collision guard)
+            if let Some(entry) = self.entries.get(id as usize) {
+                if entry.bytes_equal(bytes) {
+                    return Some(id);
+                }
             }
+            // Hash collision: fall back to linear scan
+            for (idx, entry) in self.entries.iter().enumerate() {
+                if entry.bytes_equal(bytes) {
+                    return Some(idx as u32);
+                }
+            }
+            None
+        } else {
+            None
         }
-        None
     }
 
     fn push(&mut self, entry: AtomEntry) -> Option<u32> {
         let id = self.entries.len() as u32;
+        // Index the new entry by its byte content hash
+        if !entry.bytes.is_null() {
+            let header = entry.bytes as *const StringHeader;
+            unsafe {
+                if (*header).tag == HEAP_TAG_STRING {
+                    let len = (*header).len as usize;
+                    let data = (header as *const u8).add(core::mem::size_of::<StringHeader>());
+                    let bytes = core::slice::from_raw_parts(data, len);
+                    let hash = fnv1a_hash(bytes);
+                    self.index.insert(hash, id);
+                }
+            }
+        }
         self.entries.push(entry);
         Some(id)
     }
