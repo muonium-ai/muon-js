@@ -75,38 +75,58 @@ fn main() {
 }
 ```
 
-## Mini-Redis Implementation
+## Mini-Redis
 
-Muon JS includes a Redis-compatible server implementation in `src/mini_redis/`:
+> **Release note:** mini-redis is being extracted into a standalone product. The
+> implementation here is the reference codebase for that release. The sections
+> below describe the current architecture, testing, and performance baselines.
 
-- `resp.rs`: RESP protocol encode/decode.
-- `server.rs`: async server loop, command dispatcher, scripting bridge.
-- `store.rs`: in-memory data structures and command semantics.
-- `persist.rs`: persistence abstraction and libsql-backed durability.
+### Architecture
+
+The server lives in `src/mini_redis/` and is built as an optional feature-gated
+binary. Module layout after the T-000078 / T-000083 refactoring:
+
+| Module | Responsibility |
+|--------|---------------|
+| `resp.rs` | RESP protocol encode/decode |
+| `server.rs` | async accept loop, connection state, scripting bridge |
+| `server/handle_command.rs` | command dispatch and routing |
+| `server/handle_no_db_command.rs` | server-level commands (`INFO`, `CONFIG`, `FUNCTION`, …) |
+| `store.rs` | in-memory data structures and command semantics |
+| `persist.rs` | persistence abstraction and libsql-backed durability |
 
 ### Supported command families
 
-- Core/control: `PING`, `ECHO`, `INFO`, `SELECT`, `DBSIZE`, `QUIT`, `MULTI/EXEC/DISCARD`.
-- Strings: `GET`, `SET`, `SETNX`, `MSET`, `MGET`, `GETSET`, `APPEND`, `INCR/DECR`, `INCRBY/DECRBY`, `STRLEN`.
-- Hashes: `HSET`, `HGET`, `HDEL`, `HGETALL`, `HLEN`, `HEXISTS`, `HINCRBY`, `HSETNX`.
-- Lists: `LPUSH/RPUSH`, `LPOP/RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LPUSHX/RPUSHX`, `LTRIM`.
-- Sets: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMOVE`, `SUNION`, `SINTER`.
-- Sorted sets: `ZADD`, `ZRANGE`, `ZREM`, `ZCARD`.
-- Streams: `XADD`, `XRANGE`, `XREVRANGE`, `XLEN`, `XDEL`.
-- Keyspace/TTL: `DEL`, `EXISTS`, `EXPIRE`, `PEXPIRE`, `PERSIST`, `TTL`, `PTTL`, `TYPE`, `KEYS`, `SCAN`, `FLUSHDB`, `FLUSHALL`.
-- Pub/Sub: `SUBSCRIBE`, `PUBLISH`.
-- Scripting/admin: `EVAL`, `EVALSHA`, `SCRIPT`, `FUNCTION`, `CONFIG`, `CLIENT`, `SLOWLOG`, `SAVE`, `BGSAVE`, `REPLICAOF`.
+- **Core/control**: `PING`, `ECHO`, `INFO`, `SELECT`, `DBSIZE`, `QUIT`, `MULTI/EXEC/DISCARD`.
+- **Strings**: `GET`, `SET`, `SETNX`, `MSET`, `MGET`, `GETSET`, `APPEND`, `INCR/DECR`, `INCRBY/DECRBY`, `STRLEN`.
+- **Hashes**: `HSET`, `HGET`, `HDEL`, `HGETALL`, `HLEN`, `HEXISTS`, `HINCRBY`, `HSETNX`.
+- **Lists**: `LPUSH/RPUSH`, `LPOP/RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LPUSHX/RPUSHX`, `LTRIM`.
+- **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMOVE`, `SUNION`, `SINTER`.
+- **Sorted sets**: `ZADD`, `ZRANGE`, `ZREM`, `ZCARD`.
+- **Streams**: `XADD`, `XRANGE`, `XREVRANGE`, `XLEN`, `XDEL`.
+- **Keyspace/TTL**: `DEL`, `EXISTS`, `EXPIRE`, `PEXPIRE`, `PERSIST`, `TTL`, `PTTL`, `TYPE`, `KEYS`, `SCAN`, `FLUSHDB`, `FLUSHALL`.
+- **Pub/Sub**: `SUBSCRIBE`, `PUBLISH`.
+- **Scripting/admin**: `EVAL`, `EVALSHA`, `SCRIPT`, `FUNCTION LOAD/LIST/DELETE/FLUSH`, `CONFIG`, `CLIENT`, `SLOWLOG`, `SAVE`, `BGSAVE`, `REPLICAOF`.
 
-### Run mini-redis
+### Scripting (MuonJS)
+
+mini-redis uses the embedded MuonJS engine (this runtime) as its scripting layer:
+
+- `EVAL script numkeys ...` — runs a JS snippet with `redis`, `KEYS`, `ARGV` bound; 1-based indexing matching the Redis/Lua convention.
+- `FUNCTION LOAD "#!lua name=lib\n..."` — loads a named function library; the `#!lua` shebang is stripped before execution, accepting the same body format as Redis 7+.
+- `CLIENT SETNAME`, `SCRIPT FLUSH`, `FUNCTION LIST/DELETE/FLUSH` are supported.
+- Memory limits are configurable via `--script-mem` (bytes) and `--script-reset-threshold` (%).
+
+### Running mini-redis
 
 ```bash
-# Development run
+# Development (debug build)
 make mini-redis
 
-# Release run
+# Release build
 make mini-redis-release
 
-# Release + persistence (libsql)
+# Release + libsql persistence
 make mini-redis-persist-release
 ```
 
@@ -123,32 +143,99 @@ cargo run --release --features "mini-redis mini-redis-libsql" --bin mini_redis -
   --script-reset-threshold 90
 ```
 
-If built without `mini-redis`, the binary exits with a message to rebuild using `--features mini-redis`.
+If the binary is built without `--features mini-redis`, it exits with a message to rebuild with the feature enabled.
 
-## Benchmark And Comparison Usage
+### Parity testing
 
-Redis vs mini-redis pipelined throughput:
+The parity test suite (`tests/mini_redis_parity.py`) exercises 121 commands against
+both a live Redis instance and mini-redis, comparing responses:
 
 ```bash
-make pipelined-benchmark-compare
+# Requires Redis on :6379; mini-redis is started automatically
+make mini-redis-parity
+
+# Verbose output
+make mini-redis-parity-verbose
 ```
 
-Lua (Redis) vs MuonJS (mini-redis) scripting perf gate:
+**Current parity score: 121/121** (Redis 8.6.1 and mini-redis both pass all 121 tests).
+
+### Code structure after T-000078/T-000083 refactoring
+
+The original monolithic `src/api.rs` (~2,500 lines) and `handle_command` dispatch
+were split into focused modules to prepare for the standalone release:
+
+- `src/api/mod.rs` — re-exports and shared helpers
+- `src/api/eval_expr.rs` — expression evaluator
+- `src/api/eval_program.rs` — program/statement evaluator
+- `src/mini_redis/server/handle_command.rs` — Redis command router
+- `src/mini_redis/server/handle_no_db_command.rs` — server-level command handler
+
+## Benchmark and Comparison
+
+### Pipelined throughput vs Redis (best-of-5, March 2026)
+
+Methodology: `redis-benchmark -c 50 -n 1,000,000 -P 16 --csv`, 5 runs per server,
+best RPS per test kept for the report. Run with `make perf-benchmark`.
+
+| Test | mini-redis | Redis | mini/redis |
+|------|----------:|------:|:----------:|
+| GET   | 2,061,856 | 1,992,032 | **1.04×** |
+| SET   | 1,355,014 | 1,592,357 | 0.85× ⚠ |
+| INCR  | 2,164,502 | 1,883,239 | **1.15×** |
+| LPUSH | 2,024,292 | 1,582,278 | **1.28×** |
+| RPUSH | 2,016,129 | 1,721,170 | **1.17×** |
+| LPOP  | 2,079,002 | 1,519,757 | **1.37×** |
+| RPOP  | 2,036,660 | 1,636,661 | **1.24×** |
+| SADD  | 2,183,406 | 1,757,469 | **1.24×** |
+| HSET  | 1,259,446 | 1,572,327 | 0.80× ⚠ |
+
+7 of 9 operations are at parity or faster than Redis. SET (−15%) and HSET (−20%)
+are known regressions under pipelined write load — tracked for the standalone release.
+
+### MuonJS vs Lua scripting throughput (February 2026)
+
+3-round median, `make lua-js-perf-check`:
+
+| Script case | Redis+Lua (rps) | mini-redis+MuonJS (rps) | Ratio |
+|-------------|----------------:|------------------------:|:-----:|
+| hello | 13,159 | 24,354 | **1.85×** |
+| redis_call | 13,411 | 25,669 | **2.05×** |
+| incrby | 13,494 | 25,744 | **1.90×** |
+| keys_argv | 10,686 | 17,787 | **1.67×** |
+| lrange | 11,614 | 20,320 | **1.75×** |
+| hash_sum | 4,897 | 5,262 | **1.08×** |
+| set_members | 7,266 | 8,474 | **1.17×** |
+| bulk_incr | 10,389 | 9,746 | 0.94× |
+
+Overall: **7 of 8 cases faster than Redis+Lua. Mean 1.56×, median 1.55×.**
+MuonJS eliminates per-call re-parsing via its bytecode VM.
+
+### Running benchmarks
 
 ```bash
-make lua-js-perf-baseline
-make lua-js-perf-check
-```
+# Pipelined throughput — mini-redis vs Redis (best of 5 runs)
+# Requires Redis running on :6379
+make perf-benchmark
 
-JS runtime microbench:
+# mini-redis only (CI-safe, no Redis dependency)
+make perf-benchmark-no-redis
 
-```bash
+# Override run count or request volume
+make perf-benchmark-no-redis PERF_BENCH_RUNS=3 PERF_BENCH_REQUESTS=500000
+
+# Lua vs MuonJS scripting gate
+make lua-js-perf-baseline   # capture new baseline
+make lua-js-perf-check      # check against baseline (fails if >10% regression)
+
+# JS runtime microbench (regression gate)
 make js-runtime-bench
 make js-runtime-bench-baseline
 make js-runtime-bench-check
 ```
 
-Latest benchmark notes and captured reports are tracked in `performance.md` and `tmp/` artifacts.
+Benchmark logs are written to `tmp/` and comparison reports to `tmp/benchmark_comparison_*.txt`.
+Full history is tracked in `performance.md`.
 
 ## Browser Demo (WASM + WebGPU)
 
