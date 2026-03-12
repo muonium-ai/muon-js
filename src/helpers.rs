@@ -4,18 +4,17 @@ use crate::context::Context as JSContextImpl;
 use crate::types::*;
 use crate::value::Value;
 
-/// Convert f64 to JSValue, using int32 for integers when possible
+/// Convert f64 to JSValue, using int32 for integers when possible.
+/// Uses a round-trip cast check: `i as f64 == n` catches NaN, infinity,
+/// fractional parts, and out-of-range values in a single FP comparison.
+#[inline]
 pub fn number_to_value(ctx: &mut JSContextImpl, n: f64) -> JSValue {
-    if n.is_nan()
-        || n.is_infinite()
-        || n.fract() != 0.0
-        || n.abs() > i32::MAX as f64
-        || (n == 0.0 && n.is_sign_negative())
-    {
+    let i = n as i32;
+    if i as f64 == n && (n != 0.0 || !n.is_sign_negative()) {
+        Value::from_int32(i)
+    } else {
         use crate::api::js_new_float64;
         js_new_float64(ctx, n)
-    } else {
-        Value::from_int32(n as i32)
     }
 }
 
