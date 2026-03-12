@@ -510,43 +510,49 @@ pub fn js_set_property_str(
 ) -> JSValue {
     if let Some(class_id) = _ctx.object_class_id(_this_obj) {
         if class_id == JSObjectClassEnum::Array as u32 {
-            let is_index = {
-                let bytes = _str.as_bytes();
-                if bytes.is_empty() {
-                    false
-                } else {
-                    let mut value: u32 = 0;
-                    let mut ok = true;
-                    for &b in bytes {
-                        if b < b'0' || b > b'9' {
-                            ok = false;
-                            break;
+            // Fast path: names starting with a letter, '_', or '$' can never be
+            // numeric indices — skip all digit-parsing and NaN/Infinity checks.
+            let first = _str.as_bytes().first().copied().unwrap_or(0);
+            let starts_alpha = first.is_ascii_alphabetic() || first == b'_' || first == b'$';
+            if !starts_alpha {
+                let is_index = {
+                    let bytes = _str.as_bytes();
+                    if bytes.is_empty() {
+                        false
+                    } else {
+                        let mut value: u32 = 0;
+                        let mut ok = true;
+                        for &b in bytes {
+                            if b < b'0' || b > b'9' {
+                                ok = false;
+                                break;
+                            }
+                            let digit = (b - b'0') as u32;
+                            if let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+                                value = next;
+                            } else {
+                                ok = false;
+                                break;
+                            }
                         }
-                        let digit = (b - b'0') as u32;
-                        if let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
-                            value = next;
-                        } else {
-                            ok = false;
-                            break;
-                        }
+                        ok
                     }
-                    ok
-                }
-            };
-            let is_special = _str == "length" || _str.starts_with("__get__") || _str.starts_with("__set__");
-            if !is_index && !is_special {
-                let trimmed = _str.trim();
-                let is_numeric_like = if trimmed.is_empty() {
-                    false
-                } else if trimmed == "NaN" {
-                    true
-                } else if trimmed == "Infinity" || trimmed == "+Infinity" || trimmed == "-Infinity" {
-                    true
-                } else {
-                    trimmed.parse::<f64>().is_ok()
                 };
-                if is_numeric_like {
-                    return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid array property");
+                let is_special = _str == "length" || _str.starts_with("__get__") || _str.starts_with("__set__");
+                if !is_index && !is_special {
+                    let trimmed = _str.trim();
+                    let is_numeric_like = if trimmed.is_empty() {
+                        false
+                    } else if trimmed == "NaN" {
+                        true
+                    } else if trimmed == "Infinity" || trimmed == "+Infinity" || trimmed == "-Infinity" {
+                        true
+                    } else {
+                        trimmed.parse::<f64>().is_ok()
+                    };
+                    if is_numeric_like {
+                        return js_throw_error(_ctx, JSObjectClassEnum::TypeError, "invalid array property");
+                    }
                 }
             }
         }
