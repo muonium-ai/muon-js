@@ -1,6 +1,37 @@
 # Performance notes
 
-## Latest benchmark run (2026-02-22 18:55)
+## Latest benchmark run (2026-03-12) — best-of-5
+
+### Redis vs mini-redis (pipelined throughput)
+
+Command:
+```
+make perf-benchmark PERF_BENCH_RUNS=5
+# redis-benchmark -c 50 -n 1,000,000 -P 16 --csv  (best of 5 runs per server)
+```
+
+| Test | mini-redis RPS | Redis RPS | mini/redis |
+|------|---------------:|----------:|:----------:|
+| GET   | 2,061,856 | 1,992,032 | **1.04×** |
+| SET   | 1,355,014 | 1,592,357 | 0.85× ⚠ |
+| INCR  | 2,164,502 | 1,883,239 | **1.15×** |
+| LPUSH | 2,024,292 | 1,582,278 | **1.28×** |
+| RPUSH | 2,016,129 | 1,721,170 | **1.17×** |
+| LPOP  | 2,079,002 | 1,519,757 | **1.37×** |
+| RPOP  | 2,036,660 | 1,636,661 | **1.24×** |
+| SADD  | 2,183,406 | 1,757,469 | **1.24×** |
+| HSET  | 1,259,446 | 1,572,327 | 0.80× ⚠ |
+
+7/9 ops at parity or faster. SET and HSET are regressions under pipelined write load.
+Comparison saved to `tmp/benchmark_comparison_20260312_093445.txt`.
+
+### Parity
+
+`tests/mini_redis_parity.py` against Redis 8.6.1: **121/121 tests pass**.
+
+---
+
+## Previous benchmark run (2026-02-22 18:55)
 
 ### Redis vs mini-redis (pipelined)
 
