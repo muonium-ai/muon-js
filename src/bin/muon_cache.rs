@@ -3,6 +3,11 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "muoncache")]
+const MUONCACHE_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/MUONCACHE_VERSION"));
+#[cfg(feature = "muoncache")]
+const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(feature = "muoncache")]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     use std::env;
@@ -17,6 +22,12 @@ async fn main() -> std::io::Result<()> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--version" | "-V" => {
+                println!("muoncache {}", MUONCACHE_VERSION.trim());
+                println!("muonjs {}", muon_js::MUONJS_VERSION.trim());
+                println!("cargo {}", CARGO_VERSION);
+                return Ok(());
+            }
             "--bind" => {
                 if let Some(v) = args.next() {
                     bind = v;

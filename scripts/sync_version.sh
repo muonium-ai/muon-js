@@ -16,3 +16,10 @@ if [ -z "$version" ]; then
 fi
 
 perl -0pi -e "s/^version = \"[^\"]+\"/version = \"$version\"/m" "$TOML_FILE"
+
+# Validate separate version files exist (used at compile time via include_str!)
+for vf in MUONJS_VERSION MUONCACHE_VERSION; do
+  if [ ! -f "$vf" ]; then
+    echo "Warning: $vf not found" >&2
+  fi
+done

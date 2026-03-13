@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build muonjs
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --bin muonjs
+          else
+            cargo build --release --target ${{ matrix.target }} --bin muonjs
+          fi
+
+      - name: Build muoncache
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
+          else
+            cargo build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
+          fi
+
+      - name: Strip binaries (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" != "true" ]; then
+            strip target/${{ matrix.target }}/release/muonjs
+            strip target/${{ matrix.target }}/release/muon_cache
+          fi
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          STAGING="muonjs-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp target/${{ matrix.target }}/release/muonjs "$STAGING/"
+          cp target/${{ matrix.target }}/release/muon_cache "$STAGING/muoncache"
+          cp LICENSE README.md "$STAGING/" 2>/dev/null || true
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
+          echo "ASSET_SHA=${STAGING}.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          STAGING="muonjs-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp target/${{ matrix.target }}/release/muonjs.exe "$STAGING/"
+          cp target/${{ matrix.target }}/release/muon_cache.exe "$STAGING/muoncache.exe"
+          cp LICENSE README.md "$STAGING/" 2>/dev/null || true
+          7z a "${STAGING}.zip" "$STAGING"
+          shasum -a 256 "${STAGING}.zip" > "${STAGING}.zip.sha256"
+          echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
+          echo "ASSET_SHA=${STAGING}.zip.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_SHA }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create checksums file
+        run: |
+          cd artifacts
+          cat *.sha256 > ../checksums-v${{ steps.version.outputs.version }}.sha256
+          cd ..
+          cp artifacts/*.tar.gz artifacts/*.zip . 2>/dev/null || true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            *.tar.gz
+            *.zip
+            *.sha256

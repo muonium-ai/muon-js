@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
+.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
 
 MUON_CACHE_HOST ?= 127.0.0.1
 MUON_CACHE_PORT ?= 6379
@@ -89,7 +89,17 @@ test-mquickjs-detailed: release
 test-all: test test-integration test-mquickjs-detailed
 
 release: sync-version
-	$(CARGO) build --release
+	$(CARGO) build --release --bin muonjs
+	$(CARGO) build --release --features muoncache --bin muon_cache
+
+RELEASE_TARGETS ?= x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-msvc
+
+release-all: sync-version
+	@for target in $(RELEASE_TARGETS); do \
+		echo "Building for $$target ..."; \
+		cross build --release --target $$target --bin muonjs; \
+		cross build --release --target $$target --features muoncache --bin muon_cache; \
+	done
 
 web-demo-wasm: sync-version
 	$(MAKE) -C $(WEB_DEMO_DIR) wasm

@@ -1,5 +1,8 @@
 //! Muon JS: a native Rust port of MQuickJS (not a wrapper).
 
+/// MuonJS runtime version (from MUONJS_VERSION file).
+pub const MUONJS_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/MUONJS_VERSION"));
+
 mod helpers;
 mod json;
 mod evals;
