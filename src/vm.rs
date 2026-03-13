@@ -230,23 +230,52 @@ impl VM {
                 OpCode::Div => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, an / bn));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        if bi != 0 && ai % bi == 0 {
+                            stack.push(JSValue::from_int32(ai / bi));
+                        } else {
+                            stack.push(crate::helpers::number_to_value(ctx, ai as f64 / bi as f64));
+                        }
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, an / bn));
+                    }
                 }
 
                 OpCode::Mod => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, an % bn));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        if bi != 0 {
+                            stack.push(JSValue::from_int32(ai % bi));
+                        } else {
+                            stack.push(crate::helpers::number_to_value(ctx, f64::NAN));
+                        }
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, an % bn));
+                    }
                 }
 
                 OpCode::Neg => {
                     let v = pop!(stack, ctx);
-                    let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, -n));
+                    if v.is_int() {
+                        let n = v.int32().unwrap_or(0);
+                        if n == i32::MIN {
+                            stack.push(crate::helpers::number_to_value(ctx, -(n as f64)));
+                        } else {
+                            stack.push(JSValue::from_int32(-n));
+                        }
+                    } else {
+                        let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, -n));
+                    }
                 }
 
                 OpCode::Eq => {
@@ -594,8 +623,12 @@ impl VM {
 
                 OpCode::ToNumber => {
                     let v = pop!(stack, ctx);
-                    let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
-                    stack.push(crate::helpers::number_to_value(ctx, n));
+                    if v.is_int() {
+                        stack.push(v);
+                    } else {
+                        let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
+                        stack.push(crate::helpers::number_to_value(ctx, n));
+                    }
                 }
 
                 OpCode::Typeof => {
@@ -623,62 +656,89 @@ impl VM {
                 OpCode::BitAnd => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = (an as i32) & (bn as i32);
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::from_int32(a.int32().unwrap_or(0) & b.int32().unwrap_or(0)));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32((an as i32) & (bn as i32)));
+                    }
                 }
 
                 OpCode::BitOr => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = (an as i32) | (bn as i32);
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::from_int32(a.int32().unwrap_or(0) | b.int32().unwrap_or(0)));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32((an as i32) | (bn as i32)));
+                    }
                 }
 
                 OpCode::BitXor => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = (an as i32) ^ (bn as i32);
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        stack.push(JSValue::from_int32(a.int32().unwrap_or(0) ^ b.int32().unwrap_or(0)));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32((an as i32) ^ (bn as i32)));
+                    }
                 }
 
                 OpCode::Shl => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = (an as i32) << ((bn as u32) & 31);
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        stack.push(JSValue::from_int32(ai << ((bi as u32) & 31)));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32((an as i32) << ((bn as u32) & 31)));
+                    }
                 }
 
                 OpCode::Shr => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = (an as i32) >> ((bn as u32) & 31);
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        stack.push(JSValue::from_int32(ai >> ((bi as u32) & 31)));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32((an as i32) >> ((bn as u32) & 31)));
+                    }
                 }
 
                 OpCode::UShr => {
                     let b = pop!(stack, ctx);
                     let a = pop!(stack, ctx);
-                    let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
-                    let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
-                    let result = ((an as u32) >> ((bn as u32) & 31)) as i32;
-                    stack.push(JSValue::from_int32(result));
+                    if a.is_int() && b.is_int() {
+                        let ai = a.int32().unwrap_or(0);
+                        let bi = b.int32().unwrap_or(0);
+                        stack.push(JSValue::from_int32(((ai as u32) >> ((bi as u32) & 31)) as i32));
+                    } else {
+                        let an = match js_to_number(ctx, a) { Ok(n) => n, Err(e) => return e };
+                        let bn = match js_to_number(ctx, b) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32(((an as u32) >> ((bn as u32) & 31)) as i32));
+                    }
                 }
 
                 OpCode::BitNot => {
                     let v = pop!(stack, ctx);
-                    let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
-                    let result = !(n as i32);
-                    stack.push(JSValue::from_int32(result));
+                    if v.is_int() {
+                        stack.push(JSValue::from_int32(!(v.int32().unwrap_or(0))));
+                    } else {
+                        let n = match js_to_number(ctx, v) { Ok(n) => n, Err(e) => return e };
+                        stack.push(JSValue::from_int32(!(n as i32)));
+                    }
                 }
 
                 OpCode::Return => {
@@ -727,14 +787,15 @@ fn copy_string_bytes(ctx: &mut JSContextImpl, val: JSValue) -> KeyBuf {
 
 /// Loose equality (==) for the VM.
 fn vm_loose_eq(ctx: &mut JSContextImpl, a: JSValue, b: JSValue) -> bool {
+    // Fast path: identical bit patterns (same int, same ptr, same special)
+    if a.0 == b.0 {
+        return true;
+    }
     if (a.is_null() && b.is_undefined()) || (a.is_undefined() && b.is_null()) {
         return true;
     }
     if let (Some(la), Some(lb)) = (ctx.string_bytes(a), ctx.string_bytes(b)) {
         return la == lb;
-    }
-    if a.0 == b.0 {
-        return true;
     }
     let ln = js_to_number(ctx, a).ok();
     let rn = js_to_number(ctx, b).ok();
