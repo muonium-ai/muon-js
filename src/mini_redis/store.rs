@@ -63,11 +63,16 @@ pub enum Value {
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
 
-/// Per-shard storage bucket. Holds the data and expiry maps for a subset of keys.
+/// Wrapper that bundles a value with its optional expiry timestamp.
+struct Entry {
+    value: Value,
+    expires_at: Option<u64>,
+}
+
+/// Per-shard storage bucket. Holds the data map for a subset of keys.
 #[derive(Default)]
 struct Shard {
-    data: HashMap<Vec<u8>, Value>,
-    expires: HashMap<Vec<u8>, u64>,
+    data: HashMap<Vec<u8>, Entry>,
 }
 
 /// Thread-safe, internally-sharded key-value store.
@@ -112,12 +117,7 @@ impl Db {
 
 impl Shard {
     fn set(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
-        if let Some(ts) = expire_at_ms {
-            self.expires.insert(key.clone(), ts);
-        } else {
-            self.expires.remove(&key);
-        }
-        self.data.insert(key, value);
+        self.data.insert(key, Entry { value, expires_at: expire_at_ms });
     }
 
     fn set_with_expire_at(&mut self, key: Vec<u8>, value: Value, expire_at_ms: Option<u64>) {
@@ -125,9 +125,7 @@ impl Shard {
     }
 
     fn remove(&mut self, key: &[u8]) -> bool {
-        let existed = self.data.remove(key).is_some();
-        self.expires.remove(key);
-        existed
+        self.data.remove(key).is_some()
     }
 
     fn exists(&mut self, key: &[u8]) -> bool {
@@ -139,10 +137,11 @@ impl Shard {
     }
 
     fn ttl_ms(&mut self, key: &[u8]) -> Option<i64> {
-        if !self.data.contains_key(key) {
-            return None;
-        }
-        if let Some(&ts) = self.expires.get(key) {
+        let expires_at = match self.data.get(key) {
+            Some(entry) => entry.expires_at,
+            None => return None,
+        };
+        if let Some(ts) = expires_at {
             let now = now_ms();
             if ts <= now {
                 self.remove(key);
@@ -154,11 +153,12 @@ impl Shard {
     }
 
     fn set_expire_ms(&mut self, key: &[u8], ttl_ms: u64) -> bool {
-        if !self.data.contains_key(key) {
-            return false;
+        if let Some(entry) = self.data.get_mut(key) {
+            entry.expires_at = Some(now_ms().saturating_add(ttl_ms));
+            true
+        } else {
+            false
         }
-        self.expires.insert(key.to_vec(), now_ms().saturating_add(ttl_ms));
-        true
     }
 
     fn persist(&mut self, key: &[u8]) -> i64 {
@@ -166,8 +166,8 @@ impl Shard {
             self.remove(key);
             return 0;
         }
-        if self.data.contains_key(key) {
-            if self.expires.remove(key).is_some() {
+        if let Some(entry) = self.data.get_mut(key) {
+            if entry.expires_at.take().is_some() {
                 return 1;
             }
             return 0;
@@ -177,21 +177,19 @@ impl Shard {
 
     fn purge_expired_all(&mut self) {
         let now = now_ms();
-        let expired: Vec<Vec<u8>> = self.expires
-            .iter()
-            .filter_map(|(k, &ts)| if ts <= now { Some(k.clone()) } else { None })
-            .collect();
-        for key in expired {
-            self.remove(&key);
-        }
+        self.data.retain(|_, entry| {
+            match entry.expires_at {
+                Some(ts) if ts <= now => false,
+                _ => true,
+            }
+        });
     }
 
     fn snapshot_items(&mut self) -> Vec<(Vec<u8>, Value, Option<u64>)> {
         self.purge_expired_all();
         let mut out = Vec::with_capacity(self.data.len());
-        for (k, v) in self.data.iter() {
-            let exp = self.expires.get(k).copied();
-            out.push((k.clone(), v.clone(), exp));
+        for (k, entry) in self.data.iter() {
+            out.push((k.clone(), entry.value.clone(), entry.expires_at));
         }
         out
     }
@@ -221,7 +219,6 @@ impl Shard {
     fn flush(&mut self) -> usize {
         let count = self.data.len();
         self.data.clear();
-        self.expires.clear();
         count
     }
 
@@ -230,7 +227,7 @@ impl Shard {
             self.remove(key);
             return None;
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::String(_)) | Some(Value::Int(_)) => Some("string"),
             Some(Value::List(_)) => Some("list"),
             Some(Value::Set(_)) => Some("set"),
@@ -366,7 +363,7 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::List(list) => {
                     if left {
                         for value in values {
@@ -393,7 +390,7 @@ impl Shard {
             }
         }
         let len = list.len() as i64;
-        self.data.insert(key.to_vec(), Value::List(list));
+        self.data.insert(key.to_vec(), Entry { value: Value::List(list), expires_at: None });
         Ok(len)
     }
 
@@ -402,7 +399,7 @@ impl Shard {
             self.remove(key);
         }
         let entry = self.data.get_mut(key);
-        match entry {
+        match entry.map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 let out = if list.is_empty() {
                     None
@@ -413,7 +410,6 @@ impl Shard {
                 };
                 if list.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(out)
             }
@@ -426,7 +422,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
                 if len == 0 {
@@ -483,7 +479,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::List(list)) => Ok(list.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
@@ -494,7 +490,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
                 let idx = if index < 0 { len + index } else { index };
@@ -512,7 +508,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
                 let idx = if index < 0 { len + index } else { index };
@@ -533,7 +529,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 let pos = list.iter().position(|v| v.as_ref() == pivot);
                 match pos {
@@ -554,7 +550,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 let mut removed = 0i64;
                 if count == 0 {
@@ -588,7 +584,6 @@ impl Shard {
                 }
                 if list.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(removed)
             }
@@ -602,7 +597,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 if left {
                     for value in values {
@@ -625,7 +620,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::List(list)) => {
                 let len = list.len() as i64;
                 let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
@@ -639,7 +634,6 @@ impl Shard {
                 }
                 if list.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(())
             }
@@ -655,7 +649,7 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Hash(map) => {
                     let field_key: Arc<[u8]> = Arc::from(field);
                     let current = match map.get(&field_key) {
@@ -676,7 +670,7 @@ impl Shard {
         let new_val = delta;
         let mut map = new_fnv_map_with_capacity(1);
         map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
-        self.data.insert(key.to_vec(), Value::Hash(map));
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
         Ok(new_val)
     }
 
@@ -687,12 +681,12 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Hash(map) => {
-                    use std::collections::hash_map::Entry;
+                    use std::collections::hash_map::Entry as HEntry;
                     match map.entry(field) {
-                        Entry::Occupied(_) => Ok(false),
-                        Entry::Vacant(e) => {
+                        HEntry::Occupied(_) => Ok(false),
+                        HEntry::Vacant(e) => {
                             e.insert(value);
                             Ok(true)
                         }
@@ -703,7 +697,7 @@ impl Shard {
         }
         let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
-        self.data.insert(key.to_vec(), Value::Hash(map));
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
         Ok(true)
     }
 
@@ -714,7 +708,7 @@ impl Shard {
             if self.is_expired(key) {
                 self.remove(key);
             }
-            match self.data.get(key) {
+            match self.data.get(key).map(|e| &e.value) {
                 Some(Value::Set(set)) => {
                     for member in set {
                         result.insert(member.clone());
@@ -740,7 +734,7 @@ impl Shard {
         }
         // Find the smallest set (optimization) and intersect
         let first_key = keys[0];
-        let first_set = match self.data.get(first_key) {
+        let first_set = match self.data.get(first_key).map(|e| &e.value) {
             Some(Value::Set(set)) => set,
             Some(_) => return Err(()),
             None => return Ok(Vec::new()), // empty intersection
@@ -748,7 +742,7 @@ impl Shard {
         let mut result: Vec<Arc<[u8]>> = Vec::new();
         'outer: for member in first_set.iter() {
             for &key in &keys[1..] {
-                match self.data.get(key) {
+                match self.data.get(key).map(|e| &e.value) {
                     Some(Value::Set(set)) => {
                         if !set.contains(member.as_ref()) {
                             continue 'outer;
@@ -768,7 +762,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Stream(items)) => Ok(items.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
@@ -780,7 +774,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Stream(items)) => {
                 // For XREVRANGE, start is the higher ID and end is the lower ID
                 // "+" means max, "-" means min
@@ -801,7 +795,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::Stream(items)) => {
                 let before = items.len();
                 items.retain(|(id, _)| !ids.contains(&id.as_str()));
@@ -816,7 +810,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::String(val)) => Ok(Some(val.clone())),
             Some(Value::Int(n)) => {
                 // Serialize integer to bytes on read
@@ -845,7 +839,7 @@ impl Shard {
         if self.data.contains_key(&key) {
             return Ok(false);
         }
-        self.data.insert(key, Value::String(value));
+        self.data.insert(key, Entry { value: Value::String(value), expires_at: None });
         Ok(true)
     }
 
@@ -853,7 +847,7 @@ impl Shard {
         if self.is_expired(&key) {
             self.remove(&key);
         }
-        match self.data.get_mut(&key) {
+        match self.data.get_mut(&key).map(|e| &mut e.value) {
             Some(Value::String(buf)) => {
                 let mut v = Vec::with_capacity(buf.len() + value.len());
                 v.extend_from_slice(buf);
@@ -874,7 +868,7 @@ impl Shard {
             }
             Some(_) => Err(()),
             None => {
-                self.data.insert(key.clone(), Value::String(Arc::from(value)));
+                self.data.insert(key.clone(), Entry { value: Value::String(Arc::from(value)), expires_at: None });
                 Ok(value.len() as i64)
             }
         }
@@ -884,7 +878,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(entry @ Value::Int(_)) => {
                 // Fast path — zero allocation
                 if let Value::Int(n) = entry {
@@ -908,7 +902,7 @@ impl Shard {
             }
             Some(_) => Err(()),
             None => {
-                self.data.insert(key.to_vec(), Value::Int(delta));
+                self.data.insert(key.to_vec(), Entry { value: Value::Int(delta), expires_at: None });
                 Ok(delta)
             }
         }
@@ -920,14 +914,14 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Hash(map) => Ok(map.insert(field, value).is_none()),
                 _ => Err(()),
             };
         }
         let mut map = new_fnv_map_with_capacity(1);
         map.insert(field, value);
-        self.data.insert(key.to_vec(), Value::Hash(map));
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
         Ok(true)
     }
 
@@ -939,7 +933,7 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Hash(map) => {
                     if let Some(slot) = map.get_mut(field.as_ref()) {
                         *slot = Arc::clone(value);
@@ -954,7 +948,7 @@ impl Shard {
         }
         let mut map = new_fnv_map_with_capacity(1);
         map.insert(Arc::clone(field), Arc::clone(value));
-        self.data.insert(key.to_vec(), Value::Hash(map));
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
         Ok(true)
     }
 
@@ -965,14 +959,14 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Hash(map) => Ok(map.insert(Arc::from(field), Arc::from(value)).is_none()),
                 _ => Err(()),
             };
         }
         let mut map = new_fnv_map_with_capacity(1);
         map.insert(Arc::from(field), Arc::from(value));
-        self.data.insert(key.to_vec(), Value::Hash(map));
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
         Ok(true)
     }
 
@@ -981,7 +975,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Hash(map)) => Ok(map.get(field).cloned()),
             Some(_) => Err(()),
             None => Ok(None),
@@ -992,7 +986,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::Hash(map)) => {
                 let mut removed = 0;
                 for field in fields {
@@ -1002,7 +996,6 @@ impl Shard {
                 }
                 if map.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(removed)
             }
@@ -1015,7 +1008,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Hash(map)) => Ok(map.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
@@ -1026,7 +1019,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Hash(map)) => Ok(map.contains_key(field)),
             Some(_) => Err(()),
             None => Ok(false),
@@ -1037,7 +1030,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Hash(map)) => {
                 let mut out = Vec::with_capacity(map.len() * 2);
                 for (field, value) in map.iter() {
@@ -1055,7 +1048,7 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Set(set) => {
                     let mut added = 0;
                     for member in members {
@@ -1075,7 +1068,7 @@ impl Shard {
                 added += 1;
             }
         }
-        self.data.insert(key.to_vec(), Value::Set(set));
+        self.data.insert(key.to_vec(), Entry { value: Value::Set(set), expires_at: None });
         Ok(added)
     }
 
@@ -1085,7 +1078,7 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Set(set) => {
                     if set.contains(member) {
                         Ok(0)
@@ -1099,7 +1092,7 @@ impl Shard {
         }
         let mut set = HashSet::new();
         set.insert(Arc::from(member));
-        self.data.insert(key.to_vec(), Value::Set(set));
+        self.data.insert(key.to_vec(), Entry { value: Value::Set(set), expires_at: None });
         Ok(1)
     }
 
@@ -1107,7 +1100,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::Set(set)) => {
                 let mut removed = 0;
                 for member in members {
@@ -1117,7 +1110,6 @@ impl Shard {
                 }
                 if set.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(removed)
             }
@@ -1130,7 +1122,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Set(set)) => Ok(set.iter().cloned().collect()),
             Some(_) => Err(()),
             None => Ok(Vec::new()),
@@ -1141,7 +1133,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Set(set)) => Ok(set.contains(member)),
             Some(_) => Err(()),
             None => Ok(false),
@@ -1152,7 +1144,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Set(set)) => Ok(set.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
@@ -1166,7 +1158,7 @@ impl Shard {
         if self.is_expired(dest) {
             self.remove(dest);
         }
-        let remove_result = match self.data.get_mut(source) {
+        let remove_result = match self.data.get_mut(source).map(|e| &mut e.value) {
             Some(Value::Set(set)) => set.remove(member),
             Some(_) => return Err(()),
             None => return Ok(false),
@@ -1174,14 +1166,15 @@ impl Shard {
         if !remove_result {
             return Ok(false);
         }
-        if let Some(Value::Set(set)) = self.data.get(source) {
-            if set.is_empty() {
-                self.data.remove(source);
-                self.expires.remove(source);
+        if let Some(entry) = self.data.get(source) {
+            if let Value::Set(set) = &entry.value {
+                if set.is_empty() {
+                    self.data.remove(source);
+                }
             }
         }
         if let Some(entry) = self.data.get_mut(dest) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Set(set) => {
                     set.insert(Arc::from(member));
                     Ok(true)
@@ -1191,7 +1184,7 @@ impl Shard {
         }
         let mut set = HashSet::new();
         set.insert(Arc::from(member));
-        self.data.insert(dest.to_vec(), Value::Set(set));
+        self.data.insert(dest.to_vec(), Entry { value: Value::Set(set), expires_at: None });
         Ok(true)
     }
 
@@ -1200,14 +1193,14 @@ impl Shard {
             self.remove(key);
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::ZSet(items) => Ok(items.insert(member, score).is_none()),
                 _ => Err(()),
             };
         }
         let mut items = HashMap::new();
         items.insert(member, score);
-        self.data.insert(key.to_vec(), Value::ZSet(items));
+        self.data.insert(key.to_vec(), Entry { value: Value::ZSet(items), expires_at: None });
         Ok(true)
     }
 
@@ -1215,7 +1208,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get_mut(key) {
+        match self.data.get_mut(key).map(|e| &mut e.value) {
             Some(Value::ZSet(items)) => {
                 let mut removed = 0i64;
                 for member in members {
@@ -1225,7 +1218,6 @@ impl Shard {
                 }
                 if items.is_empty() {
                     self.data.remove(key);
-                    self.expires.remove(key);
                 }
                 Ok(removed)
             }
@@ -1238,7 +1230,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::ZSet(items)) => Ok(items.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
@@ -1249,7 +1241,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::ZSet(items)) => {
                 if items.is_empty() {
                     return Ok(Vec::new());
@@ -1300,7 +1292,7 @@ impl Shard {
             return Err(());
         }
         if let Some(entry) = self.data.get_mut(key) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Stream(items) => {
                     let next_id = format!("{}-0", items.len() + 1);
                     items.push((next_id.clone(), fields));
@@ -1311,7 +1303,7 @@ impl Shard {
         }
         let next_id = "1-0".to_string();
         self.data
-            .insert(key.to_vec(), Value::Stream(vec![(next_id.clone(), fields)]));
+            .insert(key.to_vec(), Entry { value: Value::Stream(vec![(next_id.clone(), fields)]), expires_at: None });
         Ok(next_id)
     }
 
@@ -1319,7 +1311,7 @@ impl Shard {
         if self.is_expired(key) {
             self.remove(key);
         }
-        match self.data.get(key) {
+        match self.data.get(key).map(|e| &e.value) {
             Some(Value::Stream(items)) => {
                 if start == "-" && end == "+" {
                     return Ok(items.clone());
@@ -1333,11 +1325,10 @@ impl Shard {
 
     #[inline]
     fn is_expired(&self, key: &[u8]) -> bool {
-        if self.expires.is_empty() {
-            return false;
-        }
-        if let Some(&ts) = self.expires.get(key) {
-            return ts <= now_ms();
+        if let Some(entry) = self.data.get(key) {
+            if let Some(ts) = entry.expires_at {
+                return ts <= now_ms();
+            }
         }
         false
     }
@@ -1575,20 +1566,21 @@ impl Db {
         // Inline cross-shard move: remove from source shard, add in dest shard.
         if src.is_expired(source) { src.remove(source); }
         if dst.is_expired(dest) { dst.remove(dest); }
-        let removed = match src.data.get_mut(source) {
+        let removed = match src.data.get_mut(source).map(|e| &mut e.value) {
             Some(Value::Set(set)) => set.remove(member),
             Some(_) => return Err(()),
             None => return Ok(false),
         };
         if !removed { return Ok(false); }
-        if let Some(Value::Set(set)) = src.data.get(source) {
-            if set.is_empty() {
-                src.data.remove(source);
-                src.expires.remove(source);
+        if let Some(entry) = src.data.get(source) {
+            if let Value::Set(set) = &entry.value {
+                if set.is_empty() {
+                    src.data.remove(source);
+                }
             }
         }
         if let Some(entry) = dst.data.get_mut(dest) {
-            return match entry {
+            return match &mut entry.value {
                 Value::Set(set) => {
                     set.insert(Arc::from(member));
                     Ok(true)
@@ -1598,7 +1590,7 @@ impl Db {
         }
         let mut set = HashSet::new();
         set.insert(Arc::from(member));
-        dst.data.insert(dest.to_vec(), Value::Set(set));
+        dst.data.insert(dest.to_vec(), Entry { value: Value::Set(set), expires_at: None });
         Ok(true)
     }
 
