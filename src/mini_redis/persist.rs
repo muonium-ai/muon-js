@@ -478,7 +478,7 @@ async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resul
 }
 
 #[cfg(feature = "mini-redis-libsql")]
-async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<crate::mini_redis::store::FnvHashMap<std::sync::Arc<[u8]>, std::sync::Arc<[u8]>>> {
+async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<crate::mini_redis::store::HashStore> {
     let mut rows = conn
         .query("SELECT field, value FROM hash_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
         .await
@@ -489,7 +489,7 @@ async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
         let value: Vec<u8> = row.get(1).map_err(to_io)?;
         out.insert(std::sync::Arc::from(field), std::sync::Arc::from(value));
     }
-    Ok(out)
+    Ok(crate::mini_redis::store::HashStore::Map(out))
 }
 
 #[cfg(feature = "mini-redis-libsql")]

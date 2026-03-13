@@ -116,6 +116,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     });
     loop {
         let (stream, _) = listener.accept().await?;
+        let _ = stream.set_nodelay(true);
         let state = state.clone();
         let dbs_state = dbs_state.clone();
         let persist_state = persist_state.clone();
@@ -238,6 +239,28 @@ async fn handle_client(
             FastResponse::Value(handle_subscribe(&pubsub_state, &pub_tx, &args[1..]).await)
         } else if cmd == "PUBLISH" {
             FastResponse::Value(handle_publish(&pubsub_state, &args[1..]).await)
+        // ── Fast paths for the most common pipelined commands ────────────
+        } else if cmd == "SET" && args.len() == 3 && !in_multi && no_persist {
+            let db = &dbs_state[current_db];
+            db.set_string_ref(args[1].as_ref(), Arc::clone(&args[2]), None);
+            FastResponse::Value(RespValue::StaticSimple("OK"))
+        } else if cmd == "GET" && args.len() == 2 && !in_multi {
+            let db = &dbs_state[current_db];
+            match db.get_string(args[1].as_ref()) {
+                Ok(Some(v)) => FastResponse::Value(RespValue::Blob(v)),
+                Ok(None) => FastResponse::Value(RespValue::Null),
+                Err(_) => FastResponse::Value(RespValue::StaticError(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                )),
+            }
+        } else if cmd == "HSET" && args.len() == 4 && !in_multi && no_persist {
+            let db = &dbs_state[current_db];
+            match db.hash_set_ref(args[1].as_ref(), &args[2], &args[3]) {
+                Ok(is_new) => FastResponse::Value(RespValue::Integer(if is_new { 1 } else { 0 })),
+                Err(_) => FastResponse::Value(RespValue::StaticError(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                )),
+            }
         } else if cmd == "LRANGE" && !in_multi {
             match handle_lrange_fast(&dbs_state, &mut current_db, &args[1..]).await {
                 Ok(items) => FastResponse::BlobArray(items),
@@ -654,13 +677,14 @@ fn handle_command(
 ) -> RespValue {
     let _ = (state, db_count);
     // Per-group handlers: each returns Some(RespValue) when the command is theirs.
+    // key_cmds first: SET/DEL/EXISTS are the most common write commands.
+    if let Some(r) = cmd_handlers::key_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::string_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::hash_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::list_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::set_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::zset_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
     if let Some(r) = cmd_handlers::stream_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
-    if let Some(r) = cmd_handlers::key_cmds(db, cmd, args, persist_state, *db_index, skip_aof) { return r; }
 
     // Remaining commands handled inline (no-db / meta / async-context stubs).
     // PING, ECHO, SELECT are handled by handle_no_db_command before reaching here.
