@@ -51,6 +51,146 @@ fn new_fnv_map_with_capacity<K, V>(cap: usize) -> FnvHashMap<K, V> {
     HashMap::with_capacity_and_hasher(cap, FnvBuildHasher)
 }
 
+// ---------------------------------------------------------------------------
+// Compact hash storage: Vec for small hashes, FnvHashMap for large ones.
+// Redis uses ziplist for small hashes; we use a flat Vec of pairs which has
+// excellent cache locality and avoids HashMap overhead for ≤8 fields.
+// ---------------------------------------------------------------------------
+
+const HASH_LINEAR_THRESHOLD: usize = 8;
+
+#[derive(Clone, Debug)]
+pub enum HashStore {
+    Linear(Vec<(Arc<[u8]>, Arc<[u8]>)>),
+    Map(FnvHashMap<Arc<[u8]>, Arc<[u8]>>),
+}
+
+impl HashStore {
+    #[inline]
+    fn with_single(field: Arc<[u8]>, value: Arc<[u8]>) -> Self {
+        Self::Linear(vec![(field, value)])
+    }
+
+    #[inline]
+    fn get(&self, field: &[u8]) -> Option<&Arc<[u8]>> {
+        match self {
+            Self::Linear(v) => v.iter().find(|(k, _)| k.as_ref() == field).map(|(_, v)| v),
+            Self::Map(m) => m.get(field),
+        }
+    }
+
+    #[inline]
+    fn get_mut(&mut self, field: &[u8]) -> Option<&mut Arc<[u8]>> {
+        match self {
+            Self::Linear(v) => v.iter_mut().find(|(k, _)| k.as_ref() == field).map(|(_, v)| v),
+            Self::Map(m) => m.get_mut(field),
+        }
+    }
+
+    /// Insert a field-value pair. Returns the old value if the field already existed.
+    #[inline]
+    fn insert(&mut self, field: Arc<[u8]>, value: Arc<[u8]>) -> Option<Arc<[u8]>> {
+        match self {
+            Self::Linear(v) => {
+                for (k, existing) in v.iter_mut() {
+                    if k.as_ref() == field.as_ref() {
+                        return Some(std::mem::replace(existing, value));
+                    }
+                }
+                if v.len() < HASH_LINEAR_THRESHOLD {
+                    v.push((field, value));
+                } else {
+                    // Promote to Map
+                    let mut map = new_fnv_map_with_capacity(v.len() + 1);
+                    for (k, val) in v.drain(..) {
+                        map.insert(k, val);
+                    }
+                    map.insert(field, value);
+                    *self = Self::Map(map);
+                }
+                None
+            }
+            Self::Map(m) => m.insert(field, value),
+        }
+    }
+
+    #[inline]
+    fn remove(&mut self, field: &[u8]) -> Option<Arc<[u8]>> {
+        match self {
+            Self::Linear(v) => {
+                if let Some(pos) = v.iter().position(|(k, _)| k.as_ref() == field) {
+                    Some(v.swap_remove(pos).1)
+                } else {
+                    None
+                }
+            }
+            Self::Map(m) => m.remove(field),
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Linear(v) => v.len(),
+            Self::Map(m) => m.len(),
+        }
+    }
+
+    #[inline]
+    fn contains_key(&self, field: &[u8]) -> bool {
+        match self {
+            Self::Linear(v) => v.iter().any(|(k, _)| k.as_ref() == field),
+            Self::Map(m) => m.contains_key(field),
+        }
+    }
+
+    #[inline]
+    fn keys(&self) -> HashStoreKeys<'_> {
+        match self {
+            Self::Linear(v) => HashStoreKeys::Linear(v.iter()),
+            Self::Map(m) => HashStoreKeys::Map(m.keys()),
+        }
+    }
+
+    #[inline]
+    fn iter(&self) -> HashStoreIter<'_> {
+        match self {
+            Self::Linear(v) => HashStoreIter::Linear(v.iter()),
+            Self::Map(m) => HashStoreIter::Map(m.iter()),
+        }
+    }
+}
+
+enum HashStoreKeys<'a> {
+    Linear(std::slice::Iter<'a, (Arc<[u8]>, Arc<[u8]>)>),
+    Map(std::collections::hash_map::Keys<'a, Arc<[u8]>, Arc<[u8]>>),
+}
+
+impl<'a> Iterator for HashStoreKeys<'a> {
+    type Item = &'a Arc<[u8]>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Linear(it) => it.next().map(|(k, _)| k),
+            Self::Map(it) => it.next(),
+        }
+    }
+}
+
+enum HashStoreIter<'a> {
+    Linear(std::slice::Iter<'a, (Arc<[u8]>, Arc<[u8]>)>),
+    Map(std::collections::hash_map::Iter<'a, Arc<[u8]>, Arc<[u8]>>),
+}
+
+impl<'a> Iterator for HashStoreIter<'a> {
+    type Item = (&'a Arc<[u8]>, &'a Arc<[u8]>);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Linear(it) => it.next().map(|(k, v)| (k, v)),
+            Self::Map(it) => it.next(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Value {
     String(Arc<[u8]>),
@@ -58,7 +198,7 @@ pub enum Value {
     Int(i64),
     List(VecDeque<Arc<[u8]>>),
     Set(HashSet<Arc<[u8]>>),
-    Hash(FnvHashMap<Arc<[u8]>, Arc<[u8]>>),
+    Hash(HashStore),
     ZSet(HashMap<Vec<u8>, f64>),
     Stream(Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>),
 }
@@ -650,9 +790,8 @@ impl Shard {
         }
         if let Some(entry) = self.data.get_mut(key) {
             return match &mut entry.value {
-                Value::Hash(map) => {
-                    let field_key: Arc<[u8]> = Arc::from(field);
-                    let current = match map.get(&field_key) {
+                Value::Hash(hs) => {
+                    let current = match hs.get(field) {
                         Some(val) => {
                             let s = std::str::from_utf8(val.as_ref()).map_err(|_| ())?;
                             s.parse::<i64>().map_err(|_| ())?
@@ -660,7 +799,8 @@ impl Shard {
                         None => 0,
                     };
                     let new_val = current.wrapping_add(delta);
-                    map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
+                    let field_key: Arc<[u8]> = Arc::from(field);
+                    hs.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
                     Ok(new_val)
                 }
                 _ => Err(()),
@@ -668,9 +808,7 @@ impl Shard {
         }
         let field_key: Arc<[u8]> = Arc::from(field);
         let new_val = delta;
-        let mut map = new_fnv_map_with_capacity(1);
-        map.insert(field_key, Arc::from(new_val.to_string().into_bytes()));
-        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(HashStore::with_single(field_key, Arc::from(new_val.to_string().into_bytes()))), expires_at: None });
         Ok(new_val)
     }
 
@@ -682,22 +820,18 @@ impl Shard {
         }
         if let Some(entry) = self.data.get_mut(key) {
             return match &mut entry.value {
-                Value::Hash(map) => {
-                    use std::collections::hash_map::Entry as HEntry;
-                    match map.entry(field) {
-                        HEntry::Occupied(_) => Ok(false),
-                        HEntry::Vacant(e) => {
-                            e.insert(value);
-                            Ok(true)
-                        }
+                Value::Hash(hs) => {
+                    if hs.contains_key(field.as_ref()) {
+                        Ok(false)
+                    } else {
+                        hs.insert(field, value);
+                        Ok(true)
                     }
                 }
                 _ => Err(()),
             };
         }
-        let mut map = new_fnv_map_with_capacity(1);
-        map.insert(field, value);
-        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(HashStore::with_single(field, value)), expires_at: None });
         Ok(true)
     }
 
@@ -827,9 +961,20 @@ impl Shard {
         self.set(key, Value::String(value), expire_at_ms);
     }
 
+    /// SET from borrowed key — avoids key allocation when updating an existing key.
+    #[inline]
+    fn set_string_ref(&mut self, key: &[u8], value: Arc<[u8]>, expire_at_ms: Option<u64>) {
+        if let Some(entry) = self.data.get_mut(key) {
+            entry.value = Value::String(value);
+            entry.expires_at = expire_at_ms;
+        } else {
+            self.data.insert(key.to_vec(), Entry { value: Value::String(value), expires_at: expire_at_ms });
+        }
+    }
+
     /// SET from borrowed slices — avoids caller needing pre-allocated Vec/Arc.
     fn set_string_from_slices(&mut self, key: &[u8], value: &[u8], expire_at_ms: Option<u64>) {
-        self.set(key.to_vec(), Value::String(Arc::from(value)), expire_at_ms);
+        self.set_string_ref(key, Arc::from(value), expire_at_ms);
     }
 
     fn set_nx(&mut self, key: Vec<u8>, value: Arc<[u8]>) -> Result<bool, ()> {
@@ -910,63 +1055,65 @@ impl Shard {
 
     #[inline]
     fn hash_set(&mut self, key: &[u8], field: Arc<[u8]>, value: Arc<[u8]>) -> Result<bool, ()> {
-        if self.is_expired(key) {
-            self.remove(key);
-        }
         if let Some(entry) = self.data.get_mut(key) {
+            if entry.expires_at.map_or(false, |ts| ts <= now_ms()) {
+                entry.value = Value::Hash(HashStore::with_single(field, value));
+                entry.expires_at = None;
+                return Ok(true);
+            }
             return match &mut entry.value {
-                Value::Hash(map) => Ok(map.insert(field, value).is_none()),
+                Value::Hash(hs) => Ok(hs.insert(field, value).is_none()),
                 _ => Err(()),
             };
         }
-        let mut map = new_fnv_map_with_capacity(1);
-        map.insert(field, value);
-        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(HashStore::with_single(field, value)), expires_at: None });
         Ok(true)
     }
 
     /// Hash set path that borrows Arc arguments to avoid unnecessary field clones
     /// on updates where the field already exists.
+    /// Single outer HashMap lookup — inlines expiry check and overwrites in-place.
     #[inline]
     fn hash_set_ref(&mut self, key: &[u8], field: &Arc<[u8]>, value: &Arc<[u8]>) -> Result<bool, ()> {
-        if self.is_expired(key) {
-            self.remove(key);
-        }
         if let Some(entry) = self.data.get_mut(key) {
+            if entry.expires_at.map_or(false, |ts| ts <= now_ms()) {
+                entry.value = Value::Hash(HashStore::with_single(Arc::clone(field), Arc::clone(value)));
+                entry.expires_at = None;
+                return Ok(true);
+            }
             return match &mut entry.value {
-                Value::Hash(map) => {
-                    if let Some(slot) = map.get_mut(field.as_ref()) {
+                Value::Hash(hs) => {
+                    if let Some(slot) = hs.get_mut(field.as_ref()) {
                         *slot = Arc::clone(value);
                         Ok(false)
                     } else {
-                        map.insert(Arc::clone(field), Arc::clone(value));
+                        hs.insert(Arc::clone(field), Arc::clone(value));
                         Ok(true)
                     }
                 }
                 _ => Err(()),
             };
         }
-        let mut map = new_fnv_map_with_capacity(1);
-        map.insert(Arc::clone(field), Arc::clone(value));
-        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(HashStore::with_single(Arc::clone(field), Arc::clone(value))), expires_at: None });
         Ok(true)
     }
 
     /// Like hash_set but takes borrowed slices, avoiding Arc allocation overhead.
+    /// Single outer HashMap lookup — inlines expiry check and overwrites in-place.
     #[inline]
     fn hash_set_bytes(&mut self, key: &[u8], field: &[u8], value: &[u8]) -> Result<bool, ()> {
-        if self.is_expired(key) {
-            self.remove(key);
-        }
         if let Some(entry) = self.data.get_mut(key) {
+            if entry.expires_at.map_or(false, |ts| ts <= now_ms()) {
+                entry.value = Value::Hash(HashStore::with_single(Arc::from(field), Arc::from(value)));
+                entry.expires_at = None;
+                return Ok(true);
+            }
             return match &mut entry.value {
-                Value::Hash(map) => Ok(map.insert(Arc::from(field), Arc::from(value)).is_none()),
+                Value::Hash(hs) => Ok(hs.insert(Arc::from(field), Arc::from(value)).is_none()),
                 _ => Err(()),
             };
         }
-        let mut map = new_fnv_map_with_capacity(1);
-        map.insert(Arc::from(field), Arc::from(value));
-        self.data.insert(key.to_vec(), Entry { value: Value::Hash(map), expires_at: None });
+        self.data.insert(key.to_vec(), Entry { value: Value::Hash(HashStore::with_single(Arc::from(field), Arc::from(value))), expires_at: None });
         Ok(true)
     }
 
@@ -976,7 +1123,7 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get(key).map(|e| &e.value) {
-            Some(Value::Hash(map)) => Ok(map.get(field).cloned()),
+            Some(Value::Hash(hs)) => Ok(hs.get(field).cloned()),
             Some(_) => Err(()),
             None => Ok(None),
         }
@@ -987,14 +1134,14 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get_mut(key).map(|e| &mut e.value) {
-            Some(Value::Hash(map)) => {
+            Some(Value::Hash(hs)) => {
                 let mut removed = 0;
                 for field in fields {
-                    if map.remove(field.as_ref()).is_some() {
+                    if hs.remove(field.as_ref()).is_some() {
                         removed += 1;
                     }
                 }
-                if map.is_empty() {
+                if hs.len() == 0 {
                     self.data.remove(key);
                 }
                 Ok(removed)
@@ -1009,7 +1156,7 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get(key).map(|e| &e.value) {
-            Some(Value::Hash(map)) => Ok(map.len() as i64),
+            Some(Value::Hash(hs)) => Ok(hs.len() as i64),
             Some(_) => Err(()),
             None => Ok(0),
         }
@@ -1020,7 +1167,7 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get(key).map(|e| &e.value) {
-            Some(Value::Hash(map)) => Ok(map.contains_key(field)),
+            Some(Value::Hash(hs)) => Ok(hs.contains_key(field)),
             Some(_) => Err(()),
             None => Ok(false),
         }
@@ -1031,9 +1178,9 @@ impl Shard {
             self.remove(key);
         }
         match self.data.get(key).map(|e| &e.value) {
-            Some(Value::Hash(map)) => {
-                let mut out = Vec::with_capacity(map.len() * 2);
-                for (field, value) in map.iter() {
+            Some(Value::Hash(hs)) => {
+                let mut out = Vec::with_capacity(hs.len() * 2);
+                for (field, value) in hs.iter() {
                     out.push((field.clone(), value.clone()));
                 }
                 Ok(out)
@@ -1435,6 +1582,11 @@ impl Db {
 
     pub fn set_string(&self, key: Vec<u8>, value: Arc<[u8]>, expire_at_ms: Option<u64>) {
         self.shard(&key).set_string(key, value, expire_at_ms);
+    }
+
+    /// SET from borrowed key — avoids key allocation when updating an existing key.
+    pub fn set_string_ref(&self, key: &[u8], value: Arc<[u8]>, expire_at_ms: Option<u64>) {
+        self.shard(key).set_string_ref(key, value, expire_at_ms);
     }
 
     /// SET from borrowed slices — single shard lock, internal alloc only.

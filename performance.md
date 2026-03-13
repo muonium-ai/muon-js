@@ -1,6 +1,6 @@
 # Performance notes
 
-## Latest benchmark run (2026-03-12) — best-of-5
+## Latest benchmark run (2026-03-13) — best-of-5
 
 ### Redis vs mini-redis (pipelined throughput)
 
@@ -12,18 +12,19 @@ make perf-benchmark PERF_BENCH_RUNS=5
 
 | Test | mini-redis RPS | Redis RPS | mini/redis |
 |------|---------------:|----------:|:----------:|
-| GET   | 2,061,856 | 1,992,032 | **1.04×** |
-| SET   | 1,355,014 | 1,592,357 | 0.85× ⚠ |
-| INCR  | 2,164,502 | 1,883,239 | **1.15×** |
-| LPUSH | 2,024,292 | 1,582,278 | **1.28×** |
-| RPUSH | 2,016,129 | 1,721,170 | **1.17×** |
-| LPOP  | 2,079,002 | 1,519,757 | **1.37×** |
-| RPOP  | 2,036,660 | 1,636,661 | **1.24×** |
-| SADD  | 2,183,406 | 1,757,469 | **1.24×** |
-| HSET  | 1,259,446 | 1,572,327 | 0.80× ⚠ |
+| GET   | 1,984,127 | 1,980,198 | **1.00×** |
+| SET   | 1,499,250 | 1,582,278 | **0.95×** |
+| INCR  | 2,083,333 | 1,879,699 | **1.11×** |
+| LPUSH | 1,908,397 | 1,574,803 | **1.21×** |
+| RPUSH | 1,968,504 | 1,706,485 | **1.15×** |
+| LPOP  | 2,053,388 | 1,522,070 | **1.35×** |
+| RPOP  | 1,941,748 | 1,610,306 | **1.21×** |
+| SADD  | 1,930,502 | 1,736,111 | **1.11×** |
+| HSET  | 1,398,602 | 1,577,287 | 0.89× ⚠ |
 
-7/9 ops at parity or faster. SET and HSET are regressions under pipelined write load.
-Comparison saved to `tmp/benchmark_comparison_20260312_093445.txt`.
+8/9 ops at parity or faster. HSET remains 11% below Redis under pipelined
+write load (improved from 0.80× to 0.89×). SET improved from 0.85× to 0.95×
+via `set_string_ref`, dispatch fast paths, compact `HashStore`, and TCP_NODELAY.
 
 ### Parity
 

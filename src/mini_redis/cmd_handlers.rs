@@ -998,14 +998,14 @@ pub(super) fn key_cmds(
         "SET" => {
             // Hot path: plain SET key value (redis-benchmark default).
             if args.len() == 2 {
-                db.set_string(args[0].as_ref().to_vec(), Arc::clone(&args[1]), None);
+                db.set_string_ref(args[0].as_ref(), Arc::clone(&args[1]), None);
                 log_cmd(persist_state, db_index, cmd, args, skip_aof);
                 RespValue::StaticSimple("OK")
             } else {
                 match parse_set_args(args) {
                     Ok((key, value, expire_ms)) => {
                         let expire_at = expire_ms.map(|ms| now_ms().saturating_add(ms));
-                        db.set_string(key.as_ref().to_vec(), value, expire_at);
+                        db.set_string_ref(key.as_ref(), value, expire_at);
                         log_cmd(persist_state, db_index, cmd, args, skip_aof);
                         RespValue::StaticSimple("OK")
                     }
