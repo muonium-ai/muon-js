@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-muonjs:
     strategy:
       matrix:
         include:
@@ -52,7 +52,7 @@ jobs:
       - name: Read version
         id: version
         shell: bash
-        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(tr -d '[:space:]' < MUONJS_VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Build muonjs
         shell: bash
@@ -63,23 +63,10 @@ jobs:
             cargo build --release --target ${{ matrix.target }} --bin muonjs
           fi
 
-      - name: Build muoncache
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows' && matrix.cross != true
         shell: bash
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
-          else
-            cargo build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
-          fi
-
-      - name: Strip binaries (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          if [ "${{ matrix.cross }}" != "true" ]; then
-            strip target/${{ matrix.target }}/release/muonjs
-            strip target/${{ matrix.target }}/release/muon_cache
-          fi
+        run: strip target/${{ matrix.target }}/release/muonjs
 
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
@@ -89,7 +76,6 @@ jobs:
           STAGING="muonjs-v${VERSION}-${{ matrix.target }}"
           mkdir -p "$STAGING"
           cp target/${{ matrix.target }}/release/muonjs "$STAGING/"
-          cp target/${{ matrix.target }}/release/muon_cache "$STAGING/muoncache"
           cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           tar czf "${STAGING}.tar.gz" "$STAGING"
           sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
@@ -104,6 +90,97 @@ jobs:
           STAGING="muonjs-v${VERSION}-${{ matrix.target }}"
           mkdir -p "$STAGING"
           cp target/${{ matrix.target }}/release/muonjs.exe "$STAGING/"
+          cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
+          7z a "${STAGING}.zip" "$STAGING"
+          sha256sum "${STAGING}.zip" > "${STAGING}.zip.sha256"
+          echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
+          echo "ASSET_SHA=${STAGING}.zip.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: muonjs-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_SHA }}
+
+  build-muoncache:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < MUONCACHE_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build muoncache
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
+          else
+            cargo build --release --target ${{ matrix.target }} --features muoncache --bin muon_cache
+          fi
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows' && matrix.cross != true
+        shell: bash
+        run: strip target/${{ matrix.target }}/release/muon_cache
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          STAGING="muoncache-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp target/${{ matrix.target }}/release/muon_cache "$STAGING/muoncache"
+          cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
+          echo "ASSET_SHA=${STAGING}.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          STAGING="muoncache-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
           cp target/${{ matrix.target }}/release/muon_cache.exe "$STAGING/muoncache.exe"
           cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           7z a "${STAGING}.zip" "$STAGING"
@@ -114,13 +191,13 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
+          name: muoncache-${{ matrix.target }}
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET_SHA }}
 
   release:
-    needs: build
+    needs: [build-muonjs, build-muoncache]
     runs-on: ubuntu-latest
 
     steps:
@@ -129,7 +206,7 @@ jobs:
 
       - name: Read version
         id: version
-        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
