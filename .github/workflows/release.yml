@@ -90,7 +90,7 @@ jobs:
           mkdir -p "$STAGING"
           cp target/${{ matrix.target }}/release/muonjs "$STAGING/"
           cp target/${{ matrix.target }}/release/muon_cache "$STAGING/muoncache"
-          cp LICENSE README.md "$STAGING/" 2>/dev/null || true
+          cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           tar czf "${STAGING}.tar.gz" "$STAGING"
           shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
           echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
@@ -105,7 +105,7 @@ jobs:
           mkdir -p "$STAGING"
           cp target/${{ matrix.target }}/release/muonjs.exe "$STAGING/"
           cp target/${{ matrix.target }}/release/muon_cache.exe "$STAGING/muoncache.exe"
-          cp LICENSE README.md "$STAGING/" 2>/dev/null || true
+          cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           7z a "${STAGING}.zip" "$STAGING"
           shasum -a 256 "${STAGING}.zip" > "${STAGING}.zip.sha256"
           echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
