@@ -5,7 +5,7 @@ use muon_js::{
 use std::fs;
 use std::io::Write;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/MUONJS_VERSION"));
 
 fn log_func(_opaque: *mut core::ffi::c_void, data: *const u8, len: usize) {
     let bytes = unsafe { std::slice::from_raw_parts(data, len) };
@@ -13,7 +13,7 @@ fn log_func(_opaque: *mut core::ffi::c_void, data: *const u8, len: usize) {
 }
 
 fn print_usage() {
-    eprintln!("muonjs {} — MuonJS JavaScript runtime", VERSION);
+    eprintln!("muonjs {} — MuonJS JavaScript runtime", VERSION.trim());
     eprintln!();
     eprintln!("Usage: muonjs [options] [file.js]");
     eprintln!();
@@ -93,7 +93,7 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "--version" | "-V" => {
-                println!("muonjs {}", VERSION);
+                println!("muonjs {}", VERSION.trim());
                 return;
             }
             "--help" | "-h" => {
