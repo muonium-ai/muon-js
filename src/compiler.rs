@@ -223,6 +223,52 @@ impl<'a> StmtCompiler<'a> {
 
     fn try_compile_inc_update(&mut self, update: &str) -> Result<bool, CompileError> {
         let update = update.trim();
+        // Handle i++ and i--
+        if update.len() >= 3 && update.ends_with("++") {
+            let name = update[..update.len() - 2].trim();
+            if is_valid_identifier(name) {
+                if let Some(slot) = self.find_local(name) {
+                    self.func.code.push(Instruction {
+                        op: OpCode::IncLocal, a: slot, b: 1u32, c: 0,
+                    });
+                    return Ok(true);
+                }
+            }
+        }
+        if update.len() >= 3 && update.ends_with("--") {
+            let name = update[..update.len() - 2].trim();
+            if is_valid_identifier(name) {
+                if let Some(slot) = self.find_local(name) {
+                    self.func.code.push(Instruction {
+                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32, c: 0,
+                    });
+                    return Ok(true);
+                }
+            }
+        }
+        // Handle ++i and --i
+        if update.len() >= 3 && update.starts_with("++") {
+            let name = update[2..].trim();
+            if is_valid_identifier(name) {
+                if let Some(slot) = self.find_local(name) {
+                    self.func.code.push(Instruction {
+                        op: OpCode::IncLocal, a: slot, b: 1u32, c: 0,
+                    });
+                    return Ok(true);
+                }
+            }
+        }
+        if update.len() >= 3 && update.starts_with("--") {
+            let name = update[2..].trim();
+            if is_valid_identifier(name) {
+                if let Some(slot) = self.find_local(name) {
+                    self.func.code.push(Instruction {
+                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32, c: 0,
+                    });
+                    return Ok(true);
+                }
+            }
+        }
         if let Some(pos) = update.find("+=") {
             let name = update[..pos].trim();
             let val_str = update[pos + 2..].trim();
@@ -233,6 +279,24 @@ impl<'a> StmtCompiler<'a> {
                             op: OpCode::IncLocal,
                             a: slot,
                             b: n as u32,
+                            c: 0,
+                        });
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // Handle i -= N (compile as IncLocal with negated amount)
+        if let Some(pos) = update.find("-=") {
+            let name = update[..pos].trim();
+            let val_str = update[pos + 2..].trim();
+            if is_valid_identifier(name) {
+                if let Some(slot) = self.find_local(name) {
+                    if let Ok(n) = val_str.parse::<i32>() {
+                        self.func.code.push(Instruction {
+                            op: OpCode::IncLocal,
+                            a: slot,
+                            b: (-n) as u32,
                             c: 0,
                         });
                         return Ok(true);
@@ -329,12 +393,26 @@ impl<'a> StmtCompiler<'a> {
 
     fn add_number_const(&mut self, n: f64) -> u32 {
         let value = number_to_value(self.ctx, n);
+        // Deduplicate: check if this exact value already exists (by bit pattern)
+        for (i, v) in self.func.constants.iter().enumerate() {
+            if v.0 == value.0 {
+                return i as u32;
+            }
+        }
         let idx = self.func.constants.len() as u32;
         self.func.constants.push(value);
         idx
     }
 
     fn add_string_const(&mut self, s: &str) -> u32 {
+        // Deduplicate: check if this exact string already exists
+        for (i, v) in self.func.constants.iter().enumerate() {
+            if let Some(bytes) = self.ctx.string_bytes(*v) {
+                if bytes == s.as_bytes() {
+                    return i as u32;
+                }
+            }
+        }
         let value = crate::api::js_new_string(self.ctx, s);
         let idx = self.func.constants.len() as u32;
         self.func.constants.push(value);
@@ -715,7 +793,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
         }
 
         if let Some(name) = self.parse_identifier() {
-            match name.as_str() {
+            match name {
                 "true" => {
                     let idx = self.sc.func.constants.len() as u32;
                     self.sc.func.constants.push(crate::types::JSValue::TRUE);
@@ -872,7 +950,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
         Ok(n)
     }
 
-    fn parse_identifier(&mut self) -> Option<String> {
+    fn parse_identifier(&mut self) -> Option<&'a str> {
         self.skip_ws();
         let start = self.pos;
         let first = self.peek()?;
@@ -888,7 +966,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
             }
         }
         let slice = &self.input[start..self.pos];
-        core::str::from_utf8(slice).ok().map(|s| s.to_string())
+        core::str::from_utf8(slice).ok()
     }
 
     fn consume_digits(&mut self) {
