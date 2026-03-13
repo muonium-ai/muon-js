@@ -97,7 +97,7 @@ def run_round(round_idx: int, redis_port: int, log_dir: Path) -> dict:
     mini_port = pick_port()
     mini_server = subprocess.Popen(
         [
-            "target/release/mini_redis",
+            "target/release/muon_cache",
             "--bind",
             "127.0.0.1",
             "--port",
@@ -109,7 +109,7 @@ def run_round(round_idx: int, redis_port: int, log_dir: Path) -> dict:
     )
     try:
         if not wait_tcp("127.0.0.1", mini_port):
-            raise RuntimeError(f"mini-redis on port {mini_port} did not become ready")
+            raise RuntimeError(f"muoncache on port {mini_port} did not become ready")
         run_capture_to_log(
             f"python3 scripts/bench_scripting.py --host 127.0.0.1 --port {mini_port} --suite tests/scripting_js_faithful/bench_suite.json",
             js_log,
@@ -129,7 +129,7 @@ def run_round(round_idx: int, redis_port: int, log_dir: Path) -> dict:
     return {
         "round": round_idx,
         "redis_port": redis_port,
-        "mini_redis_port": mini_port,
+        "muon_cache_port": mini_port,
         "lua_log": str(lua_log),
         "js_log": str(js_log),
         "lua_rps": lua,
@@ -233,7 +233,7 @@ def render_text(report: dict) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run 3-round Redis Lua vs mini-redis JS performance gate")
+    parser = argparse.ArgumentParser(description="Run 3-round Redis Lua vs muoncache JS performance gate")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--redis-base-port", type=int, default=6385)
     parser.add_argument("--log-dir", default="tmp/comparison/lua_js_gate", help="Directory for per-round logs")
@@ -252,7 +252,7 @@ def main() -> int:
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    run("cargo build --release --features mini-redis --bin mini_redis")
+    run("cargo build --release --features muoncache --bin muon_cache")
 
     results = []
     for idx in range(args.rounds):

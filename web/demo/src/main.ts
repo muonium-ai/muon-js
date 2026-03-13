@@ -1,10 +1,10 @@
 import "./style.css";
 
-import { MiniRedisClient } from "./client";
+import { MuonCacheClient } from "./client";
 import { MetricsDashboard } from "./dashboard";
-import type { CoreResponse, MiniRedisCommand, MiniRedisMetrics } from "./types";
+import type { CoreResponse, MuonCacheCommand, MuonCacheMetrics } from "./types";
 
-const client = new MiniRedisClient();
+const client = new MuonCacheClient();
 
 function must<T>(value: T | null, id: string): T {
   if (!value) {
@@ -77,7 +77,7 @@ function renderLeaderboard(members: string[]): void {
   }
 }
 
-function updateStats(metrics: MiniRedisMetrics): void {
+function updateStats(metrics: MuonCacheMetrics): void {
   statEls.opsTotal.textContent = metrics.ops_total.toLocaleString();
   statEls.opsWindow.textContent = metrics.ops_window_1s.toLocaleString();
   statEls.batchAvg.textContent = metrics.batch_size_avg.toFixed(1);
@@ -88,8 +88,8 @@ function updateStats(metrics: MiniRedisMetrics): void {
   statEls.errorsTotal.textContent = metrics.errors_total.toLocaleString();
 }
 
-function buildCommands(includeTopRead: boolean): MiniRedisCommand[] {
-  const commands: MiniRedisCommand[] = [];
+function buildCommands(includeTopRead: boolean): MuonCacheCommand[] {
+  const commands: MuonCacheCommand[] = [];
 
   for (let i = 0; i < UPDATES_PER_TICK; i += 1) {
     const idx = (Math.random() * PLAYER_COUNT) | 0;

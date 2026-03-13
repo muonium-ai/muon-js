@@ -12,12 +12,12 @@ mod context;
 mod types;
 mod value;
 #[cfg(any(
-    feature = "mini-redis",
-    feature = "mini-redis-core",
-    feature = "mini-redis-libsql",
-    feature = "mini-redis-wasm",
+    feature = "muoncache",
+    feature = "muoncache-core",
+    feature = "muoncache-libsql",
+    feature = "muoncache-wasm",
 ))]
-pub mod mini_redis;
+pub mod muon_cache;
 
 pub use api::*;
 pub use compiler::Compiler;

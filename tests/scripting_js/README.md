@@ -1,6 +1,6 @@
-# JS scripting tests (mini-redis)
+# JS scripting tests (muoncache)
 
-These tests validate the mini-redis JavaScript scripting engine via `EVAL`.
+These tests validate the muoncache JavaScript scripting engine via `EVAL`.
 
 ## Tests
 - 01_hello.js: basic EVAL return value
@@ -11,8 +11,8 @@ These tests validate the mini-redis JavaScript scripting engine via `EVAL`.
 - 06_multi_keys.js: multiple KEYS and array return
 
 ## Run
-Start mini-redis and run:
+Start muoncache and run:
 
 ```
-MINI_REDIS_HOST=127.0.0.1 MINI_REDIS_PORT=6379 ./tests/scripting_js/run_js_scripting_tests.sh
+MUON_CACHE_HOST=127.0.0.1 MUON_CACHE_PORT=6379 ./tests/scripting_js/run_js_scripting_tests.sh
 ```

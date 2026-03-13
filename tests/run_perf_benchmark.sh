@@ -2,7 +2,7 @@
 # run_perf_benchmark.sh
 #
 # Runs redis-benchmark (-c 50 -n 1,000,000 -P 16) against both Redis and
-# mini-redis, writes CSV logs to tmp/, then prints a comparison table.
+# muoncache, writes CSV logs to tmp/, then prints a comparison table.
 # Each server is benchmarked --runs times and the best RPS per test is
 # used for the final report (eliminates JIT warm-up and OS scheduling noise).
 #
@@ -13,8 +13,8 @@
 #                                 [--no-redis] [--baseline FILE] [--max-regression F]
 #
 # Exit codes:
-#   0  pass (or --no-redis mode where only mini-redis is benchmarked)
-#   1  regression detected (mini-redis slower than baseline beyond threshold)
+#   0  pass (or --no-redis mode where only muoncache is benchmarked)
+#   1  regression detected (muoncache slower than baseline beyond threshold)
 #   2  setup / tool error
 
 set -euo pipefail
@@ -22,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 TOOLS_DIR="$PROJECT_ROOT/tools"
-MINI_BINARY="$PROJECT_ROOT/target/release/mini_redis"
+MINI_BINARY="$PROJECT_ROOT/target/release/muon_cache"
 
 # ── defaults ────────────────────────────────────────────────────────────────
 MINI_PORT=6380
@@ -35,7 +35,7 @@ NO_REDIS=0
 RUNS=5
 BASELINE=""
 MAX_REGRESSION=0.10   # 10% throughput drop relative to baseline triggers failure
-START_MINI=1          # start our own mini-redis instance
+START_MINI=1          # start our own muoncache instance
 START_REDIS=0         # start our own redis-server instance
 
 # ── argument parsing ─────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ fi
 mkdir -p "$PROJECT_ROOT/tmp"
 
 TS=$(date +%Y%m%d_%H%M%S)
-MINI_LOG="$PROJECT_ROOT/tmp/mini_redis_pipelined_bench_${TS}.log"
+MINI_LOG="$PROJECT_ROOT/tmp/muon_cache_pipelined_bench_${TS}.log"
 REDIS_LOG="$PROJECT_ROOT/tmp/redis_pipelined_bench_${TS}.log"
 COMPARE_OUT="$PROJECT_ROOT/tmp/benchmark_comparison_${TS}.txt"
 
@@ -84,7 +84,7 @@ REDIS_PID=""
 
 cleanup() {
     if [[ -n "$MINI_PID" ]]; then
-        log "Stopping mini-redis (pid=$MINI_PID)"
+        log "Stopping muoncache (pid=$MINI_PID)"
         kill "$MINI_PID" 2>/dev/null || true
         wait "$MINI_PID" 2>/dev/null || true
     fi
@@ -115,34 +115,34 @@ sys.exit(0 if rc == 0 else 1)
     return 1
 }
 
-# ── build mini-redis ─────────────────────────────────────────────────────────
+# ── build muoncache ─────────────────────────────────────────────────────────
 if [[ "$START_MINI" -eq 1 ]]; then
-    log "Building mini-redis (release)…"
+    log "Building muoncache (release)…"
     cd "$PROJECT_ROOT"
-    cargo build --release --features mini-redis --bin mini_redis 2>&1 \
+    cargo build --release --features muoncache --bin muon_cache 2>&1 \
         | grep -E "(Compiling|Finished|error)" || true
 
     if [[ ! -f "$MINI_BINARY" ]]; then
-        fail "mini-redis binary not found at $MINI_BINARY"
+        fail "muoncache binary not found at $MINI_BINARY"
         exit 2
     fi
 fi
 
-# ── start mini-redis ─────────────────────────────────────────────────────────
+# ── start muoncache ─────────────────────────────────────────────────────────
 if [[ "$START_MINI" -eq 1 ]]; then
     # fail fast if port is already occupied
     if wait_for_port 127.0.0.1 "$MINI_PORT" 2>/dev/null; then
         fail "Port $MINI_PORT is already in use. Stop the existing server or use --mini-port."
         exit 2
     fi
-    log "Starting mini-redis on port $MINI_PORT"
+    log "Starting muoncache on port $MINI_PORT"
     "$MINI_BINARY" --port "$MINI_PORT" 2>/dev/null &
     MINI_PID=$!
     if ! wait_for_port 127.0.0.1 "$MINI_PORT"; then
-        fail "mini-redis did not start on port $MINI_PORT"
+        fail "muoncache did not start on port $MINI_PORT"
         exit 2
     fi
-    ok "mini-redis running (pid=$MINI_PID)"
+    ok "muoncache running (pid=$MINI_PID)"
 fi
 
 # ── start redis-server (optional) ────────────────────────────────────────────
@@ -224,8 +224,8 @@ PYEOF
 
 # ── run benchmarks ────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}=== mini-redis benchmark (best of $RUNS runs) ===${NC}"
-best_of_runs "mini-redis" "$MINI_PORT" "$RUNS" "$MINI_LOG"
+echo -e "${BOLD}=== muoncache benchmark (best of $RUNS runs) ===${NC}"
+best_of_runs "muoncache" "$MINI_PORT" "$RUNS" "$MINI_LOG"
 
 if [[ "$NO_REDIS" -eq 0 ]]; then
     # verify Redis is reachable (may be externally started)
@@ -275,7 +275,7 @@ redis = parse_csv_bench(redis_path)
 order = ["GET","SET","INCR","LPUSH","RPUSH","LPOP","RPOP","SADD","HSET"]
 tests = [t for t in order if t in mini or t in redis]
 
-hdr  = f"  {'TEST':8}  {'mini-redis':>14}  {'redis':>14}  {'mini/redis':>10}"
+hdr  = f"  {'TEST':8}  {'muoncache':>14}  {'redis':>14}  {'muon/redis':>10}"
 sep  = "  " + "-"*8 + "  " + "-"*14 + "  " + "-"*14 + "  " + "-"*10
 rows = [
     "\nredis-benchmark  -c {c} -n {n} -P {p}  (requests/sec)".format(
@@ -298,8 +298,8 @@ for t in tests:
 
 rows += [
     "",
-    "  mini/redis > 1.0x  →  mini-redis is FASTER",
-    "  mini/redis < 1.0x  →  mini-redis is SLOWER  (<<) flagged if >10% slower",
+    "  muon/redis > 1.0x  →  muoncache is FASTER",
+    "  muon/redis < 1.0x  →  muoncache is SLOWER  (<<) flagged if >10% slower",
     "",
 ]
 report = "\n".join(rows)
@@ -336,7 +336,7 @@ def parse_csv_bench(path):
 mini = parse_csv_bench(sys.argv[1])
 order = ["GET","SET","INCR","LPUSH","RPUSH","LPOP","RPOP","SADD","HSET"]
 tests = [t for t in order if t in mini]
-print(f"\n  {'TEST':8}  {'mini-redis':>14} (requests/sec)")
+print(f"\n  {'TEST':8}  {'muoncache':>14} (requests/sec)")
 print("  " + "-"*8 + "  " + "-"*14)
 for t in tests:
     print(f"  {t:8}  {mini[t]:>14,.0f}")
@@ -357,7 +357,7 @@ if [[ -n "$BASELINE" ]]; then
 fi
 
 ok "Benchmark complete"
-ok "  mini-redis log : $MINI_LOG"
+ok "  muoncache log : $MINI_LOG"
 if [[ "$NO_REDIS" -eq 0 ]]; then
     ok "  redis log      : $REDIS_LOG"
 fi

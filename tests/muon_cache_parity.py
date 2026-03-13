@@ -176,7 +176,7 @@ def parse_stream_entries(resp):
     return entries
 
 TESTS = [
-    # Ensure a clean slate for both Redis and mini-redis on every run
+    # Ensure a clean slate for both Redis and muoncache on every run
     ("FLUSHALL init", ["FLUSHALL"], expect_simple("OK")),
     ("FUNCTION FLUSH init", ["FUNCTION", "FLUSH"], expect_simple("OK")),
     # Connection / server
@@ -300,8 +300,8 @@ TESTS = [
     ("EVALSHA missing", ["EVALSHA", "__SCRIPT_SHA__", "0"], expect_error()),
     ("FUNCTION LIST", ["FUNCTION", "LIST"], lambda r: r[0] == "array"),
     # FUNCTION LOAD: body uses #!lua shebang + redis.register_function (required by Redis 8).
-    # mini-redis strips the shebang and stores the rest; Redis executes it with the Lua engine.
-    # Redis returns the library name as a blob; mini-redis returns simple OK.
+    # muoncache strips the shebang and stores the rest; Redis executes it with the Lua engine.
+    # Redis returns the library name as a blob; muoncache returns simple OK.
     ("FUNCTION LOAD", ["FUNCTION", "LOAD",
         "#!lua name=mylib\nredis.register_function('myfunc', function(keys, args) return 3 end)"],
         lambda r: r[0] in ("simple", "blob")),
@@ -312,14 +312,14 @@ TESTS = [
     ("SLOWLOG GET", ["SLOWLOG", "GET"], lambda r: r[0] == "array"),
     # Persistence / replication
     ("SAVE", ["SAVE"], lambda r: r[0] in ("error", "simple")),
-    # BGSAVE: Redis returns a simple "Background saving started"; mini-redis returns an error when not configured.
+    # BGSAVE: Redis returns a simple "Background saving started"; muoncache returns an error when not configured.
     ("BGSAVE", ["BGSAVE"], lambda r: r[0] in ("error", "simple")),
-    # REPLICAOF NO ONE: Redis returns OK; mini-redis returns an error (not implemented).
+    # REPLICAOF NO ONE: Redis returns OK; muoncache returns an error (not implemented).
     ("REPLICAOF", ["REPLICAOF", "NO", "ONE"], lambda r: r[0] in ("error", "simple")),
     ("FLUSHDB", ["FLUSHDB"], expect_simple("OK")),
     ("FLUSHALL", ["FLUSHALL"], expect_simple("OK")),
     ("SUBSCRIBE", ["SUBSCRIBE", "c"], lambda r: r[0] == "array"),
-    # PUBLISH on a subscribe socket: Redis rejects with an error; mini-redis allows it and returns the subscriber count.
+    # PUBLISH on a subscribe socket: Redis rejects with an error; muoncache allows it and returns the subscriber count.
     ("PUBLISH", ["PUBLISH", "c", "msg"], lambda r: r[0] in ("int", "error")),
 ]
 
@@ -683,7 +683,7 @@ def run_perf_matrix(sock, seconds):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="mini_redis parity + perf runner")
+    parser = argparse.ArgumentParser(description="muon_cache parity + perf runner")
     parser.add_argument("host", nargs="?", default="127.0.0.1")
     parser.add_argument("port", nargs="?", type=int, default=6379)
     parser.add_argument("--perf-seconds", type=float, default=1.2)
@@ -694,7 +694,7 @@ def main():
     host = args.host
     port = args.port
 
-    print(f"mini_redis parity run @ commit {git_commit()}")
+    print(f"muon_cache parity run @ commit {git_commit()}")
     print(f"connecting to {host}:{port}")
     sock = socket.create_connection((host, port))
 

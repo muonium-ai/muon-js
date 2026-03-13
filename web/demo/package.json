@@ -1,5 +1,5 @@
 {
-  "name": "muon-mini-redis-web-demo",
+  "name": "muon-muoncache-web-demo",
   "version": "0.1.0",
   "private": true,
   "type": "module",

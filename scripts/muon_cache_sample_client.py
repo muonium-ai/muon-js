@@ -75,7 +75,7 @@ def format_resp(resp):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="mini-redis sample client with JS scripting and perf timing")
+    parser = argparse.ArgumentParser(description="muoncache sample client with JS scripting and perf timing")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6379)
     parser.add_argument("--perf", type=int, default=1000, help="Number of SET/GET pairs for perf timing")

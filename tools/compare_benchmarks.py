@@ -36,13 +36,13 @@ def main():
     repo_root = Path(__file__).resolve().parents[1]
     tmp_dir = repo_root / "tmp"
 
-    parser = argparse.ArgumentParser(description="Compare redis and mini-redis benchmarks")
-    parser.add_argument("--mini", help="path to mini-redis benchmark log")
+    parser = argparse.ArgumentParser(description="Compare redis and muoncache benchmarks")
+    parser.add_argument("--mini", help="path to muoncache benchmark log")
     parser.add_argument("--redis", help="path to redis-benchmark log")
     parser.add_argument("--out", help="output report path")
     args = parser.parse_args()
 
-    mini_path = Path(args.mini) if args.mini else latest_log(tmp_dir, "mini_redis_benchmark_*.log")
+    mini_path = Path(args.mini) if args.mini else latest_log(tmp_dir, "muon_cache_benchmark_*.log")
     redis_path = Path(args.redis) if args.redis else latest_log(tmp_dir, "redis_benchmark_*.log")
 
     mini = parse_log(mini_path)
@@ -60,7 +60,7 @@ def main():
         rows.append((mk, mv, rv, ratio))
 
     out_lines = []
-    out_lines.append('Benchmark comparison: redis-benchmark vs mini-redis benchmark')
+    out_lines.append('Benchmark comparison: redis-benchmark vs muoncache benchmark')
     out_lines.append(f'mini log: {mini_path.name}')
     out_lines.append(f'redis log: {redis_path.name}')
     out_lines.append('')

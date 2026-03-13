@@ -1,31 +1,31 @@
-//! Persistence layer for mini-redis (snapshot + AOF).
+//! Persistence layer for muoncache (snapshot + AOF).
 #![allow(dead_code)]
 
 use std::io;
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 use std::sync::Arc;
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 use std::thread;
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 use std::time::Duration;
 
-use crate::mini_redis::store::Db;
+use crate::muon_cache::store::Db;
 
-#[cfg(feature = "mini-redis-libsql")]
-use crate::mini_redis::store::Value;
+#[cfg(feature = "muoncache-libsql")]
+use crate::muon_cache::store::Value;
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 const AOF_QUEUE_CAPACITY: usize = 4_096;
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 const AOF_BATCH_MAX: usize = 256;
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 const AOF_BATCH_WAIT_MS: u64 = 2;
 
 pub enum Persist {
     Noop,
-    #[cfg(feature = "mini-redis-libsql")]
+    #[cfg(feature = "muoncache-libsql")]
     Libsql(LibsqlPersist),
 }
 
@@ -33,7 +33,7 @@ impl Persist {
     pub fn aof_enabled(&self) -> bool {
         match self {
             Persist::Noop => false,
-            #[cfg(feature = "mini-redis-libsql")]
+            #[cfg(feature = "muoncache-libsql")]
             Persist::Libsql(persist) => persist.aof_enabled,
         }
     }
@@ -41,7 +41,7 @@ impl Persist {
     pub async fn load(&self, _dbs: &[Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
-            #[cfg(feature = "mini-redis-libsql")]
+            #[cfg(feature = "muoncache-libsql")]
             Persist::Libsql(persist) => persist.load(_dbs).await,
         }
     }
@@ -53,7 +53,7 @@ impl Persist {
     pub fn log_command_nowait(&self, _db: usize, _cmd: &[u8], _args: &[std::sync::Arc<[u8]>]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
-            #[cfg(feature = "mini-redis-libsql")]
+            #[cfg(feature = "muoncache-libsql")]
             Persist::Libsql(persist) => persist.log_command_nowait(_db, _cmd, _args),
         }
     }
@@ -61,26 +61,26 @@ impl Persist {
     pub async fn snapshot(&self, _dbs: &[Db]) -> io::Result<()> {
         match self {
             Persist::Noop => Ok(()),
-            #[cfg(feature = "mini-redis-libsql")]
+            #[cfg(feature = "muoncache-libsql")]
             Persist::Libsql(persist) => persist.snapshot(_dbs).await,
         }
     }
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 pub struct LibsqlPersist {
     conn: libsql::Connection,
     aof_enabled: bool,
     aof_tx: Option<Sender<AofEntry>>,
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 struct AofEntry {
     db: i64,
     encoded: Vec<u8>,
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 impl LibsqlPersist {
     #[allow(deprecated)] // TODO: migrate to libsql Builder API
     pub async fn open(path: &str, aof_enabled: bool) -> io::Result<Self> {
@@ -90,7 +90,7 @@ impl LibsqlPersist {
             let (tx, rx) = bounded::<AofEntry>(AOF_QUEUE_CAPACITY);
             let path = path.to_string();
             thread::Builder::new()
-                .name("mini-redis-aof".to_string())
+                .name("muoncache-aof".to_string())
                 .spawn(move || run_aof_worker(path, rx))
                 .map_err(to_io)?;
             Some(tx)
@@ -136,7 +136,7 @@ impl LibsqlPersist {
     }
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 impl LibsqlPersist {
     async fn load(&self, dbs: &[Db]) -> io::Result<()> {
         let mut rows = self.conn.query("SELECT db, key, type, value, expires_at_ms FROM kv", ()).await.map_err(to_io)?;
@@ -224,7 +224,7 @@ impl LibsqlPersist {
                     }
                     Value::Int(n) => {
                         let mut out = Vec::with_capacity(20);
-                        crate::mini_redis::store::write_i64_bytes_pub(&mut out, n);
+                        crate::muon_cache::store::write_i64_bytes_pub(&mut out, n);
                         self.conn.execute(
                             "INSERT OR REPLACE INTO kv (db, key, type, value, expires_at_ms) VALUES (?, ?, ?, ?, ?)",
                             (db_idx, key, 0i64, out, exp_val),
@@ -354,27 +354,27 @@ impl LibsqlPersist {
     }
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 #[allow(deprecated)] // TODO: migrate to libsql Builder API
 fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
     let db = match libsql::Database::open(&path) {
         Ok(db) => db,
         Err(err) => {
-            eprintln!("mini-redis: failed to open AOF db: {}", err);
+            eprintln!("muoncache: failed to open AOF db: {}", err);
             return;
         }
     };
     let conn = match db.connect() {
         Ok(conn) => conn,
         Err(err) => {
-            eprintln!("mini-redis: failed to connect AOF db: {}", err);
+            eprintln!("muoncache: failed to connect AOF db: {}", err);
             return;
         }
     };
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
-            eprintln!("mini-redis: failed to create AOF runtime: {}", err);
+            eprintln!("muoncache: failed to create AOF runtime: {}", err);
             return;
         }
     };
@@ -393,12 +393,12 @@ fn run_aof_worker(path: String, rx: Receiver<AofEntry>) {
             }
         }
         if let Err(err) = runtime.block_on(flush_aof_batch(&conn, batch)) {
-            eprintln!("mini-redis: AOF batch insert failed: {}", err);
+            eprintln!("muoncache: AOF batch insert failed: {}", err);
         }
     }
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 async fn flush_aof_batch(conn: &libsql::Connection, mut batch: Vec<AofEntry>) -> io::Result<()> {
     if batch.is_empty() {
         return Ok(());
@@ -444,12 +444,12 @@ fn encode_cmd(cmd: &[u8], args: &[std::sync::Arc<[u8]>]) -> Vec<u8> {
     out
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 fn to_io<E: std::fmt::Display>(err: E) -> io::Error {
     io::Error::new(io::ErrorKind::Other, err.to_string())
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 async fn load_list(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::VecDeque<std::sync::Arc<[u8]>>> {
     let mut rows = conn
         .query("SELECT idx, value FROM list_items WHERE db = ? AND key = ? ORDER BY idx ASC", (db as i64, key.to_vec()))
@@ -463,7 +463,7 @@ async fn load_list(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
     Ok(out)
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashSet<std::sync::Arc<[u8]>>> {
     let mut rows = conn
         .query("SELECT value FROM set_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
@@ -477,22 +477,22 @@ async fn load_set(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resul
     Ok(out)
 }
 
-#[cfg(feature = "mini-redis-libsql")]
-async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<crate::mini_redis::store::HashStore> {
+#[cfg(feature = "muoncache-libsql")]
+async fn load_hash(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<crate::muon_cache::store::HashStore> {
     let mut rows = conn
         .query("SELECT field, value FROM hash_items WHERE db = ? AND key = ?", (db as i64, key.to_vec()))
         .await
         .map_err(to_io)?;
-    let mut out = std::collections::HashMap::with_hasher(crate::mini_redis::store::FnvBuildHasher);
+    let mut out = std::collections::HashMap::with_hasher(crate::muon_cache::store::FnvBuildHasher);
     while let Some(row) = rows.next().await.map_err(to_io)? {
         let field: Vec<u8> = row.get(0).map_err(to_io)?;
         let value: Vec<u8> = row.get(1).map_err(to_io)?;
         out.insert(std::sync::Arc::from(field), std::sync::Arc::from(value));
     }
-    Ok(crate::mini_redis::store::HashStore::Map(out))
+    Ok(crate::muon_cache::store::HashStore::Map(out))
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 async fn load_zset(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<std::collections::HashMap<Vec<u8>, f64>> {
     let mut rows = conn
         .query("SELECT member, score FROM zset_items WHERE db = ? AND key = ? ORDER BY score ASC", (db as i64, key.to_vec()))
@@ -507,7 +507,7 @@ async fn load_zset(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Resu
     Ok(out)
 }
 
-#[cfg(feature = "mini-redis-libsql")]
+#[cfg(feature = "muoncache-libsql")]
 async fn load_stream(conn: &libsql::Connection, db: usize, key: &[u8]) -> io::Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
     let mut rows = conn
         .query(

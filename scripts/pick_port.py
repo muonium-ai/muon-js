@@ -20,8 +20,8 @@ def port_is_free(host, port):
 
 
 def main():
-    host = os.environ.get("MINI_REDIS_HOST", "127.0.0.1")
-    port_env = os.environ.get("MINI_REDIS_PORT", "")
+    host = os.environ.get("MUON_CACHE_HOST", "127.0.0.1")
+    port_env = os.environ.get("MUON_CACHE_PORT", "")
     port = 0
     try:
         if port_env:

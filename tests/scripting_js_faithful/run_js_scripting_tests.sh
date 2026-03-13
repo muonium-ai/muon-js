@@ -1,12 +1,12 @@
 #!/bin/bash
-# Run faithful JS scripting tests against mini-redis (EVAL executes JS).
+# Run faithful JS scripting tests against muoncache (EVAL executes JS).
 # These mirror the Lua tests exactly and may fail until JS array returns work.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MINI_REDIS_HOST="${MINI_REDIS_HOST:-127.0.0.1}"
-MINI_REDIS_PORT="${MINI_REDIS_PORT:-6379}"
+MUON_CACHE_HOST="${MUON_CACHE_HOST:-127.0.0.1}"
+MUON_CACHE_PORT="${MUON_CACHE_PORT:-6379}"
 
 PASS=0
 FAIL=0
@@ -21,7 +21,7 @@ run_test() {
     local output
 
     TOTAL=$((TOTAL + 1))
-    output=$(redis-cli -h "$MINI_REDIS_HOST" -p "$MINI_REDIS_PORT" --raw EVAL "$(cat "$file")" "$@")
+    output=$(redis-cli -h "$MUON_CACHE_HOST" -p "$MUON_CACHE_PORT" --raw EVAL "$(cat "$file")" "$@")
     if [ "$output" = "$expected" ]; then
         echo "✓ $name"
         PASS=$((PASS + 1))
@@ -33,7 +33,7 @@ run_test() {
     fi
 }
 
-echo "Running mini-redis JS scripting tests (faithful)"
+echo "Running muoncache JS scripting tests (faithful)"
 
 echo "Test 1: Hello scripting"
 run_test "hello" "$SCRIPT_DIR/01_hello.js" "Hello, scripting!" 0

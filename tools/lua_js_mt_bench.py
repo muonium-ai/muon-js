@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Multi-threaded Lua vs JS comparison — runs bench_scripting_mt against
-both Redis+Lua and mini-redis+JS, then produces a comparison report.
+both Redis+Lua and muoncache+JS, then produces a comparison report.
 
 Usage:
     python3 tools/lua_js_mt_bench.py \
@@ -109,17 +109,17 @@ def run_round(
     subprocess.run(f"redis-cli -p {redis_port} SHUTDOWN NOSAVE || true", shell=True)
     time.sleep(0.5)
 
-    # --- mini-redis + JS ---
+    # --- muoncache + JS ---
     mini_port = pick_port()
     mini = subprocess.Popen(
-        ["target/release/mini_redis", "--bind", "127.0.0.1", "--port", str(mini_port)],
+        ["target/release/muon_cache", "--bind", "127.0.0.1", "--port", str(mini_port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=Path.cwd(),
     )
     try:
         if not wait_tcp("127.0.0.1", mini_port):
-            raise RuntimeError(f"mini-redis on port {mini_port} not ready")
+            raise RuntimeError(f"muoncache on port {mini_port} not ready")
         run_capture(
             f"python3 scripts/bench_scripting_mt.py "
             f"--host 127.0.0.1 --port {mini_port} "
@@ -200,7 +200,7 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run("cargo build --release --features mini-redis --bin mini_redis", shell=True, check=True)
+    subprocess.run("cargo build --release --features muoncache --bin muon_cache", shell=True, check=True)
 
     results = []
     for idx in range(args.rounds):

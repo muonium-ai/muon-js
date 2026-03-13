@@ -2,7 +2,7 @@
 
 ## Latest benchmark run (2026-03-13) — best-of-5
 
-### Redis vs mini-redis (pipelined throughput)
+### Redis vs muoncache (pipelined throughput)
 
 Command:
 ```
@@ -10,7 +10,7 @@ make perf-benchmark PERF_BENCH_RUNS=5
 # redis-benchmark -c 50 -n 1,000,000 -P 16 --csv  (best of 5 runs per server)
 ```
 
-| Test | mini-redis RPS | Redis RPS | mini/redis |
+| Test | muoncache RPS | Redis RPS | muon/redis |
 |------|---------------:|----------:|:----------:|
 | GET   | 1,984,127 | 1,980,198 | **1.00×** |
 | SET   | 1,499,250 | 1,582,278 | **0.95×** |
@@ -28,7 +28,7 @@ via `set_string_ref`, dispatch fast paths, compact `HashStore`, and TCP_NODELAY.
 
 ### Parity
 
-`tests/mini_redis_parity.py` against Redis 8.6.1: **121/121 tests pass**.
+`tests/muon_cache_parity.py` against Redis 8.6.1: **121/121 tests pass**.
 
 ### Lua vs MuonJS scripting (3-round gate, 2026-03-12)
 
@@ -38,7 +38,7 @@ make lua-js-perf-baseline
 # 3 rounds, redis-base-port=6385
 ```
 
-| Case | Redis+Lua (rps) | mini-redis+MuonJS (rps) | Ratio (JS/Lua) | vs Feb-20 baseline |
+| Case | Redis+Lua (rps) | muoncache+MuonJS (rps) | Ratio (JS/Lua) | vs Feb-20 baseline |
 |------|----------------:|------------------------:|:--------------:|:------------------:|
 | hello       |  16,351 |  43,782 | **2.60x** | +21% (was 2.15x) |
 | keys_argv   |  12,806 |  27,648 | **2.15x** | +31% (was 1.64x) |
@@ -88,15 +88,15 @@ Report saved to `tmp/comparison/mt_bench_20260312_114527.json`.
 
 ## Previous benchmark run (2026-02-22 18:55)
 
-### Redis vs mini-redis (pipelined)
+### Redis vs muoncache (pipelined)
 
 Command:
-`make pipelined-benchmark-compare MINI_REDIS_PIPE_BENCH_LOG=tmp/full_mini_pipe_20260222_185459.log REDIS_PIPE_BENCH_LOG=tmp/full_redis_pipe_20260222_185459.log`
+`make pipelined-benchmark-compare MUON_CACHE_PIPE_BENCH_LOG=tmp/full_mini_pipe_20260222_185459.log REDIS_PIPE_BENCH_LOG=tmp/full_redis_pipe_20260222_185459.log`
 
 Report:
 `tmp/benchmark_comparison_20260222_185532.txt`
 
-| Test | mini-redis RPS | Redis RPS | Ratio (redis/mini) |
+| Test | muoncache RPS | Redis RPS | Ratio (redis/mini) |
 |------|----------------|-----------|---------------------|
 | GET | 2,020,202.00 | 1,869,158.88 | 0.93x |
 | HSET | 1,250,000.00 | 1,459,854.12 | 1.17x |
@@ -137,9 +137,9 @@ Per-case median ratio (JS/Lua):
 
 ## Current benchmark results (2026-02-21)
 
-**mini-redis + MuonJS vs Redis + Lua scripting — 3-round median ratios**
+**muoncache + MuonJS vs Redis + Lua scripting — 3-round median ratios**
 
-| Benchmark | Redis+Lua (rps) | mini-redis+MuonJS (rps) | Ratio (JS/Lua) |
+| Benchmark | Redis+Lua (rps) | muoncache+MuonJS (rps) | Ratio (JS/Lua) |
 |-----------|-----------------|-------------------------|----------------|
 | hello | 13,159 | 24,354 | **1.85x** |
 | redis_call | 13,411 | 25,669 | **2.05x** |
@@ -174,7 +174,7 @@ Redis+Lua (3-round avg):
   hello=13159  keys_argv=10686  redis_call=13411  incrby=13494
   lrange=11614  hash_sum=4897  set_members=7266  bulk_incr=10389
 
-mini-redis+MuonJS (3-round avg):
+muoncache+MuonJS (3-round avg):
   hello=23523  keys_argv=17804  redis_call=26999  incrby=26394
   lrange=20490  hash_sum=5384  set_members=8732  bulk_incr=9764
 ```
@@ -228,7 +228,7 @@ incremental progress tracking.
    context switching. Each optimization was implemented, benchmarked, committed,
    and verified before moving to the next.
 
-6. **Regression safety**: Every ticket required `cargo test --features mini-redis`
+6. **Regression safety**: Every ticket required `cargo test --features muoncache`
    (66 tests) + `bash tests/run_integration.sh` (10/10) to pass before marking
    complete. No optimization broke existing functionality.
 
@@ -306,9 +306,9 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 
 ## Scripting hotspot microbench workflow
 - Full faithful JS scripting suite:
-	- `make mini-redis-js-scripting-bench`
+	- `make muoncache-js-scripting-bench`
 - Hotspot-only suite (hash/set/incr density):
-	- `make mini-redis-js-scripting-bench-hotspots`
+	- `make muoncache-js-scripting-bench-hotspots`
 
 ## Lua-vs-JS performance gate
 - Generate/update baseline (3 rounds by default):
@@ -330,12 +330,12 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 - Check mode exits non-zero when critical cases regress beyond threshold.
 
 ### Hotspot benchmark defaults
-- `MINI_REDIS_JS_HOTSPOT_CASES` default: `hash_sum set_members bulk_incr`
-- `MINI_REDIS_JS_HOTSPOT_ITERS` default: `1000`
-- `MINI_REDIS_JS_HOTSPOT_WARMUP` default: `200`
+- `MUON_CACHE_JS_HOTSPOT_CASES` default: `hash_sum set_members bulk_incr`
+- `MUON_CACHE_JS_HOTSPOT_ITERS` default: `1000`
+- `MUON_CACHE_JS_HOTSPOT_WARMUP` default: `200`
 - Structured outputs:
-	- JSON: `MINI_REDIS_JS_HOTSPOT_JSON` (default `tmp/mini_redis_js_hotspots_<timestamp>.json`)
-	- CSV: `MINI_REDIS_JS_HOTSPOT_CSV` (default `tmp/mini_redis_js_hotspots_<timestamp>.csv`)
+	- JSON: `MUON_CACHE_JS_HOTSPOT_JSON` (default `tmp/muon_cache_js_hotspots_<timestamp>.json`)
+	- CSV: `MUON_CACHE_JS_HOTSPOT_CSV` (default `tmp/muon_cache_js_hotspots_<timestamp>.csv`)
 
 ### Script-level options
 - `scripts/bench_scripting.py` supports:
@@ -344,7 +344,7 @@ These indicate persistence write/commit/fsync is a major bottleneck under load, 
 	- `--out-csv <path>` for per-case tabular output.
 
 ## Code review quick wins
-- Replace list storage with `VecDeque` to make LPUSH/LPOP $O(1)$ (currently `Vec` + `insert/remove` at index 0 is $O(n)$). See [src/mini_redis/store.rs](src/mini_redis/store.rs#L284-L337).
-- Optimize `LRANGE` to avoid index-heavy access patterns and reduce cloning overhead. See [src/mini_redis/store.rs](src/mini_redis/store.rs#L331-L370).
-- Avoid per-command `String` allocation for `to_upper_ascii` by matching case-insensitively on bytes. See [src/mini_redis/server.rs](src/mini_redis/server.rs#L1616-L1618).
-- Skip `build_cmd` unless AOF is enabled; it currently clones args for every mutating command. See [src/mini_redis/server.rs](src/mini_redis/server.rs#L1632-L1639).
+- Replace list storage with `VecDeque` to make LPUSH/LPOP $O(1)$ (currently `Vec` + `insert/remove` at index 0 is $O(n)$). See [src/muon_cache/store.rs](src/muon_cache/store.rs#L284-L337).
+- Optimize `LRANGE` to avoid index-heavy access patterns and reduce cloning overhead. See [src/muon_cache/store.rs](src/muon_cache/store.rs#L331-L370).
+- Avoid per-command `String` allocation for `to_upper_ascii` by matching case-insensitively on bytes. See [src/muon_cache/server.rs](src/muon_cache/server.rs#L1616-L1618).
+- Skip `build_cmd` unless AOF is enabled; it currently clones args for every mutating command. See [src/muon_cache/server.rs](src/muon_cache/server.rs#L1632-L1639).

@@ -1,4 +1,4 @@
-import type { MiniRedisMetrics } from "./types";
+import type { MuonCacheMetrics } from "./types";
 
 type GpuCtx = {
   device: GPUDevice;
@@ -253,7 +253,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return true;
   }
 
-  pushMetrics(metrics: MiniRedisMetrics): void {
+  pushMetrics(metrics: MuonCacheMetrics): void {
     append(this.opsHistory, metrics.ops_window_1s);
     append(this.p50History, metrics.latency_p50_us);
     append(this.p95History, metrics.latency_p95_us);

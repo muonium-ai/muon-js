@@ -5,7 +5,7 @@
     {
       "round": 1,
       "redis_port": 6385,
-      "mini_redis_port": 61085,
+      "muon_cache_port": 61085,
       "lua_log": "tmp/comparison/lua_js_gate/redis_lua_round1_20260312_105604.log",
       "js_log": "tmp/comparison/lua_js_gate/mini_js_round1_20260312_105604.log",
       "lua_rps": {
@@ -43,7 +43,7 @@
     {
       "round": 2,
       "redis_port": 6386,
-      "mini_redis_port": 61095,
+      "muon_cache_port": 61095,
       "lua_log": "tmp/comparison/lua_js_gate/redis_lua_round2_20260312_105605.log",
       "js_log": "tmp/comparison/lua_js_gate/mini_js_round2_20260312_105605.log",
       "lua_rps": {
@@ -81,7 +81,7 @@
     {
       "round": 3,
       "redis_port": 6387,
-      "mini_redis_port": 61106,
+      "muon_cache_port": 61106,
       "lua_log": "tmp/comparison/lua_js_gate/redis_lua_round3_20260312_105606.log",
       "js_log": "tmp/comparison/lua_js_gate/mini_js_round3_20260312_105606.log",
       "lua_rps": {

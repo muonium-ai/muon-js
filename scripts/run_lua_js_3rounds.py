@@ -75,10 +75,10 @@ def main():
         )
         run_cmd(f"redis-cli -p {redis_port} SHUTDOWN NOSAVE || true")
 
-        run_cmd('make mini-redis-js-scripting-bench')
+        run_cmd('make muoncache-js-scripting-bench')
 
         lua_log = latest('redis_lua_script_bench_*.log')
-        js_log = latest('mini_redis_js_faithful_bench_*.log')
+        js_log = latest('muon_cache_js_faithful_bench_*.log')
         lua = load_summary(lua_log)
         js = load_summary(js_log)
         shared = sorted(set(lua) & set(js))

@@ -7,19 +7,19 @@ Muon JS is a tiny, embeddable JavaScript runtime written in Rust, implemented as
 - Native Rust runtime with mquickjs-style C API surface (`JS_NewContext`, `JS_Eval`, `JS_GetProperty*`, etc.).
 - Bytecode compiler + VM path (`Compiler`, `VM`) for hot execution loops.
 - Minimal default build (`default = []`) for embedders.
-- Optional `mini-redis` server implementation over RESP.
-- Optional `mini-redis-libsql` persistence backend for snapshots/AOF.
+- Optional `muoncache` server implementation over RESP.
+- Optional `muoncache-libsql` persistence backend for snapshots/AOF.
 - Built-in benchmark workflows for:
-  - Redis vs mini-redis command throughput.
-  - Redis Lua vs mini-redis MuonJS scripting performance.
+  - Redis vs muoncache command throughput.
+  - Redis Lua vs muoncache MuonJS scripting performance.
   - JS runtime microbench regression checks.
 
 ## Cargo Features
 
 From `Cargo.toml`:
 
-- `mini-redis`: enables the RESP server binary (`tokio`, `ctrlc`, `mimalloc`).
-- `mini-redis-libsql`: enables persistent storage (`libsql`, `crossbeam-channel`).
+- `muoncache`: enables the RESP server binary (`tokio`, `ctrlc`, `mimalloc`).
+- `muoncache-libsql`: enables persistent storage (`libsql`, `crossbeam-channel`).
 
 Examples:
 
@@ -27,11 +27,11 @@ Examples:
 # Library-only (minimal)
 cargo build
 
-# mini-redis server
-cargo build --features mini-redis
+# muoncache server
+cargo build --features muoncache
 
-# mini-redis + persistence
-cargo build --features "mini-redis mini-redis-libsql"
+# muoncache + persistence
+cargo build --features "muoncache muoncache-libsql"
 ```
 
 ## Build And Test
@@ -75,15 +75,15 @@ fn main() {
 }
 ```
 
-## Mini-Redis
+## MuonCache
 
-> **Release note:** mini-redis is being extracted into a standalone product. The
+> **Release note:** muoncache is being extracted into a standalone product. The
 > implementation here is the reference codebase for that release. The sections
 > below describe the current architecture, testing, and performance baselines.
 
 ### Architecture
 
-The server lives in `src/mini_redis/` and is built as an optional feature-gated
+The server lives in `src/muon_cache/` and is built as an optional feature-gated
 binary. Module layout after the T-000078 / T-000083 refactoring:
 
 | Module | Responsibility |
@@ -110,55 +110,55 @@ binary. Module layout after the T-000078 / T-000083 refactoring:
 
 ### Scripting (MuonJS)
 
-mini-redis uses the embedded MuonJS engine (this runtime) as its scripting layer:
+muoncache uses the embedded MuonJS engine (this runtime) as its scripting layer:
 
 - `EVAL script numkeys ...` — runs a JS snippet with `redis`, `KEYS`, `ARGV` bound; 1-based indexing matching the Redis/Lua convention.
 - `FUNCTION LOAD "#!lua name=lib\n..."` — loads a named function library; the `#!lua` shebang is stripped before execution, accepting the same body format as Redis 7+.
 - `CLIENT SETNAME`, `SCRIPT FLUSH`, `FUNCTION LIST/DELETE/FLUSH` are supported.
 - Memory limits are configurable via `--script-mem` (bytes) and `--script-reset-threshold` (%).
 
-### Running mini-redis
+### Running muoncache
 
 ```bash
 # Development (debug build)
-make mini-redis
+make muoncache
 
 # Release build
-make mini-redis-release
+make muoncache-release
 
 # Release + libsql persistence
-make mini-redis-persist-release
+make muoncache-persist-release
 ```
 
 Direct binary invocation:
 
 ```bash
-cargo run --release --features "mini-redis mini-redis-libsql" --bin mini_redis -- \
+cargo run --release --features "muoncache muoncache-libsql" --bin muon_cache -- \
   --bind 127.0.0.1 \
   --port 6379 \
   --databases 16 \
-  --persist tmp/mini_redis.db \
+  --persist tmp/muon_cache.db \
   --aof \
   --script-mem 4194304 \
   --script-reset-threshold 90
 ```
 
-If the binary is built without `--features mini-redis`, it exits with a message to rebuild with the feature enabled.
+If the binary is built without `--features muoncache`, it exits with a message to rebuild with the feature enabled.
 
 ### Parity testing
 
-The parity test suite (`tests/mini_redis_parity.py`) exercises 121 commands against
-both a live Redis instance and mini-redis, comparing responses:
+The parity test suite (`tests/muon_cache_parity.py`) exercises 121 commands against
+both a live Redis instance and muoncache, comparing responses:
 
 ```bash
-# Requires Redis on :6379; mini-redis is started automatically
-make mini-redis-parity
+# Requires Redis on :6379; muoncache is started automatically
+make muoncache-parity
 
 # Verbose output
-make mini-redis-parity-verbose
+make muoncache-parity-verbose
 ```
 
-**Current parity score: 121/121** (Redis 8.6.1 and mini-redis both pass all 121 tests).
+**Current parity score: 121/121** (Redis 8.6.1 and muoncache both pass all 121 tests).
 
 ### Code structure after T-000078/T-000083 refactoring
 
@@ -168,8 +168,8 @@ were split into focused modules to prepare for the standalone release:
 - `src/api/mod.rs` — re-exports and shared helpers
 - `src/api/eval_expr.rs` — expression evaluator
 - `src/api/eval_program.rs` — program/statement evaluator
-- `src/mini_redis/server/handle_command.rs` — Redis command router
-- `src/mini_redis/server/handle_no_db_command.rs` — server-level command handler
+- `src/muon_cache/server/handle_command.rs` — Redis command router
+- `src/muon_cache/server/handle_no_db_command.rs` — server-level command handler
 
 ## Benchmark and Comparison
 
@@ -178,7 +178,7 @@ were split into focused modules to prepare for the standalone release:
 Methodology: `redis-benchmark -c 50 -n 1,000,000 -P 16 --csv`, 5 runs per server,
 best RPS per test kept for the report. Run with `make perf-benchmark`.
 
-| Test | mini-redis | Redis | mini/redis |
+| Test | muoncache | Redis | muon/redis |
 |------|----------:|------:|:----------:|
 | GET   | 2,061,856 | 1,992,032 | **1.04×** |
 | SET   | 1,355,014 | 1,592,357 | 0.85× ⚠ |
@@ -197,7 +197,7 @@ are known regressions under pipelined write load — tracked for the standalone 
 
 3-round median, `make lua-js-perf-check`:
 
-| Script case | Redis+Lua (rps) | mini-redis+MuonJS (rps) | Ratio |
+| Script case | Redis+Lua (rps) | muoncache+MuonJS (rps) | Ratio |
 |-------------|----------------:|------------------------:|:-----:|
 | hello | 13,159 | 24,354 | **1.85×** |
 | redis_call | 13,411 | 25,669 | **2.05×** |
@@ -214,11 +214,11 @@ MuonJS eliminates per-call re-parsing via its bytecode VM.
 ### Running benchmarks
 
 ```bash
-# Pipelined throughput — mini-redis vs Redis (best of 5 runs)
+# Pipelined throughput — muoncache vs Redis (best of 5 runs)
 # Requires Redis running on :6379
 make perf-benchmark
 
-# mini-redis only (CI-safe, no Redis dependency)
+# muoncache only (CI-safe, no Redis dependency)
 make perf-benchmark-no-redis
 
 # Override run count or request volume
@@ -241,7 +241,7 @@ Full history is tracked in `performance.md`.
 
 The repo includes a socketless browser demo under `web/demo`:
 
-- mini-redis runs inside a dedicated Web Worker.
+- muoncache runs inside a dedicated Web Worker.
 - Rust/WASM exposes a typed command API (`exec`, `exec_batch`, `metrics_snapshot`).
 - The UI uses a typed JS client and renders metrics on a WebGPU canvas.
 - No disk persistence, no TCP sockets, no RESP networking in the browser path.

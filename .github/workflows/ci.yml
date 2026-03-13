@@ -33,8 +33,8 @@ jobs:
       - name: Rust build
         run: make build
 
-      - name: mini-redis-core tests
-        run: cargo test --features mini-redis-core
+      - name: muoncache-core tests
+        run: cargo test --features muoncache-core
 
       - name: Browser demo build
         run: make web-demo-build
