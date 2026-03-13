@@ -3,6 +3,9 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "muoncache")]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(feature = "muoncache")]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     use std::env;
@@ -17,6 +20,10 @@ async fn main() -> std::io::Result<()> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--version" | "-V" => {
+                println!("muoncache {}", VERSION);
+                return Ok(());
+            }
             "--bind" => {
                 if let Some(v) = args.next() {
                     bind = v;
