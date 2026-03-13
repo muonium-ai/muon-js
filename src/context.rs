@@ -1,7 +1,7 @@
 use crate::types::{JSObjectClassEnum, JSWord, JSSTDLibraryDef};
 use crate::value::Value;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const PROTO_SEARCH_LIMIT: usize = 64;
 const MAX_ROM_ATOM_TABLES: usize = 8;
@@ -58,7 +58,7 @@ pub struct Context {
     return_value: Value,
     env_stack: Vec<Value>,
     gc_objects: Vec<*mut u8>,
-    gc_marks: Vec<*mut u8>,
+    gc_marks: HashSet<usize>,
     rom_atom_tables: Vec<Value>,
     stdlib_table: *const JSWord,
     stdlib_table_len: u32,
@@ -112,7 +112,7 @@ impl Context {
             loop_control: LoopControl::None,
             env_stack: Vec::new(),
             gc_objects: Vec::new(),
-            gc_marks: Vec::new(),
+            gc_marks: HashSet::new(),
             rom_atom_tables: Vec::new(),
             stdlib_table: core::ptr::null(),
             stdlib_table_len: 0,
@@ -1306,6 +1306,7 @@ struct HeapObject {
     class_id: u32,
     proto: Value,
     prop_head: *mut Property,
+    prop_tail: *mut Property,
     prop_count: u32,
     array_len: u32,
     array_cap: u32,
@@ -1338,6 +1339,7 @@ impl Context {
             (*obj).class_id = class_id;
             (*obj).proto = Value::NULL;
             (*obj).prop_head = core::ptr::null_mut();
+            (*obj).prop_tail = core::ptr::null_mut();
             (*obj).prop_count = 0;
             (*obj).array_len = 0;
             (*obj).array_cap = 0;
@@ -1436,15 +1438,12 @@ impl Context {
                 if prop.is_null() {
                     return false;
                 }
-                if (*obj).prop_head.is_null() {
+                if (*obj).prop_tail.is_null() {
                     (*obj).prop_head = prop;
                 } else {
-                    let mut tail = (*obj).prop_head;
-                    while !(*tail).next.is_null() {
-                        tail = (*tail).next;
-                    }
-                    (*tail).next = prop;
+                    (*(*obj).prop_tail).next = prop;
                 }
+                (*obj).prop_tail = prop;
                 (*obj).prop_count = (*obj).prop_count.saturating_add(1);
                 return true;
             }
@@ -1465,15 +1464,12 @@ impl Context {
         if prop.is_null() {
             return false;
         }
-        if (*obj).prop_head.is_null() {
+        if (*obj).prop_tail.is_null() {
             (*obj).prop_head = prop;
         } else {
-            let mut tail = (*obj).prop_head;
-            while !(*tail).next.is_null() {
-                tail = (*tail).next;
-            }
-            (*tail).next = prop;
+            (*(*obj).prop_tail).next = prop;
         }
+        (*obj).prop_tail = prop;
         (*obj).prop_count = (*obj).prop_count.saturating_add(1);
 
         // Check threshold: build hash map if we just crossed it
@@ -1508,6 +1504,10 @@ impl Context {
                     (*obj).prop_head = (*cur).next;
                 } else {
                     (*prev).next = (*cur).next;
+                }
+                // Update prop_tail if we deleted the tail node
+                if (*cur).next.is_null() {
+                    (*obj).prop_tail = if prev.is_null() { core::ptr::null_mut() } else { prev };
                 }
                 (*obj).prop_count = (*obj).prop_count.saturating_sub(1);
                 return true;
@@ -1662,10 +1662,9 @@ impl Context {
         if ptr.is_null() {
             return;
         }
-        if self.gc_marks.iter().any(|&p| p == ptr) {
+        if !self.gc_marks.insert(ptr as usize) {
             return;
         }
-        self.gc_marks.push(ptr);
         let tag = unsafe { *(ptr as *const u32) };
         match tag {
             HEAP_TAG_STRING => {

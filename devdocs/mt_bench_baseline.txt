@@ -1,0 +1,20 @@
+======================================================================
+Multi-threaded Lua vs JS scripting benchmark
+Threads: 8  |  Requests/case: 1,000,000  |  Rounds: 1
+Generated: 2026-03-12 11:54:05
+======================================================================
+
+Round 1: avg ratio = 1.84x
+
+Case                      Lua RPS       JS RPS    Ratio
+-------------------------------------------------------
+bulk_incr                  25,729       25,288    0.98x
+hash_sum                    6,604       28,311    4.29x
+hello                      68,936       89,932    1.30x
+incrby                     64,235       88,332    1.38x
+keys_argv                  61,093       83,741    1.37x
+lrange                     58,531       86,488    1.48x
+redis_call                 64,367       89,338    1.39x
+set_members                12,124       30,371    2.51x
+
+Overall: 1.84x (median 1.84x)

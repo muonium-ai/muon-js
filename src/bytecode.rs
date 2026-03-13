@@ -60,7 +60,6 @@ pub struct Instruction {
     pub op: OpCode,
     pub a: u32,
     pub b: u32,
-    pub c: u32,
 }
 
 #[derive(Clone, Debug)]

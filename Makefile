@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
+.PHONY: build test release clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check mini-redis mini-redis-release mini-redis-persist mini-redis-persist-release mini-redis-persist-release-bg mini-redis-stop mini-redis-parity mini-redis-parity-verbose mini-redis-runloop mini-redis-benchmark mini-redis-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark mini-redis-js-tests mini-redis-js-tests-faithful redis-lua-scripting-bench mini-redis-js-scripting-bench mini-redis-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
 
 MINI_REDIS_HOST ?= 127.0.0.1
 MINI_REDIS_PORT ?= 6379
@@ -50,6 +50,13 @@ JS_BENCH_CHECK_RUNS ?= 3
 JS_BENCH_BASELINE ?= devdocs/js_runtime_benchmark_baseline.json
 JS_BENCH_CHECK_OUT ?= tmp/comparison/js_runtime_benchmark_check_$(shell date +%Y%m%d_%H%M%S).json
 JS_BENCH_MAX_REGRESSION ?= 0.20
+MT_BENCH_THREADS ?= 8
+MT_BENCH_TOTAL ?= 1000000
+MT_BENCH_WARMUP ?= 200
+MT_BENCH_ROUNDS ?= 1
+MT_BENCH_REDIS_BASE_PORT ?= 6390
+MT_BENCH_LOG_DIR ?= tmp/comparison/mt_bench
+MT_BENCH_OUT ?= tmp/comparison/mt_bench_$(shell date +%Y%m%d_%H%M%S).json
 PERF_BENCH_MINI_PORT ?= 6380
 PERF_BENCH_REDIS_PORT ?= 6379
 PERF_BENCH_CLIENTS ?= 50
@@ -530,6 +537,12 @@ perf-benchmark-no-redis: release
 		--runs $(PERF_BENCH_RUNS) \
 		--tests "$(PERF_BENCH_TESTS)" \
 		--no-redis
+
+lua-js-mt-bench: sync-version
+	@mkdir -p tmp/comparison
+	@echo "Running multi-threaded Lua-vs-JS benchmark"
+	@echo "Threads: $(MT_BENCH_THREADS)  Total/case: $(MT_BENCH_TOTAL)  Rounds: $(MT_BENCH_ROUNDS)"
+	python3 tools/lua_js_mt_bench.py --rounds $(MT_BENCH_ROUNDS) --threads $(MT_BENCH_THREADS) --total $(MT_BENCH_TOTAL) --warmup $(MT_BENCH_WARMUP) --redis-base-port $(MT_BENCH_REDIS_BASE_PORT) --log-dir $(MT_BENCH_LOG_DIR) --out $(MT_BENCH_OUT)
 
 clean:
 	$(CARGO) clean

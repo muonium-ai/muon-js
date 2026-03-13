@@ -901,7 +901,7 @@ mod tests {
             js_date_now(ctx)
         }
 
-        let mut mem = vec![0u8; 4096];
+        let mut mem = vec![0u8; 8192];
         let mut ctx = JS_NewContext(&mut mem);
         let def_obj = JSCFunctionDef {
             func: JSCFunctionType { constructor: Some(object_ctor) },
