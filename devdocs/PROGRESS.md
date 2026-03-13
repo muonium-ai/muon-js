@@ -434,7 +434,7 @@ Number.isFinite(100)            // OK (static method)
 
 ---
 
-## 🧪 Mini-redis Parity Notes
+## 🧪 MuonCache Parity Notes
 
 - ✅ KEYS supports glob patterns (`*`, `?`, classes)
 - ✅ SCAN supports cursors plus MATCH/COUNT (basic)

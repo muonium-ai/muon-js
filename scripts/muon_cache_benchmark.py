@@ -232,7 +232,7 @@ def run_test(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="mini-redis benchmark (redis-benchmark style)")
+    parser = argparse.ArgumentParser(description="muoncache benchmark (redis-benchmark style)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6379)
     parser.add_argument("-c", "--clients", type=int, default=50)
@@ -249,7 +249,7 @@ def main():
     payload = b"x" * args.data_size
 
     print(
-        f"mini-redis benchmark: host={host} port={port} clients={clients} requests={requests} data={args.data_size}B",
+        f"muoncache benchmark: host={host} port={port} clients={clients} requests={requests} data={args.data_size}B",
         flush=True,
     )
     tests = [t.strip().lower() for t in args.tests.split(",") if t.strip()]

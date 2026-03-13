@@ -1,6 +1,6 @@
 # JS scripting tests (faithful Lua copies)
 
-These tests mirror the Lua scripts exactly, including array return values. They are expected to fail until JS array return conversion is implemented in mini-redis.
+These tests mirror the Lua scripts exactly, including array return values. They are expected to fail until JS array return conversion is implemented in muoncache.
 
 ## Tests
 - 01_hello.js
@@ -16,8 +16,8 @@ These tests mirror the Lua scripts exactly, including array return values. They 
 - 11_bulk_incr.js
 
 ## Run
-Start mini-redis and run:
+Start muoncache and run:
 
 ```
-MINI_REDIS_HOST=127.0.0.1 MINI_REDIS_PORT=6379 ./tests/scripting_js_faithful/run_js_scripting_tests.sh
+MUON_CACHE_HOST=127.0.0.1 MUON_CACHE_PORT=6379 ./tests/scripting_js_faithful/run_js_scripting_tests.sh
 ```

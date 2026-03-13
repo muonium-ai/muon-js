@@ -25,7 +25,7 @@ def bytes_or_none(val: Optional[bytes]) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("Usage: scripts/read_mini_redis_db.py <path-to-db>")
+        print("Usage: scripts/read_muon_cache_db.py <path-to-db>")
         return 2
     path = sys.argv[1]
     conn = sqlite3.connect(path)

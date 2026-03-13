@@ -1,4 +1,4 @@
-export type MiniRedisCommand =
+export type MuonCacheCommand =
   | { kind: "set"; key: string; value: string }
   | { kind: "get"; key: string }
   | { kind: "hset"; key: string; field: string; value: string }
@@ -11,8 +11,8 @@ export type MiniRedisCommand =
   | { kind: "flushdb" };
 
 export type WorkerRequest =
-  | { id: number; kind: "exec"; command: MiniRedisCommand }
-  | { id: number; kind: "batch"; commands: MiniRedisCommand[] }
+  | { id: number; kind: "exec"; command: MuonCacheCommand }
+  | { id: number; kind: "batch"; commands: MuonCacheCommand[] }
   | { id: number; kind: "metrics" }
   | { id: number; kind: "reset" };
 
@@ -22,10 +22,10 @@ export type WorkerResponse =
 
 export type WorkerPush = {
   kind: "metrics_push";
-  data: MiniRedisMetrics;
+  data: MuonCacheMetrics;
 };
 
-export type MiniRedisMetrics = {
+export type MuonCacheMetrics = {
   ops_total: number;
   ops_window_1s: number;
   batch_size_avg: number;

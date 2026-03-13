@@ -1,6 +1,6 @@
 import type {
-  MiniRedisCommand,
-  MiniRedisMetrics,
+  MuonCacheCommand,
+  MuonCacheMetrics,
   WorkerPush,
   WorkerRequest,
   WorkerResponse
@@ -11,14 +11,14 @@ type Pending = {
   reject: (reason?: unknown) => void;
 };
 
-export class MiniRedisClient {
+export class MuonCacheClient {
   private readonly worker: Worker;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
-  private readonly metricHandlers = new Set<(metrics: MiniRedisMetrics) => void>();
+  private readonly metricHandlers = new Set<(metrics: MuonCacheMetrics) => void>();
 
   constructor() {
-    this.worker = new Worker(new URL("./miniRedis.worker.ts", import.meta.url), {
+    this.worker = new Worker(new URL("./muonCache.worker.ts", import.meta.url), {
       type: "module"
     });
 
@@ -54,7 +54,7 @@ export class MiniRedisClient {
     });
   }
 
-  exec(command: MiniRedisCommand): Promise<unknown> {
+  exec(command: MuonCacheCommand): Promise<unknown> {
     return this.rpc({
       id: this.next(),
       kind: "exec",
@@ -62,7 +62,7 @@ export class MiniRedisClient {
     });
   }
 
-  batch(commands: MiniRedisCommand[]): Promise<unknown> {
+  batch(commands: MuonCacheCommand[]): Promise<unknown> {
     return this.rpc({
       id: this.next(),
       kind: "batch",
@@ -70,11 +70,11 @@ export class MiniRedisClient {
     });
   }
 
-  metrics(): Promise<MiniRedisMetrics> {
+  metrics(): Promise<MuonCacheMetrics> {
     return this.rpc({
       id: this.next(),
       kind: "metrics"
-    }) as Promise<MiniRedisMetrics>;
+    }) as Promise<MuonCacheMetrics>;
   }
 
   reset(): Promise<void> {
@@ -84,7 +84,7 @@ export class MiniRedisClient {
     }).then(() => undefined);
   }
 
-  subscribeMetrics(handler: (metrics: MiniRedisMetrics) => void): () => void {
+  subscribeMetrics(handler: (metrics: MuonCacheMetrics) => void): () => void {
     this.metricHandlers.add(handler);
     return () => {
       this.metricHandlers.delete(handler);

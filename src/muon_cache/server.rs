@@ -9,9 +9,9 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::mini_redis::resp::{read_value, write_array_of_blobs_buf, write_value_buf, RespValue};
-use crate::mini_redis::persist::Persist;
-use crate::mini_redis::store::Db;
+use crate::muon_cache::resp::{read_value, write_array_of_blobs_buf, write_value_buf, RespValue};
+use crate::muon_cache::persist::Persist;
+use crate::muon_cache::store::Db;
 use crate::{
     JSContextImpl, JS_EVAL_RETVAL, JS_EVAL_SCRIPT, JS_GetException, JS_GetGlobalObject, JS_IsBool, JS_IsNull,
     JS_IsNumber, JS_IsString, JS_IsUndefined, JS_NewArray, JS_NewCFunctionParams, JS_NewInt64,
@@ -74,7 +74,7 @@ impl ServerState {
 fn timing_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("MINI_REDIS_TIMINGS")
+        std::env::var("MUON_CACHE_TIMINGS")
             .ok()
             .map(|v| {
                 let v = v.to_ascii_lowercase();
@@ -107,7 +107,7 @@ pub async fn run(config: ServerConfig) -> io::Result<()> {
     if let Err(err) = ctrlc::set_handler(move || {
         let _ = shutdown_tx.try_send(());
     }) {
-        eprintln!("mini-redis: failed to install ctrl+c handler: {}", err);
+        eprintln!("muoncache: failed to install ctrl+c handler: {}", err);
     }
     tokio::spawn(async move {
         let _ = shutdown_rx.recv().await;
@@ -133,36 +133,36 @@ async fn graceful_shutdown(
     persist_state: Arc<PersistState>,
     persist_path: Option<String>,
 ) {
-    eprintln!("mini-redis: shutdown requested");
+    eprintln!("muoncache: shutdown requested");
     if !dbs_state.is_empty() {
         let items = dbs_state[0].snapshot_items();
         let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for (_, value, _) in items.iter() {
             match value {
-                crate::mini_redis::store::Value::String(_)
-                | crate::mini_redis::store::Value::Int(_) => counts.0 += 1,
-                crate::mini_redis::store::Value::List(_) => counts.1 += 1,
-                crate::mini_redis::store::Value::Set(_) => counts.2 += 1,
-                crate::mini_redis::store::Value::Hash(_) => counts.3 += 1,
-                crate::mini_redis::store::Value::ZSet(_) => counts.4 += 1,
-                crate::mini_redis::store::Value::Stream(_) => counts.5 += 1,
+                crate::muon_cache::store::Value::String(_)
+                | crate::muon_cache::store::Value::Int(_) => counts.0 += 1,
+                crate::muon_cache::store::Value::List(_) => counts.1 += 1,
+                crate::muon_cache::store::Value::Set(_) => counts.2 += 1,
+                crate::muon_cache::store::Value::Hash(_) => counts.3 += 1,
+                crate::muon_cache::store::Value::ZSet(_) => counts.4 += 1,
+                crate::muon_cache::store::Value::Stream(_) => counts.5 += 1,
             }
         }
-        eprintln!("mini-redis: db0 keys={}", items.len());
+        eprintln!("muoncache: db0 keys={}", items.len());
         eprintln!(
-            "mini-redis: db0 counts: string={} list={} set={} hash={} zset={} stream={}",
+            "muoncache: db0 counts: string={} list={} set={} hash={} zset={} stream={}",
             counts.0, counts.1, counts.2, counts.3, counts.4, counts.5
         );
     }
     let _path_msg = persist_path.as_deref().unwrap_or("<unknown>");
     if persist_state.is_none() {
-        eprintln!("mini-redis: persistence not configured; skipping snapshot");
+        eprintln!("muoncache: persistence not configured; skipping snapshot");
         return;
     }
     if let Some(persist) = persist_state.as_ref() {
         let snapshot = snapshot_dbs_for_persistence(&dbs_state).await;
         if let Err(err) = persist.snapshot(&snapshot).await {
-            eprintln!("mini-redis: persistence failed: {}", err);
+            eprintln!("muoncache: persistence failed: {}", err);
         }
     }
 }
@@ -373,7 +373,7 @@ async fn handle_client(
             let elapsed_us = start.elapsed().as_micros();
             let arg_count = args.len().saturating_sub(1);
             eprintln!(
-                "mini-redis: cmd={} args={} elapsed_us={}",
+                "muoncache: cmd={} args={} elapsed_us={}",
                 cmd,
                 arg_count,
                 elapsed_us
@@ -507,7 +507,7 @@ fn handle_no_db_command(
             }
             _ => RespValue::StaticError("ERR invalid DB index"),
         },
-        "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
+        "INFO" => RespValue::Blob(b"muoncache:1\r\n".to_vec().into()),
         "SCRIPT" => handle_script_command(script_cache_state, args),
         "CONFIG" => {
             if args.len() >= 1 && to_upper_ascii(args[0].as_ref()) == "GET" {
@@ -693,7 +693,7 @@ fn handle_command(
             // Handled by handle_flushall_command before reaching here; fallback just in case
             RespValue::StaticError("ERR FLUSHALL requires async context")
         }
-        "INFO" => RespValue::Blob(b"mini-redis:1\r\n".to_vec().into()),
+        "INFO" => RespValue::Blob(b"muoncache:1\r\n".to_vec().into()),
         "EVAL" | "EVALSHA" => {
             // EVAL/EVALSHA are intercepted before the DB lock in handle_client and EXEC.
             // Reaching here means a recursive redis.call() tried to invoke EVAL, which is not supported.
@@ -1850,17 +1850,17 @@ pub(super) fn now_ms() -> u64 {
 
 async fn init_persist(config: &ServerConfig) -> io::Result<Option<Persist>> {
     if let Some(path) = config.persist_path.as_ref() {
-        #[cfg(feature = "mini-redis-libsql")]
+        #[cfg(feature = "muoncache-libsql")]
         {
-            let p = crate::mini_redis::persist::LibsqlPersist::open(path, config.aof_enabled).await?;
+            let p = crate::muon_cache::persist::LibsqlPersist::open(path, config.aof_enabled).await?;
             return Ok(Some(Persist::Libsql(p)));
         }
-        #[cfg(not(feature = "mini-redis-libsql"))]
+        #[cfg(not(feature = "muoncache-libsql"))]
         {
             let _ = path;
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "persist requested but mini-redis-libsql feature is not enabled",
+                "persist requested but muoncache-libsql feature is not enabled",
             ));
         }
     }

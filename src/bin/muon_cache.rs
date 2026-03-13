@@ -1,8 +1,8 @@
-#[cfg(feature = "mini-redis")]
+#[cfg(feature = "muoncache")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(feature = "mini-redis")]
+#[cfg(feature = "muoncache")]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     use std::env;
@@ -62,7 +62,7 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    let mut script_runtime = muon_js::mini_redis::server::ScriptRuntimeConfig::default();
+    let mut script_runtime = muon_js::muon_cache::server::ScriptRuntimeConfig::default();
     if let Some(mem) = script_mem {
         script_runtime.mem_size = mem;
     }
@@ -70,7 +70,7 @@ async fn main() -> std::io::Result<()> {
         script_runtime.reset_threshold_pct = pct;
     }
 
-    let config = muon_js::mini_redis::server::ServerConfig {
+    let config = muon_js::muon_cache::server::ServerConfig {
         bind,
         port,
         databases,
@@ -78,10 +78,10 @@ async fn main() -> std::io::Result<()> {
         aof_enabled,
         script_runtime,
     };
-    muon_js::mini_redis::server::run(config).await
+    muon_js::muon_cache::server::run(config).await
 }
 
-#[cfg(not(feature = "mini-redis"))]
+#[cfg(not(feature = "muoncache"))]
 fn main() {
-    eprintln!("mini-redis disabled: rebuild with --features mini-redis");
+    eprintln!("muoncache disabled: rebuild with --features muoncache");
 }

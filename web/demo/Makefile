@@ -15,7 +15,7 @@ WASM_TARGET ?= $(ROOT_DIR)/target/wasm32-unknown-unknown/release/muon_js.wasm
 wasm:
 	@mkdir -p $(WASM_OUT)
 	cd $(ROOT_DIR) && ./scripts/sync_version.sh
-	cd $(ROOT_DIR) && RUSTC=$(STABLE_RUSTC) $(STABLE_CARGO) build --release --target wasm32-unknown-unknown --features mini-redis-wasm
+	cd $(ROOT_DIR) && RUSTC=$(STABLE_RUSTC) $(STABLE_CARGO) build --release --target wasm32-unknown-unknown --features muoncache-wasm
 	$(WASM_BINDGEN) --target web --out-dir $(WASM_OUT) $(WASM_TARGET)
 
 dev: wasm

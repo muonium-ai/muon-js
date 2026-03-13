@@ -12,11 +12,11 @@ crate-type = ["rlib", "cdylib"]
 [features]
 # Keep default minimal; add feature flags as ports land.
 default = []
-mini-redis-core = []
-mini-redis = ["mini-redis-core", "tokio", "ctrlc", "mimalloc"]
-mini-redis-libsql = ["mini-redis", "libsql", "crossbeam-channel"]
-mini-redis-wasm = [
-    "mini-redis-core",
+muoncache-core = []
+muoncache = ["muoncache-core", "tokio", "ctrlc", "mimalloc"]
+muoncache-libsql = ["muoncache", "libsql", "crossbeam-channel"]
+muoncache-wasm = [
+    "muoncache-core",
     "dep:wasm-bindgen",
     "dep:serde",
     "dep:serde-wasm-bindgen",

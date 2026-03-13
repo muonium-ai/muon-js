@@ -108,9 +108,9 @@ Likely fixes:
 
 ---
 
-## Mini-redis persistence + shutdown
+## MuonCache persistence + shutdown
 
-- [x] Default mini-redis port to 6379.
+- [x] Default muoncache port to 6379.
 - [x] Add release targets for persistence and background run.
 - [x] Add stop task to send SIGINT and wait for graceful shutdown.
 - [x] On shutdown, dump DB keys/types and snapshot to persistence store.

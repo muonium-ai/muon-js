@@ -1,23 +1,23 @@
 /// <reference lib="webworker" />
 
-import init, { WasmMiniRedis } from "./wasm/muon_js.js";
+import init, { WasmMuonCache } from "./wasm/muon_js.js";
 
 import type { WorkerRequest, WorkerResponse } from "./types";
 
 const METRICS_PUSH_INTERVAL_MS = 100;
 
-let runtimePromise: Promise<WasmMiniRedis> | null = null;
+let runtimePromise: Promise<WasmMuonCache> | null = null;
 let runtimeQueue: Promise<void> = Promise.resolve();
 let pendingQueueDepth = 0;
 
-function getRuntime(): Promise<WasmMiniRedis> {
+function getRuntime(): Promise<WasmMuonCache> {
   if (!runtimePromise) {
-    runtimePromise = init().then(() => new WasmMiniRedis(16));
+    runtimePromise = init().then(() => new WasmMuonCache(16));
   }
   return runtimePromise;
 }
 
-function enqueueRuntime<T>(fn: (runtime: WasmMiniRedis) => T | Promise<T>): Promise<T> {
+function enqueueRuntime<T>(fn: (runtime: WasmMuonCache) => T | Promise<T>): Promise<T> {
   const task = runtimeQueue.then(async () => {
     const runtime = await getRuntime();
     return fn(runtime);

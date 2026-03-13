@@ -30,10 +30,10 @@
     - Added log function to eval example for console.log support
     - Fixed test script to use correct test function names
 
-### mini-redis parity
-- `make mini-redis-parity`
+### muoncache parity
+- `make muoncache-parity`
   - ❌ Unable to run in current environment: `PermissionError` when binding a free port
-  - Also emitted compiler warnings in `src/mini_redis/store.rs` (unused `mut`)
+  - Also emitted compiler warnings in `src/muon_cache/store.rs` (unused `mut`)
 
 ---
 
@@ -82,7 +82,7 @@
 
 - **TODO marker**: `src/api.rs` references pending float64 typed array support.
 - **`unwrap`/`expect` usage** is confined to tests and controlled paths; no critical runtime panic points found in a quick scan.
-- **Mini-redis**: unused `mut` warnings in `src/mini_redis/store.rs`.
+- **MuonCache**: unused `mut` warnings in `src/muon_cache/store.rs`.
 - **Error visibility**: `examples/eval.rs` now prints exception details (falls back to debug value).
 
 ---
@@ -104,7 +104,7 @@ Primary blockers:
 1. **Bring `PORTING_STATUS.md` / `PROGRESS.md` in sync** to reduce tracking noise.
 2. **Start mquickjs test-driven porting**: implement missing semantics in the order tests exercise them.
 3. **Plan architecture work**: VM + GC milestones, with compatibility checkpoints.
-4. **Rerun mini-redis parity** in an environment that allows local socket binds, or add a non-sandboxed port selection path for CI.
+4. **Rerun muoncache parity** in an environment that allows local socket binds, or add a non-sandboxed port selection path for CI.
 
 ---
 

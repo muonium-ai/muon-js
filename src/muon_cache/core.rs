@@ -1,16 +1,16 @@
-//! Socketless mini-redis core command executor for embedded/WASM use.
+//! Socketless muoncache core command executor for embedded/WASM use.
 
 use std::collections::{HashMap, VecDeque};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::mini_redis::store::Db;
+use crate::muon_cache::store::Db;
 
-#[cfg(feature = "mini-redis-wasm")]
+#[cfg(feature = "muoncache-wasm")]
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "mini-redis-wasm")]
+#[cfg(feature = "muoncache-wasm")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
@@ -22,8 +22,8 @@ const ERR_HASH_INT: &str = "ERR hash value is not an integer";
 const MAX_LATENCY_SAMPLES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "mini-redis-wasm", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "mini-redis-wasm", serde(rename_all = "snake_case", tag = "kind"))]
+#[cfg_attr(feature = "muoncache-wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "muoncache-wasm", serde(rename_all = "snake_case", tag = "kind"))]
 pub enum CoreCommand {
     Set {
         key: String,
@@ -66,8 +66,8 @@ pub enum CoreCommand {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "mini-redis-wasm", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "mini-redis-wasm", serde(untagged))]
+#[cfg_attr(feature = "muoncache-wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "muoncache-wasm", serde(untagged))]
 pub enum CoreData {
     Null,
     Integer(i64),
@@ -76,12 +76,12 @@ pub enum CoreData {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "mini-redis-wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "muoncache-wasm", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoreResponse {
     pub ok: bool,
-    #[cfg_attr(feature = "mini-redis-wasm", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "muoncache-wasm", serde(skip_serializing_if = "Option::is_none"))]
     pub data: Option<CoreData>,
-    #[cfg_attr(feature = "mini-redis-wasm", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(feature = "muoncache-wasm", serde(skip_serializing_if = "Option::is_none"))]
     pub error: Option<String>,
 }
 
@@ -104,7 +104,7 @@ impl CoreResponse {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "mini-redis-wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "muoncache-wasm", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoreMetricsSnapshot {
     pub ops_total: u64,
     pub ops_window_1s: u64,

@@ -1,18 +1,18 @@
-//! wasm-bindgen adapter for mini-redis core command execution.
+//! wasm-bindgen adapter for muoncache core command execution.
 
 use std::cell::Cell;
 
 use wasm_bindgen::prelude::*;
 
-use crate::mini_redis::core::{CoreCommand, CoreExecutor};
+use crate::muon_cache::core::{CoreCommand, CoreExecutor};
 
 #[wasm_bindgen]
-pub struct WasmMiniRedis {
+pub struct WasmMuonCache {
     core: Cell<Option<CoreExecutor>>,
 }
 
 #[wasm_bindgen]
-impl WasmMiniRedis {
+impl WasmMuonCache {
     #[wasm_bindgen(constructor)]
     pub fn new(databases: u16) -> Self {
         Self {
@@ -56,7 +56,7 @@ impl WasmMiniRedis {
     }
 }
 
-impl WasmMiniRedis {
+impl WasmMuonCache {
     /// Take the core out, run `f` with mutable access, then put it back.
     /// If `f` panics (becomes a JS exception under panic=abort), the core is
     /// lost but the runtime won't falsely report "busy" on subsequent calls.
@@ -64,7 +64,7 @@ impl WasmMiniRedis {
         let mut core = self
             .core
             .take()
-            .ok_or_else(|| JsValue::from_str("mini-redis runtime not available"))?;
+            .ok_or_else(|| JsValue::from_str("muoncache runtime not available"))?;
         let result = f(&mut core);
         self.core.set(Some(core));
         Ok(result)
@@ -74,7 +74,7 @@ impl WasmMiniRedis {
         let core = self
             .core
             .take()
-            .ok_or_else(|| JsValue::from_str("mini-redis runtime not available"))?;
+            .ok_or_else(|| JsValue::from_str("muoncache runtime not available"))?;
         let result = f(&core);
         self.core.set(Some(core));
         Ok(result)
