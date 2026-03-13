@@ -92,7 +92,7 @@ jobs:
           cp target/${{ matrix.target }}/release/muon_cache "$STAGING/muoncache"
           cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           tar czf "${STAGING}.tar.gz" "$STAGING"
-          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
           echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
           echo "ASSET_SHA=${STAGING}.tar.gz.sha256" >> "$GITHUB_ENV"
 
@@ -107,7 +107,7 @@ jobs:
           cp target/${{ matrix.target }}/release/muon_cache.exe "$STAGING/muoncache.exe"
           cp LICENSE readme.md "$STAGING/" 2>/dev/null || true
           7z a "${STAGING}.zip" "$STAGING"
-          shasum -a 256 "${STAGING}.zip" > "${STAGING}.zip.sha256"
+          sha256sum "${STAGING}.zip" > "${STAGING}.zip.sha256"
           echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
           echo "ASSET_SHA=${STAGING}.zip.sha256" >> "$GITHUB_ENV"
 
