@@ -24,8 +24,8 @@ impl Compiler {
             let inner = &s[1..s.len() - 1];
             let value = crate::api::js_new_string(ctx, inner);
             func.constants.push(value);
-            func.code.push(Instruction { op: OpCode::Const, a: 0, b: 0, c: 0 });
-            func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0, c: 0 });
+            func.code.push(Instruction { op: OpCode::Const, a: 0, b: 0 });
+            func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0 });
             return Ok(BytecodeModule::new(func));
         }
 
@@ -38,7 +38,7 @@ impl Compiler {
                 message: "unsupported bytecode expression".to_string(),
             });
         }
-        sc.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0, c: 0 });
+        sc.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0 });
         Ok(BytecodeModule::new(sc.func))
     }
 
@@ -82,8 +82,8 @@ impl<'a> StmtCompiler<'a> {
         }
         // Implicit return undefined at end
         let undef_idx = self.add_undefined_const();
-        self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0, c: 0 });
-        self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0, c: 0 });
+        self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0 });
+        self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0 });
         Ok(BytecodeModule::new(self.func))
     }
 
@@ -101,19 +101,19 @@ impl<'a> StmtCompiler<'a> {
         // return statement
         if s == "return" {
             let undef_idx = self.add_undefined_const();
-            self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0, c: 0 });
-            self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0, c: 0 });
+            self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0 });
+            self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0 });
             return Ok(());
         }
         if s.starts_with("return ") || s.starts_with("return\t") {
             let expr = s[7..].trim();
             if expr.is_empty() {
                 let undef_idx = self.add_undefined_const();
-                self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0, c: 0 });
+                self.func.code.push(Instruction { op: OpCode::Const, a: undef_idx, b: 0 });
             } else {
                 self.compile_full_expr(expr)?;
             }
-            self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0, c: 0 });
+            self.func.code.push(Instruction { op: OpCode::Return, a: 0, b: 0 });
             return Ok(());
         }
 
@@ -129,7 +129,7 @@ impl<'a> StmtCompiler<'a> {
 
         // Expression statement (discard result)
         self.compile_full_expr(s)?;
-        self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0, c: 0 });
+        self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0 });
         Ok(())
     }
 
@@ -143,8 +143,8 @@ impl<'a> StmtCompiler<'a> {
             }
             let slot = self.ensure_local(name);
             self.compile_full_expr(expr)?;
-            self.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0, c: 0 });
-            self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0, c: 0 });
+            self.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0 });
+            self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0 });
         } else {
             let name = rest.trim_end_matches(';').trim();
             if !is_valid_identifier(name) {
@@ -176,7 +176,7 @@ impl<'a> StmtCompiler<'a> {
                 self.compile_var_decl(&init[4..])?;
             } else {
                 self.compile_full_expr(init)?;
-                self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0, c: 0 });
+                self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0 });
             }
         }
 
@@ -188,7 +188,7 @@ impl<'a> StmtCompiler<'a> {
         if !cond.is_empty() {
             self.compile_full_expr(cond)?;
             jump_end = self.func.code.len();
-            self.func.code.push(Instruction { op: OpCode::JumpIfFalse, a: 0, b: 0, c: 0 });
+            self.func.code.push(Instruction { op: OpCode::JumpIfFalse, a: 0, b: 0 });
         } else {
             jump_end = usize::MAX;
         }
@@ -205,12 +205,12 @@ impl<'a> StmtCompiler<'a> {
         if !update.is_empty() {
             if !self.try_compile_inc_update(update)? {
                 self.compile_full_expr(update)?;
-                self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0, c: 0 });
+                self.func.code.push(Instruction { op: OpCode::Drop, a: 0, b: 0 });
             }
         }
 
         // Jump back to loop start
-        self.func.code.push(Instruction { op: OpCode::Jump, a: loop_start, b: 0, c: 0 });
+        self.func.code.push(Instruction { op: OpCode::Jump, a: loop_start, b: 0 });
 
         // Patch jump_end
         let end_pc = self.func.code.len() as u32;
@@ -229,7 +229,7 @@ impl<'a> StmtCompiler<'a> {
             if is_valid_identifier(name) {
                 if let Some(slot) = self.find_local(name) {
                     self.func.code.push(Instruction {
-                        op: OpCode::IncLocal, a: slot, b: 1u32, c: 0,
+                        op: OpCode::IncLocal, a: slot, b: 1u32,
                     });
                     return Ok(true);
                 }
@@ -240,7 +240,7 @@ impl<'a> StmtCompiler<'a> {
             if is_valid_identifier(name) {
                 if let Some(slot) = self.find_local(name) {
                     self.func.code.push(Instruction {
-                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32, c: 0,
+                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32,
                     });
                     return Ok(true);
                 }
@@ -252,7 +252,7 @@ impl<'a> StmtCompiler<'a> {
             if is_valid_identifier(name) {
                 if let Some(slot) = self.find_local(name) {
                     self.func.code.push(Instruction {
-                        op: OpCode::IncLocal, a: slot, b: 1u32, c: 0,
+                        op: OpCode::IncLocal, a: slot, b: 1u32,
                     });
                     return Ok(true);
                 }
@@ -263,7 +263,7 @@ impl<'a> StmtCompiler<'a> {
             if is_valid_identifier(name) {
                 if let Some(slot) = self.find_local(name) {
                     self.func.code.push(Instruction {
-                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32, c: 0,
+                        op: OpCode::IncLocal, a: slot, b: (-1i32) as u32,
                     });
                     return Ok(true);
                 }
@@ -279,7 +279,6 @@ impl<'a> StmtCompiler<'a> {
                             op: OpCode::IncLocal,
                             a: slot,
                             b: n as u32,
-                            c: 0,
                         });
                         return Ok(true);
                     }
@@ -297,7 +296,6 @@ impl<'a> StmtCompiler<'a> {
                             op: OpCode::IncLocal,
                             a: slot,
                             b: (-n) as u32,
-                            c: 0,
                         });
                         return Ok(true);
                     }
@@ -321,7 +319,7 @@ impl<'a> StmtCompiler<'a> {
         self.compile_full_expr(cond)?;
 
         let jump_else = self.func.code.len();
-        self.func.code.push(Instruction { op: OpCode::JumpIfFalse, a: 0, b: 0, c: 0 });
+        self.func.code.push(Instruction { op: OpCode::JumpIfFalse, a: 0, b: 0 });
 
         let body = extract_braced_body(after)?;
         let body_stmts = simple_split_statements(&body)?;
@@ -333,7 +331,7 @@ impl<'a> StmtCompiler<'a> {
         if let Some(else_start) = find_else_after_brace(after) {
             let else_part = after[else_start..].trim();
             let jump_end = self.func.code.len();
-            self.func.code.push(Instruction { op: OpCode::Jump, a: 0, b: 0, c: 0 });
+            self.func.code.push(Instruction { op: OpCode::Jump, a: 0, b: 0 });
 
             self.func.code[jump_else].a = self.func.code.len() as u32;
 
@@ -440,26 +438,26 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
     }
 
     fn emit_op(&mut self, op: OpCode) {
-        self.sc.func.code.push(Instruction { op, a: 0, b: 0, c: 0 });
+        self.sc.func.code.push(Instruction { op, a: 0, b: 0 });
     }
 
     fn emit_inst(&mut self, op: OpCode, a: u32) {
-        self.sc.func.code.push(Instruction { op, a, b: 0, c: 0 });
+        self.sc.func.code.push(Instruction { op, a, b: 0 });
     }
 
     fn emit_const(&mut self, num: f64) {
         let idx = self.sc.add_number_const(num);
-        self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+        self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
     }
 
     fn emit_string_const(&mut self, s: &str) {
         let idx = self.sc.add_string_const(s);
-        self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+        self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
     }
 
     fn emit_jump(&mut self, op: OpCode) -> usize {
         let idx = self.sc.func.code.len();
-        self.sc.func.code.push(Instruction { op, a: 0, b: 0, c: 0 });
+        self.sc.func.code.push(Instruction { op, a: 0, b: 0 });
         idx
     }
 
@@ -576,29 +574,29 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
             // Compound assignments: +=, -=, *=
             if self.consume_seq(b"+=") {
                 if let Some(slot) = self.sc.find_local(&name) {
-                    self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0 });
                     self.parse_expr()?;
                     self.emit_op(OpCode::Add);
-                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0, c: 0 });
-                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0 });
                     self.emit_op(OpCode::Drop);
                     return Ok(());
                 }
                 let name_idx = self.sc.add_string_const(&name);
-                self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0, c: 0 });
+                self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0 });
                 self.parse_expr()?;
                 self.emit_op(OpCode::Add);
                 let name_idx2 = self.sc.add_string_const(&name);
-                self.sc.func.code.push(Instruction { op: OpCode::StoreGlobal, a: name_idx2, b: 0, c: 0 });
+                self.sc.func.code.push(Instruction { op: OpCode::StoreGlobal, a: name_idx2, b: 0 });
                 return Ok(());
             }
             if self.consume_seq(b"-=") {
                 if let Some(slot) = self.sc.find_local(&name) {
-                    self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0 });
                     self.parse_expr()?;
                     self.emit_op(OpCode::Sub);
-                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0, c: 0 });
-                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0 });
                     self.emit_op(OpCode::Drop);
                     return Ok(());
                 }
@@ -613,12 +611,12 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                 }
                 self.parse_assignment()?;
                 if let Some(slot) = self.sc.find_local(&name) {
-                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0, c: 0 });
-                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::StoreLocal, a: slot, b: 0 });
                     self.emit_op(OpCode::Drop);
                 } else {
                     let name_idx = self.sc.add_string_const(&name);
-                    self.sc.func.code.push(Instruction { op: OpCode::StoreGlobal, a: name_idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::StoreGlobal, a: name_idx, b: 0 });
                 }
                 return Ok(());
             }
@@ -703,7 +701,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                 self.skip_ws();
                 if self.check(b'(') {
                     // Method call: obj.method(args) — preserve `this` (obj) for CallMethod
-                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Dup, a: 0, b: 0 });
                     self.emit_string_const(&prop);
                     self.emit_op(OpCode::GetProp);
                     // Now parse the call arguments
@@ -727,7 +725,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                     if !self.consume(b')') {
                         return Err(CompileError { message: "expected ')'".to_string() });
                     }
-                    self.sc.func.code.push(Instruction { op: OpCode::CallMethod, a: argc, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::CallMethod, a: argc, b: 0 });
                 } else {
                     // Property access: obj.prop
                     self.emit_string_const(&prop);
@@ -760,7 +758,7 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                 if !self.consume(b')') {
                     return Err(CompileError { message: "expected ')'".to_string() });
                 }
-                self.sc.func.code.push(Instruction { op: OpCode::Call, a: argc, b: 0, c: 0 });
+                self.sc.func.code.push(Instruction { op: OpCode::Call, a: argc, b: 0 });
             } else {
                 break;
             }
@@ -797,21 +795,21 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                 "true" => {
                     let idx = self.sc.func.constants.len() as u32;
                     self.sc.func.constants.push(crate::types::JSValue::TRUE);
-                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
                 }
                 "false" => {
                     let idx = self.sc.func.constants.len() as u32;
                     self.sc.func.constants.push(crate::types::JSValue::FALSE);
-                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
                 }
                 "null" => {
                     let idx = self.sc.func.constants.len() as u32;
                     self.sc.func.constants.push(crate::types::JSValue::NULL);
-                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
                 }
                 "undefined" => {
                     let idx = self.sc.add_undefined_const();
-                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::Const, a: idx, b: 0 });
                 }
                 "Number" => {
                     self.skip_ws();
@@ -825,14 +823,14 @@ impl<'a, 'b> ExprCompiler<'a, 'b> {
                         return Ok(());
                     }
                     let name_idx = self.sc.add_string_const("Number");
-                    self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0, c: 0 });
+                    self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0 });
                 }
                 _ => {
                     if let Some(slot) = self.sc.find_local(&name) {
-                        self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0, c: 0 });
+                        self.sc.func.code.push(Instruction { op: OpCode::LoadLocal, a: slot, b: 0 });
                     } else {
                         let name_idx = self.sc.add_string_const(&name);
-                        self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0, c: 0 });
+                        self.sc.func.code.push(Instruction { op: OpCode::LoadGlobal, a: name_idx, b: 0 });
                     }
                 }
             }
