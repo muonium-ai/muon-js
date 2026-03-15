@@ -37,8 +37,11 @@ const LANES     = 3;     // inbound lanes per arm
 const LANE_W_M  = 3.5;  // lane width in metres
 const ROAD_M    = 36;    // road length in metres from stop-line to edge
 
-const SPAWN_EXTRA = 6;   // extra metres beyond road edge
-const TURN_DIST   = 18;  // metres past stop-line to complete a turn
+const SPAWN_EXTRA  = 6;   // extra metres beyond road edge
+const TURN_DIST    = 18;  // metres past stop-line to complete a turn
+
+// Lane letter labels: lane 0 = 'A' (inner, nearest centre divider) … LANES-1 = outer
+const LANE_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, LANES);
 
 // ── Vehicle type palette ───────────────────────────────────────────
 const IDM_VT = [
@@ -155,12 +158,15 @@ export class IDMIntersection {
           v => v.lane === lane && Math.abs(v.pos - spawnPos) < v.vt.len + IDM_S0 * 2
         );
         if (tooClose) continue;
+        const exitLane = exitLaneFor(turn, lane);
         this.approaching[arm].push({
           id:        this.nextId++,
           num:       ++this.vehNum,
           arm,
           lane,
           turn,
+          exitLane,
+          exitArm:   TURN_EXIT[arm][turn],
           pos:       spawnPos,
           vel:       IDM_V0 * (0.6 + 0.4 * Math.random()),
           vt,
@@ -209,9 +215,8 @@ export class IDMIntersection {
       const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
       this.approaching[arm] = remaining;
       for (const v of crossed) {
-        const exitArm  = TURN_EXIT[arm][v.turn];
-        const exitLane = exitLaneFor(v.turn, v.lane);
-        this.turning.push({ ...v, exitArm, exitLane, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
+        // exitArm and exitLane already set at spawn; preserve them
+        this.turning.push({ ...v, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
       }
     }
 
@@ -420,6 +425,7 @@ export class IDMRenderer {
     this._drawRoads(cx, cy, roadPx, roadLenPx);
     this._drawIntersectionBox(cx, cy, roadPx);
     this._drawSignals(cx, cy, roadPx, sim.drawPhase);
+    this._drawLaneLabels(cx, cy, roadPx);
     this._drawVehicles(cx, cy, sim, roadPx, roadLenPx);
     this._drawStats(sim);
   }
@@ -457,6 +463,47 @@ export class IDMRenderer {
       ctx.beginPath(); ctx.moveTo(cx + roadPx, cy + off); ctx.lineTo(cx + roadPx + roadLenPx, cy + off); ctx.stroke();
     }
     ctx.setLineDash([]);
+  }
+
+  // Draw lane letter badges near the stop-line on every inbound lane for all 4 arms.
+  // Badge = filled circle with letter, placed just outside the intersection box.
+  _drawLaneLabels(cx, cy, roadPx) {
+    const { ctx } = this;
+    const laneWPx  = roadPx / LANES;
+    const BADGE_R  = 8;   // badge circle radius px
+    const OFFSET   = roadPx + BADGE_R + 6;  // distance from centre to badge centre
+
+    ctx.font         = `bold ${BADGE_R * 1.2}px monospace`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let lane = 0; lane < LANES; lane++) {
+      const label    = LANE_LABELS[lane];
+      const inOffset = (lane + 0.5) * laneWPx;  // same offset as armPos inbound
+
+      // Colour cycles per lane: A=cyan, B=orange, C=purple …
+      const BADGE_COLORS = ['#4ec9ff', '#ffaa44', '#c47fff', '#7fffb2', '#ff7fa0', '#ffe040'];
+      const bg = BADGE_COLORS[lane % BADGE_COLORS.length];
+
+      const positions = [
+        { x: cx + inOffset,  y: cy - OFFSET },  // N arm inbound
+        { x: cx - inOffset,  y: cy + OFFSET },  // S arm inbound
+        { x: cx + OFFSET,    y: cy + inOffset }, // E arm inbound
+        { x: cx - OFFSET,    y: cy - inOffset }, // W arm inbound
+      ];
+
+      for (const { x, y } of positions) {
+        ctx.beginPath();
+        ctx.arc(x, y, BADGE_R, 0, Math.PI * 2);
+        ctx.fillStyle = bg + 'cc';
+        ctx.fill();
+        ctx.strokeStyle = bg;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#111';
+        ctx.fillText(label, x, y);
+      }
+    }
   }
 
   _drawIntersectionBox(cx, cy, roadPx) {
@@ -542,17 +589,20 @@ export class IDMRenderer {
 
     // Number
     const numSize = Math.min(widPx * 0.55, 9);
-    ctx.font      = `bold ${numSize}px monospace`;
-    ctx.fillStyle = '#ffffffcc';
-    ctx.textAlign = 'center';
+    ctx.font         = `bold ${numSize}px monospace`;
+    ctx.fillStyle    = '#ffffffcc';
+    ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(String(v.num % 100), 0, -lenPx * 0.18);
 
-    // Direction arrow
-    const arrSize = Math.min(widPx * 0.55, 9);
-    ctx.font      = `${arrSize}px sans-serif`;
-    ctx.fillStyle = '#ffffffaa';
-    ctx.fillText(TURN_ARROW[v.turn] || '↑', 0, lenPx * 0.22);
+    // Exit-lane badge: turn arrow + lane letter (e.g. "→B")
+    // exitLane is set at spawn; for vehicles in turning/exiting it stays the same
+    const exitLabel = LANE_LABELS[v.exitLane ?? 0] ?? '?';
+    const arrStr    = (TURN_ARROW[v.turn] || '↑') + exitLabel;
+    const arrSize   = Math.min(widPx * 0.52, 8);
+    ctx.font         = `bold ${arrSize}px monospace`;
+    ctx.fillStyle    = '#ffe040dd';
+    ctx.fillText(arrStr, 0, lenPx * 0.25);
 
     ctx.restore();
   }
