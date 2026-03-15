@@ -227,11 +227,18 @@ function drawMetrics(ctx, ox, PW, s, yStart = 14) {
     ? `${(s.simSeconds / 60).toFixed(1)} m`
     : `${s.simSeconds.toFixed(0)} s`;
 
+  const waitFmt = s.avgWait >= 60
+    ? `${(s.avgWait / 60).toFixed(1)} m`
+    : `${s.avgWait.toFixed(1)} s`;
+
   const lines = [
     { label: 'Tick',       val: fmt(s.tick),                   color: '#b0b0c0' },
     { label: 'Sim time',   val: simTime,                        color: '#b0b0c0' },
     { label: 'Vehicles',   val: fmt(s.vehicles),                color: '#b0b0c0' },
+    { label: 'Discharged', val: fmt(s.discharged),              color: '#b0b0c0' },
+    { label: 'Avg wait',   val: waitFmt,                        color: '#e8c84a' },
     { label: 'Ticks/s',    val: fmt(s.tps, 0),                  color: '#7ec8ff' },
+    { label: 'Queues',     val: `N${s.queues.n} S${s.queues.s} E${s.queues.e} W${s.queues.w}`, color: '#888' },
   ];
 
   if (s.isCached) {
@@ -317,7 +324,7 @@ function drawMiniIntersection(ctx, ox, oy, cellW, cellH, phase, queues) {
  */
 function drawGridPane(ctx, ox, gridSize, isNocache, lab, aggregateState) {
   const PW = HALF;
-  const METRICS_H = 130;
+  const METRICS_H = 180;
   const gridH = H - METRICS_H;
   const cellW = Math.floor(PW / gridSize);
   const cellH = Math.floor(gridH / gridSize);
@@ -404,18 +411,21 @@ async function main() {
     const v = parseInt(e.target.value);
     document.getElementById('vpm-val').textContent = v;
     lab.set_vehicles_per_min(v);
+    lab.reset();
   });
 
   document.getElementById('cycle').addEventListener('input', e => {
     const v = parseInt(e.target.value);
     document.getElementById('cycle-val').textContent = v;
     lab.set_signal_cycle_secs(v);
+    lab.reset();
   });
 
   document.getElementById('lanes').addEventListener('input', e => {
     const v = parseInt(e.target.value);
     document.getElementById('lanes-val').textContent = v;
     lab.set_lane_count(v);
+    lab.reset();
   });
 
   document.getElementById('grid').addEventListener('change', e => {
@@ -481,6 +491,8 @@ async function main() {
       tick:       lab.nocache_tick(),
       simSeconds: lab.nocache_sim_seconds(),
       vehicles:   lab.nocache_vehicles_processed(),
+      discharged: lab.nocache_vehicles_discharged(),
+      avgWait:    lab.nocache_avg_wait_sec(),
       tps:        lab.tps_nocache(),
       isCached:   false,
     };
@@ -496,6 +508,8 @@ async function main() {
       tick:          lab.cached_tick(),
       simSeconds:    lab.cached_sim_seconds(),
       vehicles:      lab.cached_vehicles_processed(),
+      discharged:    lab.cached_vehicles_discharged(),
+      avgWait:       lab.cached_avg_wait_sec(),
       tps:           lab.tps_cached(),
       nocacheTps:    lab.tps_nocache(),
       cacheHits:     lab.cache_hits(),
