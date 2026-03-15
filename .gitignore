@@ -14,3 +14,5 @@ trafficlab/pkg/
 trafficlab/dist/
 trafficlab/target/
 trafficlab/Cargo.lock
+# TrafficLab deployed assets (built by CI / make deploy-trafficlab)
+web/trafficlab/

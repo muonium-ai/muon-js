@@ -47,6 +47,14 @@ release: build-release
 	cp pkg/trafficlab.js pkg/trafficlab_bg.wasm $(DIST_DIR)/pkg/
 	@echo "Release artifacts written to $(DIST_DIR)/"
 
+## deploy: Build release and copy web assets to web/trafficlab/ for GitHub Pages.
+## The Pages workflow (pages.yml) also runs this path directly.
+deploy: build-release
+	@mkdir -p ../web/trafficlab/pkg
+	cp index.html app.js ../web/trafficlab/
+	cp pkg/trafficlab.js pkg/trafficlab_bg.wasm ../web/trafficlab/pkg/
+	@echo "TrafficLab assets written to web/trafficlab/ (served at /muon-js/trafficlab/)"
+
 ## clean: Remove wasm-bindgen output and release artifacts.
 clean:
-	rm -rf pkg/ $(DIST_DIR)/
+	rm -rf pkg/ $(DIST_DIR)/ ../web/trafficlab/

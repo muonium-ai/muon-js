@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test cargo-package-verify cargo-publish build-trafficlab serve-trafficlab release-trafficlab bench-trafficlab
+.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test cargo-package-verify cargo-publish build-trafficlab serve-trafficlab release-trafficlab bench-trafficlab deploy-trafficlab
 
 MUON_CACHE_HOST ?= 127.0.0.1
 MUON_CACHE_PORT ?= 6379
@@ -122,6 +122,10 @@ serve-trafficlab:
 
 release-trafficlab:
 	$(MAKE) -C trafficlab release
+
+## deploy-trafficlab: Build release WASM and copy assets to web/trafficlab/ for Pages.
+deploy-trafficlab:
+	$(MAKE) -C trafficlab deploy
 
 bench-trafficlab:
 	@echo "[bench-trafficlab] Running cached vs non-cached benchmark (T-000112 implements full harness)"

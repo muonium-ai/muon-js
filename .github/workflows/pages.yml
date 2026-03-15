@@ -2,7 +2,7 @@ name: Deploy Demo to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/trafficlab-wasm-demo]
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,8 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Build WASM
+      # ── MuonCache demo (existing) ──────────────────────────────────
+      - name: Build MuonCache demo WASM
         run: make web-demo-wasm
 
       - name: Install npm dependencies
@@ -49,7 +50,32 @@ jobs:
 
       - name: Build Vite app
         working-directory: web/demo
+        # base path must match the GitHub Pages repo sub-path
         run: VITE_BASE_PATH=/muon-js/ npm run build
+
+      # ── TrafficLab demo ────────────────────────────────────────────
+      - name: Build TrafficLab WASM
+        run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            --manifest-path trafficlab/Cargo.toml
+          mkdir -p web/trafficlab/pkg
+          wasm-bindgen --target web --out-dir web/trafficlab/pkg \
+            trafficlab/target/wasm32-unknown-unknown/release/trafficlab.wasm
+
+      - name: Copy TrafficLab web assets
+        run: |
+          cp trafficlab/index.html web/trafficlab/
+          cp trafficlab/app.js    web/trafficlab/
+
+      # ── Assemble combined site ─────────────────────────────────────
+      # Layout:
+      #   _site/              → https://muonium-ai.github.io/muon-js/
+      #   _site/trafficlab/   → https://muonium-ai.github.io/muon-js/trafficlab/
+      - name: Assemble site
+        run: |
+          mkdir -p _site/trafficlab
+          cp -r web/demo/dist/. _site/
+          cp -r web/trafficlab/. _site/trafficlab/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -57,7 +83,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web/demo/dist
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
