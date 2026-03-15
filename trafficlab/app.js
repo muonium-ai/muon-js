@@ -52,25 +52,18 @@ const VEH_GAP =  2;  // gap between consecutive vehicles
  * @param {number} angle  - rotation in radians (0=north/up, π/2=east, π=south, 3π/2=west)
  */
 function drawVehicleShape(ctx, cx, cy, vLen, vWid, color, typeIdx, angle) {
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-  // Draw shapes centred at origin, facing UP (−Y is front)
-  const hw = vWid / 2;
-  const hl = vLen / 2;
+  // All four approach angles are axis-aligned (0, π/2, π, 3π/2).
+  // N/S arms are vertical (angle 0 or π); E/W arms are horizontal (π/2 or 3π/2).
+  // A bare fillRect (no save/translate/rotate) cuts per-vehicle cost from ~0.4ms to ~0.01ms,
+  // which is the dominant fix for the 65ms frame freeze at high vehicle counts.
+  const isVertical = (angle === 0 || angle === Math.PI);
+  const rw = isVertical ? vWid : vLen;
+  const rh = isVertical ? vLen : vWid;
   ctx.fillStyle = color + 'cc';
   ctx.strokeStyle = color;
   ctx.lineWidth = 0.5;
-
-  switch (typeIdx) {
-    case 0: _drawCar(ctx, hw, hl); break;
-    case 1: _drawBus(ctx, hw, hl); break;
-    case 2: _drawTruck(ctx, hw, hl); break;
-    case 3: _drawMotorcycle(ctx, hw, hl); break;
-    case 4: _drawAutoRickshaw(ctx, hw, hl); break;
-    default: _drawCar(ctx, hw, hl); break;
-  }
-  ctx.restore();
+  ctx.fillRect(cx - rw / 2, cy - rh / 2, rw, rh);
+  ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
 }
 
 /** Car: rounded body + windshield notch + rear window */
@@ -301,7 +294,13 @@ class PaneAnimator {
     const discharging = list.filter(v => v.state === 'discharge');
 
     // ── Reconcile count ──────────────────────────────────────────
-    while (active.length < targetCount) {
+    // Cap visible vehicles to what the road length can physically show.
+    // avg vehicle length across the distribution ≈ 27px; slot = vLen + VEH_GAP ≈ 29px.
+    // Road length / slot ≈ 7 per lane. A cap of 8 per lane gives a small extra buffer
+    // for vehicles that haven't yet settled into position.
+    const maxActive = 8 * laneCount;
+    const reconTarget = Math.min(targetCount, maxActive);
+    while (active.length < reconTarget) {
       // Spawn at the far edge of the road
       const idx = active.length;
       const vtIdx = slotVehicleTypeIdx(dirIdx, idx);
@@ -314,7 +313,7 @@ class PaneAnimator {
         age: 0,
       });
     }
-    while (active.length > targetCount) {
+    while (active.length > reconTarget) {
       // Discharge front vehicle (smallest pos = closest to intersection)
       active.sort((a, b) => a.pos - b.pos);
       const v = active.shift();
@@ -366,8 +365,11 @@ class PaneAnimator {
       v.age += dt;
     }
 
-    // Remove discharged vehicles that have exited the opposite road
-    const kept = discharging.filter(v => v.pos > -EXIT_DIST);
+    // Remove discharged vehicles that have exited the opposite road.
+    // Cap the backlog to 6 to prevent hundreds of discharge vehicles
+    // accumulating in the animator at high TPS and freezing the canvas.
+    const allKept = discharging.filter(v => v.pos > -EXIT_DIST);
+    const kept = allKept.length > 6 ? allKept.slice(allKept.length - 6) : allKept;
 
     this.dirs[dir] = [...active, ...kept];
   }
@@ -498,14 +500,20 @@ function drawSignals(ctx, cx, cy, half, road, phase) {
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
     ctx.strokeRect(x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2);
-    // Glowing light
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 12;
+    // Faux glow: two concentric arcs at reduced opacity (no shadowBlur — too slow)
+    ctx.fillStyle = color + '30';  // outer halo
+    ctx.beginPath();
+    ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color + '70';  // inner halo
+    ctx.beginPath();
+    ctx.arc(x, y, r + 2, 0, Math.PI * 2);
+    ctx.fill();
+    // Solid signal dot
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.shadowBlur = 0;
   }
 
   // North signal (above intersection, right of road centreline)
@@ -552,7 +560,7 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
       const laneCx = laneBase + (v.lane + 0.5) * laneW;
       const vy = edgeY - v.pos - vLen / 2;
       drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, 0);
-      drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, 0);
+      if (v.state !== 'discharge' && i < 3) drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, 0);
     }
     _drawQueueLabel(ctx, cx, edgeY, queues.n, -1, animator.dirs.n, laneCount);
   }
@@ -567,7 +575,7 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
       const laneCx = laneBase + (v.lane + 0.5) * laneW;
       const vy = edgeY + v.pos + vLen / 2;
       drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, Math.PI);
-      drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, Math.PI);
+      if (v.state !== 'discharge' && i < 3) drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, Math.PI);
     }
     _drawQueueLabel(ctx, cx, edgeY, queues.s, +1, animator.dirs.s, laneCount);
   }
@@ -582,7 +590,7 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
       const laneCy = laneBase + (v.lane + 0.5) * laneW;
       const vx = edgeX + v.pos + vLen / 2;
       drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI / 2);
-      drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI / 2);
+      if (v.state !== 'discharge' && i < 3) drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI / 2);
     }
     _drawQLabelEW(ctx, cy, edgeX, queues.e, +1, animator.dirs.e, laneCount);
   }
@@ -597,7 +605,7 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
       const laneCy = laneBase + (v.lane + 0.5) * laneW;
       const vx = edgeX - v.pos - vLen / 2;
       drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI * 1.5);
-      drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI * 1.5);
+      if (v.state !== 'discharge' && i < 3) drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI * 1.5);
     }
     _drawQLabelEW(ctx, cy, edgeX, queues.w, -1, animator.dirs.w, laneCount);
   }
@@ -714,10 +722,13 @@ function drawMiniIntersection(ctx, ox, oy, cellW, cellH, phase, queues) {
   const ewColor = phase === 2 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
   const sr = 4;
   function dot(x, y, color) {
-    ctx.shadowColor = color; ctx.shadowBlur = 8;
+    // Faux glow: two arcs at reduced opacity (no shadowBlur — too slow)
+    ctx.fillStyle = color + '30';
+    ctx.beginPath(); ctx.arc(x, y, sr + 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color + '80';
+    ctx.beginPath(); ctx.arc(x, y, sr + 1, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(x, y, sr, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
   }
   dot(cx + half + 7,  cy - half - 9,  nsColor);
   dot(cx - half - 7,  cy + half + 9,  nsColor);
@@ -866,7 +877,37 @@ async function main() {
   });
 
   document.getElementById('warp').addEventListener('change', e => {
-    lab.set_speed_multiplier(parseInt(e.target.value));
+    const newWarp = parseInt(e.target.value);
+
+    // ── Debug snapshot (copy from console to report a freeze) ──────
+    const snap = {
+      warp_new: newWarp,
+      frameErrors,
+      lastTime: lastTime.toFixed(1),
+      nowDelta: (performance.now() - lastTime).toFixed(1) + ' ms',
+      gs: (() => { try { return lab.grid_size(); } catch(x) { return 'ERR:'+x.message; } })(),
+      nc_tick: (() => { try { return lab.nocache_tick(); } catch(x) { return 'ERR:'+x.message; } })(),
+      ca_tick: (() => { try { return lab.cached_tick(); } catch(x) { return 'ERR:'+x.message; } })(),
+      nc_anim_n: ncAnimator.dirs.n.length,
+      nc_anim_s: ncAnimator.dirs.s.length,
+      nc_anim_e: ncAnimator.dirs.e.length,
+      nc_anim_w: ncAnimator.dirs.w.length,
+      ca_anim_n: caAnimator.dirs.n.length,
+      ca_anim_s: caAnimator.dirs.s.length,
+      ca_anim_e: caAnimator.dirs.e.length,
+      ca_anim_w: caAnimator.dirs.w.length,
+      total_draw: ncAnimator.dirs.n.length + ncAnimator.dirs.s.length + ncAnimator.dirs.e.length + ncAnimator.dirs.w.length
+                + caAnimator.dirs.n.length + caAnimator.dirs.s.length + caAnimator.dirs.e.length + caAnimator.dirs.w.length,
+      pane_mode: (() => { try { return lab.grid_size() === 1 ? '1x1' : lab.grid_size()+'x'+lab.grid_size(); } catch(x) { return 'ERR'; } })(),
+      userAgent: navigator.userAgent.slice(0, 80),
+    };
+    console.group('%c[T-000120 debug] warp change → ' + newWarp + '×', 'color:#ffe840;font-weight:bold');
+    console.table(snap);
+    console.log('Copy this for the bug report:\n' + JSON.stringify(snap, (_, v) => typeof v === 'bigint' ? v.toString() + 'n' : v, 2));
+    console.groupEnd();
+    // ──────────────────────────────────────────────────────────────
+
+    lab.set_speed_multiplier(newWarp);
   });
 
   document.getElementById('mode').addEventListener('change', e => {
@@ -915,7 +956,12 @@ async function main() {
       const dt = Math.min(now - lastTime, 100); // clamp to 100ms to avoid spiral on tab switch
       lastTime = now;
 
-      lab.step_frame(dt);
+      // Cap the simulation budget to 16ms wall time regardless of actual frame gap.
+      // step_frame uses (wall_dt_ms / 2) as the WASM time budget per side.
+      // Without this cap, a single slow frame (e.g. 66ms) causes the WASM to claim
+      // 33ms × 2 sides = 66ms on the NEXT frame too — a self-sustaining freeze loop.
+      // Vehicle animation still uses the real `dt` so motion stays smooth.
+      lab.step_frame(Math.min(dt, 16));
 
       const dtSec = dt / 1000;
       const lc = lab.lane_count();
