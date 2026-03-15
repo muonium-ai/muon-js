@@ -228,34 +228,18 @@
   </header>
 
   <div class="tab-bar">
-    <button class="tab-btn tab-bench active" id="tab-btn-bench">&#9881; Benchmark</button>
-    <button class="tab-btn tab-idm"   id="tab-btn-idm">&#9873; IDM Live</button>
+    <button class="tab-btn tab-bench" id="tab-btn-bench">&#9881; Benchmark</button>
+    <button class="tab-btn tab-idm active"   id="tab-btn-idm">&#9873; IDM Live</button>
   </div>
 
   <!-- ── Benchmark tab ── -->
-  <div class="tab-panel active" id="tab-bench">
+  <div class="tab-panel" id="tab-bench">
   <div class="sim-wrapper">
     <div class="sim-labels">
       <div class="sim-label nocache">&#9747; No Cache</div>
       <div class="sim-label cached">&#9889; MuonCache Enabled</div>
     </div>
     <canvas id="sim-canvas" width="1200" height="580"></canvas>
-  </div>
-  </div>
-
-  <!-- ── IDM Live tab ── -->
-  <div class="tab-panel" id="tab-idm">
-    <canvas id="idm-canvas" width="900" height="600" style="display:block;width:100%;max-width:900px;height:auto;border:1px solid #2a2a2e;border-radius:6px;background:#111114;margin:0 auto;"></canvas>
-    <div class="controls" id="idm-controls">
-      <div class="ctrl-group">
-        <label>Vehicles / min <span class="ctrl-value" id="idm-vpm-val">120</span></label>
-        <input id="idm-vpm" type="range" min="20" max="600" step="10" value="120" />
-      </div>
-      <div class="ctrl-group">
-        <label>Signal cycle (s) <span class="ctrl-value" id="idm-cycle-val">60</span></label>
-        <input id="idm-cycle" type="range" min="10" max="120" step="5" value="60" />
-      </div>
-    </div>
   </div>
 
   <!-- Interactive controls -->
@@ -275,10 +259,10 @@
     <div class="ctrl-group">
       <label>Time warp</label>
       <select id="warp">
-        <option value="1">1×</option>
-        <option value="10">10×</option>
-        <option value="100">100×</option>
-        <option value="1000" selected>1000×</option>
+        <option value="1">1&times;</option>
+        <option value="10">10&times;</option>
+        <option value="100">100&times;</option>
+        <option value="1000" selected>1000&times;</option>
       </select>
     </div>
     <div class="ctrl-group">
@@ -300,9 +284,9 @@
     <div class="ctrl-group">
       <label>Grid size</label>
       <select id="grid">
-        <option value="1" selected>1×1</option>
-        <option value="2">2×2</option>
-        <option value="3">3×3</option>
+        <option value="1" selected>1&times;1</option>
+        <option value="2">2&times;2</option>
+        <option value="3">3&times;3</option>
       </select>
     </div>
     <div class="ctrl-group" style="justify-content: flex-end;">
@@ -319,12 +303,28 @@
     <div class="legend-item"><div class="legend-dot" style="background:#a052e0"></div>Auto-rickshaw (5%)</div>
   </div>
 
-  <div id="status-bar">Loading WASM…</div>
+  <div id="status-bar">Loading WASM&hellip;</div>
 
   <div class="footer">
     <a href="https://github.com/muonium-ai/muon-js" target="_blank" rel="noopener">GitHub</a>
     <span style="color:#333">|</span>
     <button class="share-btn" id="btn-share" title="Copy demo link to clipboard">&#128279; Share</button>
+  </div>
+  </div><!-- /#tab-bench -->
+
+  <!-- ── IDM Live tab ── -->
+  <div class="tab-panel active" id="tab-idm">
+    <canvas id="idm-canvas" width="900" height="600" style="display:block;width:100%;max-width:900px;height:auto;border:1px solid #2a2a2e;border-radius:6px;background:#111114;margin:0 auto;"></canvas>
+    <div class="controls" id="idm-controls">
+      <div class="ctrl-group">
+        <label>Vehicles / min <span class="ctrl-value" id="idm-vpm-val">120</span></label>
+        <input id="idm-vpm" type="range" min="20" max="600" step="10" value="120" />
+      </div>
+      <div class="ctrl-group">
+        <label>Signal cycle (s) <span class="ctrl-value" id="idm-cycle-val">60</span></label>
+        <input id="idm-cycle" type="range" min="10" max="120" step="5" value="60" />
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./app.js"></script>

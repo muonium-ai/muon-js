@@ -14,6 +14,7 @@
 
 import init, { TrafficLab } from './pkg/trafficlab.js';
 import { IDMIntersection, IDMRenderer } from './idm.js';
+import initMuonCache, { WasmMuonCache } from './muon_cache_wasm/muon_js.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1073,12 +1074,79 @@ main().catch(err => {
 
 // ── IDM Live tab ──────────────────────────────────────────────────────────
 
-(function initIDM() {
+(async function initIDM() {
   const idmCanvas = document.getElementById('idm-canvas');
   if (!idmCanvas) return;
 
-  const sim      = new IDMIntersection();
+  // ── MuonCache init ───────────────────────────────────────────────
+  let cache = null;
+  try {
+    await initMuonCache();
+    cache = new WasmMuonCache(1);
+  } catch (e) {
+    console.warn('MuonCache unavailable — scores will not be saved:', e);
+  }
+
+  let leaderboardRows = [];
+
+  function saveRoundScore(roundNum, s) {
+    if (!cache) return;
+    try {
+      const key = `game:${roundNum}`;
+      cache.exec_batch([
+        { kind: 'hset', key, field: 'duration_s',   value: String(s._simTimeSec.toFixed(2)) },
+        { kind: 'hset', key, field: 'cars_crossed',  value: String(s.throughput) },
+        { kind: 'hset', key, field: 'max_wait_s',    value: String(s.maxWait.toFixed(2)) },
+        { kind: 'zadd', key: 'leaderboard:duration', score: s._simTimeSec, member: key },
+        { kind: 'zadd', key: 'leaderboard:cars',     score: s.throughput,  member: key },
+      ]);
+    } catch (e) {
+      console.warn('Score save failed:', e);
+    }
+  }
+
+  function getLeaderboard() {
+    if (!cache) return [];
+    try {
+      const rangeRes = cache.exec({ kind: 'zrange', key: 'leaderboard:duration', start: -5, stop: -1 });
+      const members  = (rangeRes?.data ?? []).slice().reverse(); // highest first
+      return members.map((id, i) => {
+        const fields = cache.exec_batch([
+          { kind: 'hget', key: id, field: 'duration_s' },
+          { kind: 'hget', key: id, field: 'cars_crossed' },
+          { kind: 'hget', key: id, field: 'max_wait_s' },
+        ]);
+        return {
+          rank:         i + 1,
+          id,
+          duration_s:   parseFloat(fields[0]?.data  ?? '0'),
+          cars_crossed: parseInt(fields[1]?.data    ?? '0', 10),
+          max_wait_s:   parseFloat(fields[2]?.data  ?? '0'),
+        };
+      });
+    } catch (e) {
+      console.warn('Leaderboard fetch failed:', e);
+      return [];
+    }
+  }
+
+  let sim      = new IDMIntersection();
   const renderer = new IDMRenderer(idmCanvas);
+
+  // ── Round management ─────────────────────────────────────────────
+  let roundNumber  = 1;
+  let roundEnding  = false;
+  let roundEndTime = 0;
+  const ROUND_PAUSE_MS = 3000;
+
+  function resetRound() {
+    const vpm      = parseInt(document.getElementById('idm-vpm').value);
+    const cycleMs  = parseInt(document.getElementById('idm-cycle').value) * 1000;
+    sim = new IDMIntersection();
+    sim.setVpm(vpm);
+    sim.setCycleMs(cycleMs);
+    roundEnding = false;
+  }
 
   // Controls
   document.getElementById('idm-vpm').addEventListener('input', e => {
@@ -1106,8 +1174,28 @@ main().catch(err => {
     const dt = Math.min((now - idmLastTime) / 1000, 0.1);  // seconds, capped at 100ms
     idmLastTime = now;
 
-    sim.step(dt);
-    renderer.draw(sim);
+    // Detect new collision → save score, update leaderboard, start countdown
+    if (sim.collisionPair && !roundEnding) {
+      roundEnding  = true;
+      roundEndTime = now;
+      saveRoundScore(roundNumber, sim);
+      leaderboardRows = getLeaderboard();
+    }
+
+    if (!roundEnding) {
+      sim.step(dt);
+    }
+
+    const elapsed   = now - roundEndTime;
+    const countdown = roundEnding ? Math.max(0, Math.ceil((ROUND_PAUSE_MS - elapsed) / 1000)) : null;
+    renderer.draw(sim, { roundNumber, countdown });
+    renderer.drawLeaderboard(leaderboardRows, `game:${roundNumber}`);
+
+    // After pause, start new round
+    if (roundEnding && elapsed >= ROUND_PAUSE_MS) {
+      roundNumber++;
+      resetRound();
+    }
   }
 
   // ── Tab switching ────────────────────────────────────────────────
@@ -1139,4 +1227,7 @@ main().catch(err => {
 
   btnBench.addEventListener('click', showBench);
   btnIdm.addEventListener('click', showIdm);
-})();
+
+  // IDM is the default tab — start immediately
+  showIdm();
+})().catch(err => console.error('IDM init error:', err));

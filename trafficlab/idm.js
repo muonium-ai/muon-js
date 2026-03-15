@@ -119,9 +119,14 @@ function idmAccel(v, gap, vLead) {
 }
 
 // ── Signal helpers ────────────────────────────────────────────────
+// 8-phase sequential cycle: N-green, N-yellow, E-green, E-yellow,
+//                            S-green, S-yellow, W-green, W-yellow.
+// Only one arm flows at a time — no crossing traffic, no central congestion.
+const PHASE_ARM   = ['n', 'n', 'e', 'e', 's', 's', 'w', 'w'];
+const PHASE_STATE = ['green', 'yellow', 'green', 'yellow', 'green', 'yellow', 'green', 'yellow'];
+
 function isGreen(arm, phase) {
-  if (arm === 'n' || arm === 's') return phase === 0;
-  return phase === 2;
+  return PHASE_STATE[phase] === 'green' && PHASE_ARM[phase] === arm;
 }
 
 // ── IDM Intersection ──────────────────────────────────────────────
@@ -147,9 +152,13 @@ export class IDMIntersection {
     this.throughput = 0;
     this.waitSum    = 0;
     this._simTimeSec = 0;
+    this.maxWait    = 0;
 
     // Per-frame position cache (MuonCache API shape) — rebuilt at the top of every step()
     this._posCache = new VehiclePositionCache();
+
+    // Set to [vA, vB] on first detected overlap; step() becomes a no-op after this.
+    this.collisionPair = null;
   }
 
   setVpm(v)      { this.vpm = v; }
@@ -160,9 +169,13 @@ export class IDMIntersection {
   _updateSignal(dtMs) {
     this.elapsed += dtMs;
     const c = this.cycleMs;
-    const durations = [c * 0.45, c * 0.05, c * 0.45, c * 0.05];
+    // Each arm gets equal green time; yellow is 5% of that slice.
+    const slice  = c / 4;                   // time per arm
+    const yellow = slice * 0.10;            // 10% of slice = yellow
+    const green  = slice - yellow;          // 90% = green
+    const durations = [green, yellow, green, yellow, green, yellow, green, yellow];
     let boundary = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 8; i++) {
       boundary += durations[i];
       if (this.elapsed < boundary) { this.phase = i; return; }
     }
@@ -171,8 +184,8 @@ export class IDMIntersection {
   }
 
   get drawPhase() {
-    // 0=NS-green, 1=yellow, 2=EW-green, (3=yellow→NS treated as yellow)
-    return this.phase <= 1 ? this.phase : (this.phase === 2 ? 2 : 1);
+    // Returns { arm, state } so the renderer can colour each signal independently.
+    return { arm: PHASE_ARM[this.phase], state: PHASE_STATE[this.phase] };
   }
 
   // ── Spawning ────────────────────────────────────────────────────
@@ -214,6 +227,7 @@ export class IDMIntersection {
   // ── Physics step ────────────────────────────────────────────────
 
   step(dtSec) {
+    if (this.collisionPair) return;  // frozen after collision
     this._simTimeSec += dtSec;
     this._updateSignal(dtSec * 1000);
     this._spawn(dtSec);
@@ -243,8 +257,13 @@ export class IDMIntersection {
           const v = lv[i];
           let gap, vLead;
           if (i === 0) {
-            if (green || v.pos <= 0) { gap = 999; vLead = IDM_V0; }
-            else { gap = Math.max(v.pos - v.vt.len / 2, 0.1); vLead = 0; }
+            if (green) { gap = 999; vLead = IDM_V0; }
+            else {
+              // gap = distance from front of vehicle to stop-line
+              // pos is front-to-stop-line distance, so gap = pos directly
+              gap   = Math.max(v.pos, 0.1);
+              vLead = 0;
+            }
           } else {
             const leader = lv[i - 1];
             gap   = Math.max(v.pos - leader.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
@@ -253,11 +272,14 @@ export class IDMIntersection {
           const a = idmAccel(v.vel, gap, vLead);
           v.vel = Math.max(0, v.vel + a * dtSec);
           v.pos -= v.vel * dtSec;
-          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) v.waiting += dtSec;
+          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) {
+            v.waiting += dtSec;
+            if (v.waiting > this.maxWait) this.maxWait = v.waiting;
+          }
         }
       }
 
-      // Move vehicles that crossed the stop-line into the turning list
+      // Move vehicles whose FRONT has reached the stop-line (pos <= 0) into turning
       const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
       this.approaching[arm] = remaining;
       for (const v of crossed) {
@@ -392,6 +414,70 @@ export class IDMIntersection {
       // Remove vehicles that have cleared the visible road
       this.exiting[arm] = this.exiting[arm].filter(v => v.pos < ROAD_M + SPAWN_EXTRA + 4);
     }
+
+    // ── End-of-step overlap check ─────────────────────────────────
+    // Read screen positions from the position cache (already populated above).
+    // Only turning vehicles are in the cache; for approaching/exiting we use their
+    // 1-D lane position. Within a lane, gaps are guaranteed by IDM; we only need
+    // to check turning vehicles against each other (cross-path case).
+    const ids = this._posCache.ids();
+    outer:
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const ai = ids[i], aj = ids[j];
+        const dx   = this._posCache.hget(ai, 'x') - this._posCache.hget(aj, 'x');
+        const dy   = this._posCache.hget(ai, 'y') - this._posCache.hget(aj, 'y');
+        const dist = Math.hypot(dx, dy);
+        const minD = this._posCache.hget(ai, 'r') + this._posCache.hget(aj, 'r');
+        if (dist < minD * 0.72) {  // 0.72 ≈ half-overlap before triggering freeze
+          const va = this.turning.find(v => v.id === ai);
+          const vb = this.turning.find(v => v.id === aj);
+          if (va && vb) {
+            this.collisionPair = [va, vb];
+            const report = {
+              event      : 'IDM_COLLISION',
+              sim_time_s : parseFloat(this._simTimeSec.toFixed(2)),
+              overlap_pct: parseFloat(((1 - dist / minD) * 100).toFixed(1)),
+              dist_px    : parseFloat(dist.toFixed(1)),
+              min_safe_px: parseFloat(minD.toFixed(1)),
+              vehicles: [
+                {
+                  num     : va.num,
+                  id      : va.id,
+                  type    : va.vt.label,
+                  from    : va.arm.toUpperCase(),
+                  to      : va.exitArm.toUpperCase(),
+                  turn    : va.turn,
+                  in_lane : inboundLabel(va.arm, va.lane),
+                  out_lane: outboundLabel(va.exitArm, va.exitLane),
+                  progress: parseFloat((va.turnPos * 100).toFixed(1)),
+                  speed_ms: parseFloat(va.turnSpeed.toFixed(2)),
+                  pos_x   : parseFloat(this._posCache.hget(ai, 'x').toFixed(1)),
+                  pos_y   : parseFloat(this._posCache.hget(ai, 'y').toFixed(1)),
+                },
+                {
+                  num     : vb.num,
+                  id      : vb.id,
+                  type    : vb.vt.label,
+                  from    : vb.arm.toUpperCase(),
+                  to      : vb.exitArm.toUpperCase(),
+                  turn    : vb.turn,
+                  in_lane : inboundLabel(vb.arm, vb.lane),
+                  out_lane: outboundLabel(vb.exitArm, vb.exitLane),
+                  progress: parseFloat((vb.turnPos * 100).toFixed(1)),
+                  speed_ms: parseFloat(vb.turnSpeed.toFixed(2)),
+                  pos_x   : parseFloat(this._posCache.hget(aj, 'x').toFixed(1)),
+                  pos_y   : parseFloat(this._posCache.hget(aj, 'y').toFixed(1)),
+                },
+              ],
+            };
+            console.log('%c⚠ IDM COLLISION — copy JSON below', 'color:#ff4444;font-weight:bold;font-size:13px');
+            console.log(JSON.stringify(report, null, 2));
+            break outer;
+          }
+        }
+      }
+    }
   }
 
   avgWaitSec() {
@@ -434,26 +520,20 @@ function armPos(arm, lane, posPx, cx, cy, roadPx) {
   // inbound offset from road centre (positive = away from centre on inbound side)
   const inOffset = (lane + 0.5) * laneWPx;
 
-  // Angle convention: after ctx.rotate(angle), local-y must point in the direction of travel.
-  // ctx.rotate(θ) maps local-y → screen direction (-sinθ, cosθ).
-  //   N (travel south  = screen +y): need cosθ=1, sinθ=0  → θ = 0
-  //   S (travel north  = screen -y): need cosθ=-1,sinθ=0  → θ = π
-  //   E (travel west   = screen -x): need sinθ=-1,cosθ=0  → θ = -π/2  (local-y→screen-left)
-  //   W (travel east   = screen +x): need sinθ=1, cosθ=0  → θ = π/2   (local-y→screen-right)
-  // Wait — for E: local-y→(-sinθ,cosθ)=(-1,0)=screen-left ✓ when θ=π/2.
-  //   sinθ=1,cosθ=0 → θ=π/2.  For W: (-sinθ,cosθ)=(1,0)=screen-right ✓ when θ=-π/2.
+  // posPx is measured from the stop-line to the vehicle's FRONT face.
+  // We render at the vehicle CENTRE, so we add halfLen to push the centre back.
+  // halfLen is not known here (it varies per vehicle), so the caller passes
+  // posPx already = v.pos * M2PX (distance front-to-stop-line);
+  // armPos adds nothing extra — the shift is applied at the call site by
+  // passing (v.pos + v.vt.len/2) * M2PX as posPx.
   switch (arm) {
     case 'n':
-      // travelling south (screen +y), inbound lane right of centre (+x)
       return { x: cx + inOffset, y: cy - roadPx - posPx, angle: 0 };
     case 's':
-      // travelling north (screen -y), inbound lane left of centre (-x)
       return { x: cx - inOffset, y: cy + roadPx + posPx, angle: Math.PI };
     case 'e':
-      // travelling west (screen -x), inbound lane below centre (+y)
       return { x: cx + roadPx + posPx, y: cy + inOffset, angle: Math.PI / 2 };
     case 'w':
-      // travelling east (screen +x), inbound lane above centre (-y)
       return { x: cx - roadPx - posPx, y: cy - inOffset, angle: -Math.PI / 2 };
   }
 }
@@ -516,8 +596,14 @@ function turnBezier(v, t, cx, cy, roadPx) {
   return { x: bx, y: by, angle };
 }
 
-// Arrow characters per turn direction
-const TURN_ARROW = { straight: '↑', left: '←', right: '→' };
+// Arrow characters per turn direction.
+// These are rendered in the vehicle's ROTATED local frame:
+//   ctx.rotate(θ) maps local +y → travel direction.
+//   Text "up" sweeps clockwise by θ, so ↑ appears BACKWARD.
+//   ↓ → local +y → forward (travel direction)      ✓ straight
+//   → → local +x → driver's LEFT  (for all arms)   ✓ left turn
+//   ← → local −x → driver's RIGHT (for all arms)   ✓ right turn
+const TURN_ARROW = { straight: '↓', left: '→', right: '←' };
 
 /**
  * armPosOut — screen position for a vehicle that has exited the intersection
@@ -545,7 +631,7 @@ export class IDMRenderer {
     this.H      = canvas.height;
   }
 
-  draw(sim) {
+  draw(sim, opts = {}) {
     const { ctx, W, H } = this;
     const cx = W / 2;
     const cy = H / 2;
@@ -562,7 +648,7 @@ export class IDMRenderer {
     this._drawSignals(cx, cy, roadPx, sim.drawPhase);
     this._drawLaneLabels(cx, cy, roadPx);
     this._drawVehicles(cx, cy, sim, roadPx, roadLenPx);
-    this._drawStats(sim);
+    this._drawStats(sim, opts);
   }
 
   _drawRoads(cx, cy, roadPx, roadLenPx) {
@@ -598,6 +684,18 @@ export class IDMRenderer {
       ctx.beginPath(); ctx.moveTo(cx + roadPx, cy + off); ctx.lineTo(cx + roadPx + roadLenPx, cy + off); ctx.stroke();
     }
     ctx.setLineDash([]);
+
+    // Stop lines — white bar across each inbound half-road, flush with intersection box
+    ctx.strokeStyle = '#ffffffcc';
+    ctx.lineWidth   = 2;
+    // N arm: horizontal line at cy - roadPx, spanning inbound (right) half
+    ctx.beginPath(); ctx.moveTo(cx,       cy - roadPx); ctx.lineTo(cx + roadPx, cy - roadPx); ctx.stroke();
+    // S arm: horizontal line at cy + roadPx, spanning inbound (left) half
+    ctx.beginPath(); ctx.moveTo(cx - roadPx, cy + roadPx); ctx.lineTo(cx,       cy + roadPx); ctx.stroke();
+    // E arm: vertical line at cx + roadPx, spanning inbound (bottom) half
+    ctx.beginPath(); ctx.moveTo(cx + roadPx, cy);       ctx.lineTo(cx + roadPx, cy + roadPx); ctx.stroke();
+    // W arm: vertical line at cx - roadPx, spanning inbound (top) half
+    ctx.beginPath(); ctx.moveTo(cx - roadPx, cy - roadPx); ctx.lineTo(cx - roadPx, cy);       ctx.stroke();
   }
 
   // Draw lane name badges at the road edge for all 4 arms.
@@ -657,10 +755,16 @@ export class IDMRenderer {
     this.ctx.fillRect(cx - roadPx, cy - roadPx, roadPx * 2, roadPx * 2);
   }
 
-  _drawSignals(cx, cy, roadPx, phase) {
+  _drawSignals(cx, cy, roadPx, drawPhase) {
     const { ctx } = this;
-    const nsColor = phase === 0 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
-    const ewColor = phase === 2 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
+    const GREEN  = '#52c87a';
+    const YELLOW = '#e8c84a';
+    const RED    = '#e05252';
+
+    const armColor = (arm) => {
+      if (drawPhase.arm === arm) return drawPhase.state === 'green' ? GREEN : YELLOW;
+      return RED;
+    };
 
     const drawLight = (x, y, color) => {
       const r = 7;
@@ -672,11 +776,12 @@ export class IDMRenderer {
       ctx.beginPath(); ctx.arc(x, y, r,     0, Math.PI * 2); ctx.fill();
     };
 
+    // One light per arm, at the near corner of the intersection box
     const o = roadPx + 14;
-    drawLight(cx - o, cy - o, nsColor);
-    drawLight(cx + o, cy - o, nsColor);
-    drawLight(cx - o, cy + o, ewColor);
-    drawLight(cx + o, cy + o, ewColor);
+    drawLight(cx,     cy - o, armColor('n'));  // N: top-centre
+    drawLight(cx,     cy + o, armColor('s'));  // S: bottom-centre
+    drawLight(cx + o, cy,     armColor('e'));  // E: right-centre
+    drawLight(cx - o, cy,     armColor('w'));  // W: left-centre
   }
 
   _drawVehicles(cx, cy, sim, roadPx, roadLenPx) {
@@ -688,7 +793,9 @@ export class IDMRenderer {
         const posPx = v.pos * M2PX;
         if (posPx > roadLenPx + 20) continue;  // not yet on screen
 
-        const { x, y, angle } = armPos(arm, v.lane, posPx, cx, cy, roadPx);
+        // pos = front-face distance to stop-line; render centre = front + halfLen
+        const centrePx = posPx + (v.vt.len / 2) * M2PX;
+        const { x, y, angle } = armPos(arm, v.lane, centrePx, cx, cy, roadPx);
         this._drawVehicle(v, x, y, angle);
       }
     }
@@ -704,7 +811,9 @@ export class IDMRenderer {
       for (const v of sim.exiting[arm]) {
         const posPx = v.pos * M2PX;
         if (posPx > roadLenPx + 20) continue;  // off canvas
-        const { x, y, angle } = armPosOut(arm, v.lane, posPx, cx, cy, roadPx);
+        // pos = front-face distance from exit stop-line; render at centre
+        const centrePx = posPx + (v.vt.len / 2) * M2PX;
+        const { x, y, angle } = armPosOut(arm, v.lane, centrePx, cx, cy, roadPx);
         this._drawVehicle(v, x, y, angle);
       }
     }
@@ -753,20 +862,94 @@ export class IDMRenderer {
     ctx.restore();
   }
 
-  _drawStats(sim) {
+  _drawStats(sim, opts = {}) {
     const { ctx, W, H } = this;
     const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0)
                    + sim.turning.length
                    + Object.values(sim.exiting).reduce((s, a) => s + a.length, 0);
-    const phase    = ['NS ▶', 'Yellow ●', 'EW ▶', 'Yellow ●'][sim.phase];
+    const phase    = ['N ▶', 'N ●', 'E ▶', 'E ●', 'S ▶', 'S ●', 'W ▶', 'W ●'][sim.phase];
     const lines = [
       `Signal: ${phase}`,
       `Active: ${totalVeh}  Throughput: ${sim.throughput}`,
-      `Avg wait: ${sim.avgWaitSec().toFixed(1)}s`,
+      `Avg wait: ${sim.avgWaitSec().toFixed(1)}s  Max: ${sim.maxWait.toFixed(1)}s`,
     ];
     ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
     ctx.fillStyle = '#aaa';
     let y = H - 14 - lines.length * 16;
     for (const line of lines) { ctx.fillText(line, 14, y); y += 16; }
+
+    if (sim.collisionPair) {
+      const [a, b] = sim.collisionPair;
+      const round    = opts.roundNumber || 1;
+      const countdown = typeof opts.countdown === 'number' ? opts.countdown : null;
+      ctx.textAlign = 'center';
+      ctx.font      = 'bold 15px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#ff4444';
+      ctx.fillText(`⚠ COLLISION  #${a.num} ↔ #${b.num}  — Round ${round} over`, W / 2, H / 2 + 30);
+      ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#ffaaaa';
+      if (countdown !== null) {
+        ctx.fillText(`Restarting in ${countdown}s`, W / 2, H / 2 + 52);
+      }
+      ctx.textAlign = 'left';
+    }
+  }
+
+  drawLeaderboard(rows, currentId) {
+    if (!rows || rows.length === 0) return;
+
+    const { ctx, W } = this;
+    const MARGIN     = 10;
+    const PAD_X      = 10;
+    const PAD_Y      = 8;
+    const ROW_H      = 18;
+    const FONT       = '11px "Segoe UI Mono", "Consolas", monospace';
+    const FONT_BOLD  = 'bold 12px "Segoe UI Mono", "Consolas", monospace';
+    const PANEL_W    = 248;
+    const panelH     = PAD_Y * 2 + ROW_H + rows.length * ROW_H;  // header + data rows
+    const x          = W - MARGIN - PANEL_W;
+    const y          = MARGIN;
+
+    ctx.save();
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.58)';
+    const r = 6;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + PANEL_W - r, y);
+    ctx.arcTo(x + PANEL_W, y, x + PANEL_W, y + r, r);
+    ctx.lineTo(x + PANEL_W, y + panelH - r);
+    ctx.arcTo(x + PANEL_W, y + panelH, x + PANEL_W - r, y + panelH, r);
+    ctx.lineTo(x + r, y + panelH);
+    ctx.arcTo(x, y + panelH, x, y + panelH - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+    ctx.fill();
+
+    // Header
+    ctx.font      = FONT_BOLD;
+    ctx.fillStyle = '#e0e0e0';
+    ctx.fillText('🏆 Top Runs', x + PAD_X, y + PAD_Y + 11);
+
+    // Data rows
+    let ry = y + PAD_Y + ROW_H;
+    for (const row of rows) {
+      const isCurrent = row.id === currentId;
+
+      if (isCurrent) {
+        ctx.fillStyle = 'rgba(255,200,0,0.22)';
+        ctx.fillRect(x + 2, ry - 13, PANEL_W - 4, ROW_H);
+      }
+
+      const label = `#${row.rank}  ${row.duration_s.toFixed(1)}s  ${row.cars_crossed} cars  ${row.max_wait_s.toFixed(1)}s wait`;
+      ctx.font      = isCurrent ? 'bold 11px "Segoe UI Mono","Consolas",monospace' : FONT;
+      ctx.fillStyle = isCurrent ? '#ffe066' : '#b0b0b0';
+      ctx.fillText(label, x + PAD_X, ry);
+      ry += ROW_H;
+    }
+
+    ctx.restore();
   }
 }
