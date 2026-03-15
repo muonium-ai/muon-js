@@ -339,48 +339,59 @@ function armPos(arm, lane, posPx, cx, cy, roadPx) {
 }
 
 /**
- * Smooth turn: quadratic Bezier from approach stop-line point → exit stop-line point.
+ * Smooth turn: cubic Bezier from approach stop-line → exit stop-line.
+ * Control points are tangent extensions from entry and exit directions,
+ * giving a tight arc for right turns, a wide arc for left turns, and a
+ * straight line for straight-through — the shortest natural path in each case.
  * t ∈ [0,1]. Returns {x, y, angle}.
  */
 function turnBezier(v, t, cx, cy, roadPx) {
   const laneWPx   = roadPx / LANES;
-  const inOffset  = (v.lane + 0.5) * laneWPx;
+  const inOffset  = (v.lane    + 0.5) * laneWPx;
   const outOffset = (v.exitLane + 0.5) * laneWPx;
 
-  // Start point: stop-line of entry arm
-  let p0, p2, c1;
+  // p0 = entry stop-line point, p2 = exit stop-line point
+  let p0, p2;
   switch (v.arm) {
     case 'n': p0 = { x: cx + inOffset,  y: cy - roadPx }; break;
     case 's': p0 = { x: cx - inOffset,  y: cy + roadPx }; break;
     case 'e': p0 = { x: cx + roadPx,    y: cy + inOffset }; break;
     case 'w': p0 = { x: cx - roadPx,    y: cy - inOffset }; break;
   }
-  // End point: stop-line of exit arm (outbound = on opposite side)
   switch (v.exitArm) {
-    case 'n': p2 = { x: cx - outOffset, y: cy - roadPx }; break;
-    case 's': p2 = { x: cx + outOffset, y: cy + roadPx }; break;
+    case 'n': p2 = { x: cx - outOffset, y: cy - roadPx  }; break;
+    case 's': p2 = { x: cx + outOffset, y: cy + roadPx  }; break;
     case 'e': p2 = { x: cx + roadPx,    y: cy - outOffset }; break;
     case 'w': p2 = { x: cx - roadPx,    y: cy + outOffset }; break;
   }
 
-  // Control point: intersection centre (biased slightly for turn direction)
-  const bias = v.turn === 'left' ? 0.6 : (v.turn === 'right' ? -0.6 : 0);
-  c1 = { x: cx + (p2.x - p0.x) * bias * 0.25 + cx * 0,
-          y: cy + (p2.y - p0.y) * bias * 0.25 + cy * 0 };
-  // Use intersection centre as control point (simple but smooth)
-  c1 = { x: cx, y: cy };
+  // Travel direction vectors:  ENTRY = into the intersection, EXIT = out of the exit arm.
+  // These match the armPos / armPosOut angle conventions exactly.
+  const ENTRY = { n: [0,1], s: [0,-1], e: [-1,0], w: [1,0]  };
+  const EXIT  = { n: [0,-1], s: [0,1], e: [1,0],  w: [-1,0] };
 
-  // Quadratic Bezier
+  // Control distance scales with chord length; 0.45 gives near-circular arcs for 90° turns
+  // and reduces to a straight line when p0→p2 are collinear with the tangents.
+  const chord = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+  const d = chord * 0.45;
+
+  const [ex, ey] = ENTRY[v.arm];
+  const [fx, fy] = EXIT[v.exitArm];
+  const c1 = { x: p0.x + d * ex, y: p0.y + d * ey };  // extend entry tangent
+  const c2 = { x: p2.x - d * fx, y: p2.y - d * fy };  // extend exit tangent back
+
+  // Cubic Bezier position
   const mt = 1 - t;
-  const bx = mt * mt * p0.x + 2 * mt * t * c1.x + t * t * p2.x;
-  const by = mt * mt * p0.y + 2 * mt * t * c1.y + t * t * p2.y;
+  const bx = mt*mt*mt*p0.x + 3*mt*mt*t*c1.x + 3*mt*t*t*c2.x + t*t*t*p2.x;
+  const by = mt*mt*mt*p0.y + 3*mt*mt*t*c1.y + 3*mt*t*t*c2.y + t*t*t*p2.y;
 
-  // Tangent direction: atan2(ty, tx) gives screen angle of velocity vector.
-  // We need draw angle θ such that local-y aligns with travel: (-sinθ, cosθ) = normalised(tx_,ty_).
-  // Solving: θ = atan2(tx_, -ty_)  — equivalent to atan2(ty_,tx_) - π/2
-  const tx_ = 2 * (1 - t) * (c1.x - p0.x) + 2 * t * (p2.x - c1.x);
-  const ty_ = 2 * (1 - t) * (c1.y - p0.y) + 2 * t * (p2.y - c1.y);
-  const angle = Math.atan2(tx_, -ty_);  // rotate 90° so local-y → travel direction
+  // Cubic Bezier tangent
+  const tx_ = 3*mt*mt*(c1.x-p0.x) + 6*mt*t*(c2.x-c1.x) + 3*t*t*(p2.x-c2.x);
+  const ty_ = 3*mt*mt*(c1.y-p0.y) + 6*mt*t*(c2.y-c1.y) + 3*t*t*(p2.y-c2.y);
+
+  // angle = atan2(-tx_, ty_) matches the armPos/armPosOut rotation convention,
+  // so vehicle orientation is continuous at the stop-line boundaries.
+  const angle = Math.atan2(-tx_, ty_);
 
   return { x: bx, y: by, angle };
 }
