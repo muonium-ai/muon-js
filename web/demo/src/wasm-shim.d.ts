@@ -7,5 +7,6 @@ declare module "./wasm/muon_js.js" {
     metrics_snapshot(): unknown;
     reset(): unknown;
     set_queue_depth(depth: number): unknown;
+    js_eval(source: string): string;
   }
 }

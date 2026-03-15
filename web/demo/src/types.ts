@@ -14,7 +14,8 @@ export type WorkerRequest =
   | { id: number; kind: "exec"; command: MuonCacheCommand }
   | { id: number; kind: "batch"; commands: MuonCacheCommand[] }
   | { id: number; kind: "metrics" }
-  | { id: number; kind: "reset" };
+  | { id: number; kind: "reset" }
+  | { id: number; kind: "js_eval"; source: string };
 
 export type WorkerResponse =
   | { id: number; ok: true; data: unknown }

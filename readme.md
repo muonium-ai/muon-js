@@ -239,6 +239,8 @@ Full history is tracked in `performance.md`.
 
 ## Browser Demo (WASM + WebGPU)
 
+**[Try the live demo](https://muonium-ai.github.io/muon-js/)**
+
 The repo includes a socketless browser demo under `web/demo`:
 
 - muoncache runs inside a dedicated Web Worker.

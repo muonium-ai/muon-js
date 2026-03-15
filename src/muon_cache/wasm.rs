@@ -5,6 +5,7 @@ use std::cell::Cell;
 use wasm_bindgen::prelude::*;
 
 use crate::muon_cache::core::{CoreCommand, CoreExecutor};
+use crate::{JS_EVAL_RETVAL, JS_Eval, JS_GetException, JS_NewContext, JS_ToCString, JS_ToString, JSCStringBuf};
 
 #[wasm_bindgen]
 pub struct WasmMuonCache {
@@ -53,6 +54,33 @@ impl WasmMuonCache {
     #[wasm_bindgen]
     pub fn set_queue_depth(&self, depth: u32) -> Result<(), JsValue> {
         self.with_core_mut(|core| core.set_queue_depth(depth))
+    }
+
+    #[wasm_bindgen]
+    pub fn js_eval(&self, source: &str) -> Result<JsValue, JsValue> {
+        let mut mem = vec![0u8; 4 * 1024 * 1024];
+        let mut ctx = JS_NewContext(&mut mem);
+        let val = JS_Eval(&mut ctx, source, "playground", JS_EVAL_RETVAL);
+        if val.is_exception() {
+            let exc = JS_GetException(&mut ctx);
+            let exc_str = JS_ToString(&mut ctx, exc);
+            let mut buf = JSCStringBuf { buf: [0u8; 5] };
+            let msg = JS_ToCString(&mut ctx, exc_str, &mut buf);
+            return Err(JsValue::from_str(if msg.is_empty() { "eval error" } else { msg }));
+        }
+        if val.is_undefined() {
+            return Ok(JsValue::from_str("undefined"));
+        }
+        if val.is_null() {
+            return Ok(JsValue::from_str("null"));
+        }
+        if val.is_bool() {
+            return Ok(JsValue::from_str(if val == crate::JSValue::TRUE { "true" } else { "false" }));
+        }
+        let s = JS_ToString(&mut ctx, val);
+        let mut buf = JSCStringBuf { buf: [0u8; 5] };
+        let out = JS_ToCString(&mut ctx, s, &mut buf);
+        Ok(JsValue::from_str(out))
     }
 }
 

@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Muon MuonCache Browser Demo</title>
+    <title>MuonCache Browser Demo</title>
   </head>
   <body>
     <div class="layout">
       <header class="hero">
-        <h1>Muon MuonCache Browser Demo</h1>
+        <h1>MuonCache Browser Demo</h1>
         <p>
-          Socketless in-browser muoncache running in a worker through Rust/WASM,
+          Socketless in-browser MuonCache running in a Web Worker via Rust/WASM,
           with a WebGPU metrics dashboard.
         </p>
       </header>
@@ -46,6 +46,22 @@
           <ol id="leaderboardList"></ol>
         </div>
       </section>
+
+      <section class="playground">
+        <h2>MuonJS Playground</h2>
+        <p class="playground-hint">Type JavaScript and press Run (or Ctrl+Enter) to evaluate with the MuonJS runtime.</p>
+        <textarea id="jsInput" rows="4" spellcheck="false" placeholder='try: [1,2,3].map(x => x * x).join(", ")'></textarea>
+        <div class="playground-controls">
+          <button id="jsRunBtn">Run</button>
+          <button id="jsClearBtn" class="btn-secondary">Clear</button>
+        </div>
+        <pre id="jsOutput" class="playground-output"></pre>
+      </section>
+
+      <footer class="site-footer">
+        <span>MuonJS <span id="footerVersion"></span></span>
+        <a href="https://github.com/muonium-ai/muon-js" target="_blank" rel="noopener">GitHub</a>
+      </footer>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

@@ -180,6 +180,88 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+.playground {
+  background: var(--card);
+  border: 1px solid #c7d7c1;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.playground h2 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.playground-hint {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+#jsInput {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  padding: 10px;
+  border: 1px solid #c7d7c1;
+  border-radius: 8px;
+  background: #f8faf5;
+  color: var(--ink);
+  resize: vertical;
+}
+
+#jsInput:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.playground-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-secondary {
+  background: linear-gradient(160deg, #6b7b6e, #4c5b4f);
+}
+
+.playground-output {
+  margin: 8px 0 0;
+  padding: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  background: #09151de0;
+  color: #d4e8d0;
+  border-radius: 8px;
+  min-height: 2em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+
+.playground-output.error {
+  color: #ffd9d3;
+}
+
+.site-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px solid #c7d7c1;
+}
+
+.site-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  text-decoration: underline;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;

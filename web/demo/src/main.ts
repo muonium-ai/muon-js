@@ -21,6 +21,11 @@ const statusText = must(document.querySelector<HTMLElement>("#statusText"), "#st
 const leaderboardList = must(document.querySelector<HTMLOListElement>("#leaderboardList"), "#leaderboardList");
 const gpuCanvas = must(document.querySelector<HTMLCanvasElement>("#gpuCanvas"), "#gpuCanvas");
 const gpuWarning = must(document.querySelector<HTMLElement>("#gpuWarning"), "#gpuWarning");
+const jsInput = must(document.querySelector<HTMLTextAreaElement>("#jsInput"), "#jsInput");
+const jsRunBtn = must(document.querySelector<HTMLButtonElement>("#jsRunBtn"), "#jsRunBtn");
+const jsClearBtn = must(document.querySelector<HTMLButtonElement>("#jsClearBtn"), "#jsClearBtn");
+const jsOutput = must(document.querySelector<HTMLPreElement>("#jsOutput"), "#jsOutput");
+const footerVersion = must(document.querySelector<HTMLElement>("#footerVersion"), "#footerVersion");
 
 const statEls = {
   opsTotal: must(document.querySelector<HTMLElement>("#opsTotal"), "#opsTotal"),
@@ -223,5 +228,41 @@ window.addEventListener("beforeunload", () => {
   dashboard.destroy();
   client.terminate();
 });
+
+async function runJsEval(): Promise<void> {
+  const source = jsInput.value.trim();
+  if (!source) {
+    return;
+  }
+  jsOutput.classList.remove("error");
+  jsOutput.textContent = "evaluating...";
+  try {
+    const result = await client.jsEval(source);
+    jsOutput.textContent = String(result);
+    jsOutput.classList.remove("error");
+  } catch (err) {
+    jsOutput.textContent = err instanceof Error ? err.message : String(err);
+    jsOutput.classList.add("error");
+  }
+}
+
+jsRunBtn.addEventListener("click", () => {
+  void runJsEval();
+});
+
+jsClearBtn.addEventListener("click", () => {
+  jsInput.value = "";
+  jsOutput.textContent = "";
+  jsOutput.classList.remove("error");
+});
+
+jsInput.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.key === "Enter") {
+    e.preventDefault();
+    void runJsEval();
+  }
+});
+
+footerVersion.textContent = "v1.0.0";
 
 setStatus("ready");

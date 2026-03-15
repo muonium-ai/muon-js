@@ -84,6 +84,8 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       case "reset":
         runtime.reset();
         return { ok: true };
+      case "js_eval":
+        return runtime.js_eval(request.source);
     }
   })
     .then((data) => {

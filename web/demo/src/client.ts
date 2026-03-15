@@ -84,6 +84,14 @@ export class MuonCacheClient {
     }).then(() => undefined);
   }
 
+  jsEval(source: string): Promise<string> {
+    return this.rpc({
+      id: this.next(),
+      kind: "js_eval",
+      source
+    }) as Promise<string>;
+  }
+
   subscribeMetrics(handler: (metrics: MuonCacheMetrics) => void): () => void {
     this.metricHandlers.add(handler);
     return () => {
