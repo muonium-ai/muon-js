@@ -621,6 +621,7 @@ impl TrafficLab {
 
     // ── Grid info & per-cell getters (T-000114) ────────────────────────────
 
+    pub fn lane_count(&self) -> u8 { self.config.lane_count }
     pub fn grid_size(&self) -> u8 { self.grid_size }
 
     fn grid_idx(&self, row: u8, col: u8) -> usize {

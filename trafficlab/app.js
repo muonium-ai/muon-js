@@ -25,18 +25,18 @@ const TRAFFIC_MODES = {
 
 const WARP_OPTIONS = [1, 10, 100, 1000];
 
-// Vehicle type visual properties: [color, cross-road-width-px]
+// Vehicle type visual properties: [color, length-px, width-px]
+// length = along travel direction, width = across road
 // Order matches probability CDF: car 60%, motorcycle 20%, truck 10%, bus 5%, auto-rickshaw 5%
 const VT = [
-  ['#e05252', 42],   // car
-  ['#e8c84a', 50],   // bus
-  ['#5270e0', 46],   // truck
-  ['#52c87a', 24],   // motorcycle
-  ['#a052e0', 34],   // auto-rickshaw
+  ['#e05252', 28, 14],   // car
+  ['#e8c84a', 40, 14],   // bus
+  ['#5270e0', 36, 14],   // truck
+  ['#52c87a', 20,  8],   // motorcycle
+  ['#a052e0', 22, 12],   // auto-rickshaw
 ];
 
-const VEH_H   = 11;  // vehicle rect height (along road axis) for N/S queues
-const VEH_GAP =  3;  // gap between consecutive vehicles
+const VEH_GAP =  2;  // gap between consecutive vehicles
 const MAX_VIS =  6;  // max individual vehicles drawn per queue arm
 
 /** Deterministic vehicle type for a given queue slot (direction × slot index). */
@@ -75,7 +75,9 @@ function drawPane(ctx, ox, state) {
   // ── Intersection grid ────────────────────────────────────────────
   const cx  = ox + PW / 2;
   const cy  = PH / 2 - 30;
-  const road = 60;        // road width px
+  const lanes = state.laneCount || 3;
+  // Road width scales with lane count: 16px per lane × 2 halves (one per direction)
+  const road = Math.max(lanes * 16 * 2, 48);
   const half  = road / 2;
 
   // Road surfaces
@@ -85,17 +87,45 @@ function drawPane(ctx, ox, state) {
   // E-W road
   ctx.fillRect(ox + PAD, cy - half, PW - PAD * 2, road);
 
-  // Lane centre lines (dashed)
-  ctx.strokeStyle = '#2e2e34';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([8, 8]);
+  // Centre line (solid — divides opposing directions)
+  ctx.strokeStyle = '#555520';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
   ctx.beginPath();
-  ctx.moveTo(cx, 0);       ctx.lineTo(cx, cy - half);
+  ctx.moveTo(cx, 0);        ctx.lineTo(cx, cy - half);
   ctx.moveTo(cx, cy + half); ctx.lineTo(cx, PH - 100);
   ctx.moveTo(ox + PAD, cy); ctx.lineTo(cx - half, cy);
   ctx.moveTo(cx + half, cy); ctx.lineTo(ox + PW - PAD, cy);
   ctx.stroke();
-  ctx.setLineDash([]);
+
+  // Lane divider lines (dashed — within each direction half)
+  if (lanes > 1) {
+    ctx.strokeStyle = '#2e2e34';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 6]);
+    const laneW = half / lanes;
+    ctx.beginPath();
+    for (let l = 1; l < lanes; l++) {
+      // Left half lanes (N-bound traffic)
+      const leftX = cx - half + l * laneW;
+      ctx.moveTo(leftX, 0);        ctx.lineTo(leftX, cy - half);
+      ctx.moveTo(leftX, cy + half); ctx.lineTo(leftX, PH - 100);
+      // Right half lanes (S-bound traffic)
+      const rightX = cx + l * laneW;
+      ctx.moveTo(rightX, 0);        ctx.lineTo(rightX, cy - half);
+      ctx.moveTo(rightX, cy + half); ctx.lineTo(rightX, PH - 100);
+      // Top half lanes (W-bound traffic on E-W road)
+      const topY = cy - half + l * laneW;
+      ctx.moveTo(ox + PAD, topY); ctx.lineTo(cx - half, topY);
+      ctx.moveTo(cx + half, topY); ctx.lineTo(ox + PW - PAD, topY);
+      // Bottom half lanes (E-bound traffic on E-W road)
+      const botY = cy + l * laneW;
+      ctx.moveTo(ox + PAD, botY); ctx.lineTo(cx - half, botY);
+      ctx.moveTo(cx + half, botY); ctx.lineTo(ox + PW - PAD, botY);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // Intersection box
   ctx.fillStyle = '#252528';
@@ -104,8 +134,9 @@ function drawPane(ctx, ox, state) {
   // Zebra crossing hints
   ctx.strokeStyle = '#303036';
   ctx.lineWidth = 2;
-  for (let i = 0; i < 4; i++) {
-    const x = cx - half + 6 + i * 12;
+  const zebraCount = Math.max(Math.round(road / 14), 3);
+  for (let i = 0; i < zebraCount; i++) {
+    const x = cx - half + 6 + i * ((road - 12) / Math.max(zebraCount - 1, 1));
     ctx.beginPath();
     ctx.moveTo(x, cy - half - 8);
     ctx.lineTo(x, cy - half);
@@ -120,7 +151,7 @@ function drawPane(ctx, ox, state) {
   drawSignals(ctx, cx, cy, half, road, state.signalPhase);
 
   // ── Vehicle queues ───────────────────────────────────────────────
-  drawVehicleQueues(ctx, cx, cy, half, state.queues);
+  drawVehicleQueues(ctx, cx, cy, half, state.queues, state.laneCount || 3);
 
   // ── Metrics overlay ──────────────────────────────────────────────
   drawMetrics(ctx, ox, PW, state);
@@ -163,52 +194,109 @@ function drawSignals(ctx, cx, cy, half, road, phase) {
 
 /**
  * Draw individual vehicle rectangles stacked in each queue arm.
+ * Vehicles are positioned in lanes across the road width.
  * Vehicle types are assigned deterministically by slot index using the probability
  * distribution (60% car, 20% motorcycle, 10% truck, 5% bus, 5% auto-rickshaw).
  */
-function drawVehicleQueues(ctx, cx, cy, half, queues) {
-  _drawArmNS(ctx, cx, cy - half, queues.n, 0, -1);  // N grows upward
-  _drawArmNS(ctx, cx, cy + half, queues.s, 1, +1);  // S grows downward
-  _drawArmEW(ctx, cx + half, cy, queues.e, 2, +1);  // E grows rightward
-  _drawArmEW(ctx, cx - half, cy, queues.w, 3, -1);  // W grows leftward
+function drawVehicleQueues(ctx, cx, cy, half, queues, laneCount) {
+  _drawArmNS(ctx, cx, cy - half, queues.n, 0, -1, half, laneCount);  // N grows upward
+  _drawArmNS(ctx, cx, cy + half, queues.s, 1, +1, half, laneCount);  // S grows downward
+  _drawArmEW(ctx, cx + half, cy, queues.e, 2, +1, half, laneCount);  // E grows rightward
+  _drawArmEW(ctx, cx - half, cy, queues.w, 3, -1, half, laneCount);  // W grows leftward
 }
 
-/** Draw a North or South queue arm (vehicles are horizontal rects across road). */
-function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign) {
-  const visible = Math.min(count, MAX_VIS);
+/**
+ * Assign a vehicle to a lane index (0-based).
+ * Distributes vehicles round-robin across available lanes.
+ */
+function slotLane(slotIdx, laneCount) {
+  return slotIdx % laneCount;
+}
+
+/**
+ * Draw a North or South queue arm.
+ * Vehicles are drawn as width × length rects (narrow across road, tall along road).
+ * Each vehicle is positioned in its assigned lane within the road half.
+ *
+ * For N queue: vehicles use the left half of the road (cx - half to cx).
+ * For S queue: vehicles use the right half of the road (cx to cx + half).
+ * This mimics vehicles on their side of a divided road.
+ */
+function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign, roadHalf, laneCount) {
+  const visible = Math.min(count, MAX_VIS * laneCount);
+  // Lane geometry: vehicles in N arm use left half (cx - roadHalf .. cx),
+  // vehicles in S arm use right half (cx .. cx + roadHalf).
+  const laneWidth = roadHalf / laneCount;
+  const laneBase = (sign < 0) ? cx - roadHalf : cx; // N: left half, S: right half
+
+  // Track per-lane depth so vehicles stack correctly in their own lane
+  const laneDepth = new Array(laneCount).fill(0);
+
   for (let i = 0; i < visible; i++) {
-    const [color, nsW] = VT[slotVehicleTypeIdx(dirIdx, i)];
-    const offset = VEH_GAP + i * (VEH_H + VEH_GAP);
+    const [color, vLen, vWid] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const lane = slotLane(i, laneCount);
+    const depth = laneDepth[lane];
+    laneDepth[lane]++;
+
+    const offset = VEH_GAP + depth * (vLen + VEH_GAP);
     // sign<0 → draw above edgeY (north); sign>0 → draw below (south)
-    const y = sign < 0 ? edgeY - offset - VEH_H : edgeY + offset;
+    const y = sign < 0 ? edgeY - offset - vLen : edgeY + offset;
+    // Centre vehicle within its lane
+    const laneCx = laneBase + (lane + 0.5) * laneWidth;
+    const x = laneCx - vWid / 2;
+
     ctx.fillStyle = color + 'cc';
     ctx.beginPath();
-    ctx.roundRect(cx - nsW / 2, y, nsW, VEH_H, 2);
+    ctx.roundRect(x, y, vWid, vLen, 2);
     ctx.fill();
   }
-  // Queue count label beyond last vehicle
-  const labelOff = VEH_GAP + visible * (VEH_H + VEH_GAP) + 5;
+  // Queue count label beyond deepest vehicle
+  const maxDepth = Math.max(...laneDepth, 0);
+  const avgLen = 26; // approximate average vehicle length for label offset
+  const labelOff = VEH_GAP + maxDepth * (avgLen + VEH_GAP) + 5;
   ctx.fillStyle = count > 0 ? '#888' : '#444';
   ctx.font = '10px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(count, cx, sign < 0 ? edgeY - labelOff : edgeY + labelOff);
 }
 
-/** Draw an East or West queue arm (vehicles are vertical rects across road). */
-function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign) {
-  const visible = Math.min(count, MAX_VIS);
+/**
+ * Draw an East or West queue arm.
+ * Vehicles are drawn as length × width rects (wide along road, narrow across road).
+ * Each vehicle is positioned in its assigned lane within the road half.
+ *
+ * For E queue: vehicles use the bottom half of the road (cy to cy + roadHalf).
+ * For W queue: vehicles use the top half of the road (cy - roadHalf to cy).
+ */
+function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign, roadHalf, laneCount) {
+  const visible = Math.min(count, MAX_VIS * laneCount);
+  const laneWidth = roadHalf / laneCount;
+  const laneBase = (sign > 0) ? cy : cy - roadHalf; // E: bottom half, W: top half
+
+  const laneDepth = new Array(laneCount).fill(0);
+
   for (let i = 0; i < visible; i++) {
-    const [color, nsW] = VT[slotVehicleTypeIdx(dirIdx, i)];
-    const offset = VEH_GAP + i * (VEH_H + VEH_GAP);
+    const [color, vLen, vWid] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const lane = slotLane(i, laneCount);
+    const depth = laneDepth[lane];
+    laneDepth[lane]++;
+
+    const offset = VEH_GAP + depth * (vLen + VEH_GAP);
     // sign>0 → draw rightward (east); sign<0 → draw leftward (west)
-    const x = sign > 0 ? edgeX + offset : edgeX - offset - VEH_H;
+    const x = sign > 0 ? edgeX + offset : edgeX - offset - vLen;
+    // Centre vehicle within its lane
+    const laneCy = laneBase + (lane + 0.5) * laneWidth;
+    const y = laneCy - vWid / 2;
+
     ctx.fillStyle = color + 'cc';
     ctx.beginPath();
-    ctx.roundRect(x, cy - nsW / 2, VEH_H, nsW, 2);
+    ctx.roundRect(x, y, vLen, vWid, 2);
     ctx.fill();
   }
-  // Queue count label beyond last vehicle
-  const labelOff = VEH_GAP + visible * (VEH_H + VEH_GAP) + 5;
+  // Queue count label beyond deepest vehicle
+  const maxDepth = Math.max(...laneDepth, 0);
+  const avgLen = 26;
+  const labelOff = VEH_GAP + maxDepth * (avgLen + VEH_GAP) + 5;
   ctx.fillStyle = count > 0 ? '#888' : '#444';
   ctx.font = '10px monospace';
   ctx.textAlign = sign > 0 ? 'left' : 'right';
@@ -494,6 +582,7 @@ async function main() {
       discharged: lab.nocache_vehicles_discharged(),
       avgWait:    lab.nocache_avg_wait_sec(),
       tps:        lab.tps_nocache(),
+      laneCount:  lab.lane_count(),
       isCached:   false,
     };
 
@@ -511,6 +600,7 @@ async function main() {
       discharged:    lab.cached_vehicles_discharged(),
       avgWait:       lab.cached_avg_wait_sec(),
       tps:           lab.tps_cached(),
+      laneCount:     lab.lane_count(),
       nocacheTps:    lab.tps_nocache(),
       cacheHits:     lab.cache_hits(),
       cacheMisses:   lab.cache_misses(),
