@@ -13,6 +13,7 @@
  */
 
 import init, { TrafficLab } from './pkg/trafficlab.js';
+import { IDMIntersection, IDMRenderer } from './idm.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1069,3 +1070,73 @@ main().catch(err => {
   document.getElementById('status-bar').textContent = 'Error: ' + err.message;
   console.error(err);
 });
+
+// ── IDM Live tab ──────────────────────────────────────────────────────────
+
+(function initIDM() {
+  const idmCanvas = document.getElementById('idm-canvas');
+  if (!idmCanvas) return;
+
+  const sim      = new IDMIntersection();
+  const renderer = new IDMRenderer(idmCanvas);
+
+  // Controls
+  document.getElementById('idm-vpm').addEventListener('input', e => {
+    const v = parseInt(e.target.value);
+    document.getElementById('idm-vpm-val').textContent = v;
+    sim.setVpm(v);
+  });
+  document.getElementById('idm-cycle').addEventListener('input', e => {
+    const v = parseInt(e.target.value);
+    document.getElementById('idm-cycle-val').textContent = v;
+    sim.setCycleMs(v * 1000);
+  });
+
+  // Apply initial slider values
+  sim.setVpm(parseInt(document.getElementById('idm-vpm').value));
+  sim.setCycleMs(parseInt(document.getElementById('idm-cycle').value) * 1000);
+
+  let idmLastTime = performance.now();
+  let idmRunning  = false;
+
+  function idmFrame(now) {
+    if (!idmRunning) return;
+    requestAnimationFrame(idmFrame);
+
+    const dt = Math.min((now - idmLastTime) / 1000, 0.1);  // seconds, capped at 100ms
+    idmLastTime = now;
+
+    sim.step(dt);
+    renderer.draw(sim);
+  }
+
+  // ── Tab switching ────────────────────────────────────────────────
+
+  const btnBench = document.getElementById('tab-btn-bench');
+  const btnIdm   = document.getElementById('tab-btn-idm');
+  const paneBench = document.getElementById('tab-bench');
+  const paneIdm   = document.getElementById('tab-idm');
+
+  function showBench() {
+    idmRunning = false;
+    btnBench.classList.add('active');
+    btnIdm.classList.remove('active');
+    paneBench.classList.add('active');
+    paneIdm.classList.remove('active');
+  }
+
+  function showIdm() {
+    btnIdm.classList.add('active');
+    btnBench.classList.remove('active');
+    paneIdm.classList.add('active');
+    paneBench.classList.remove('active');
+    if (!idmRunning) {
+      idmRunning  = true;
+      idmLastTime = performance.now();
+      requestAnimationFrame(idmFrame);
+    }
+  }
+
+  btnBench.addEventListener('click', showBench);
+  btnIdm.addEventListener('click', showIdm);
+})();

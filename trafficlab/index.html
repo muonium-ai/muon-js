@@ -185,6 +185,39 @@
       transition: background 0.2s;
     }
     .share-btn:hover { background: #252530; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 14px;
+      width: 100%;
+      max-width: 1200px;
+    }
+    .tab-btn {
+      padding: 7px 20px;
+      background: #1a1a1e;
+      color: #888;
+      border: 1px solid #333;
+      border-radius: 6px 6px 0 0;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { background: #252530; color: #ccc; }
+    .tab-btn.active {
+      background: #252530;
+      color: #e0e0e0;
+      border-bottom-color: #252530;
+    }
+    .tab-btn.tab-idm.active { color: #6bffb8; border-top-color: #6bffb8; }
+    .tab-btn.tab-bench.active { color: #7ec8ff; border-top-color: #7ec8ff; }
+
+    /* ── Tab panels ── */
+    .tab-panel { display: none; width: 100%; max-width: 1200px; }
+    .tab-panel.active { display: block; }
   </style>
 </head>
 <body>
@@ -194,12 +227,35 @@
     <p class="tagline">A visual simulation demonstrating how caching accelerates real-world systems</p>
   </header>
 
+  <div class="tab-bar">
+    <button class="tab-btn tab-bench active" id="tab-btn-bench">&#9881; Benchmark</button>
+    <button class="tab-btn tab-idm"   id="tab-btn-idm">&#9873; IDM Live</button>
+  </div>
+
+  <!-- ── Benchmark tab ── -->
+  <div class="tab-panel active" id="tab-bench">
   <div class="sim-wrapper">
     <div class="sim-labels">
       <div class="sim-label nocache">&#9747; No Cache</div>
       <div class="sim-label cached">&#9889; MuonCache Enabled</div>
     </div>
     <canvas id="sim-canvas" width="1200" height="580"></canvas>
+  </div>
+  </div>
+
+  <!-- ── IDM Live tab ── -->
+  <div class="tab-panel" id="tab-idm">
+    <canvas id="idm-canvas" width="900" height="600" style="display:block;width:100%;max-width:900px;height:auto;border:1px solid #2a2a2e;border-radius:6px;background:#111114;margin:0 auto;"></canvas>
+    <div class="controls" id="idm-controls">
+      <div class="ctrl-group">
+        <label>Vehicles / min <span class="ctrl-value" id="idm-vpm-val">120</span></label>
+        <input id="idm-vpm" type="range" min="20" max="600" step="10" value="120" />
+      </div>
+      <div class="ctrl-group">
+        <label>Signal cycle (s) <span class="ctrl-value" id="idm-cycle-val">60</span></label>
+        <input id="idm-cycle" type="range" min="10" max="120" step="5" value="60" />
+      </div>
+    </div>
   </div>
 
   <!-- Interactive controls -->
