@@ -16,20 +16,6 @@ import init, { TrafficLab } from './pkg/trafficlab.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const VEHICLE_COLORS = {
-  car:          '#e05252',
-  bus:          '#e8c84a',
-  truck:        '#5270e0',
-  motorcycle:   '#52c87a',
-  autorickshaw: '#a052e0',
-};
-
-const SIGNAL_COLORS = {
-  0: '#52c87a',   // NSGreen  → draw NS lights green, EW red
-  1: '#e8c84a',   // AllRed   → yellow
-  2: '#e05252',   // EWGreen  → draw EW lights green, NS red
-};
-
 const TRAFFIC_MODES = {
   normal:   { vpm: 120, cycleMultiplier: 1.0 },
   rush:     { vpm: 420, cycleMultiplier: 0.8 },
@@ -38,6 +24,30 @@ const TRAFFIC_MODES = {
 };
 
 const WARP_OPTIONS = [1, 10, 100, 1000];
+
+// Vehicle type visual properties: [color, cross-road-width-px]
+// Order matches probability CDF: car 60%, motorcycle 20%, truck 10%, bus 5%, auto-rickshaw 5%
+const VT = [
+  ['#e05252', 42],   // car
+  ['#e8c84a', 50],   // bus
+  ['#5270e0', 46],   // truck
+  ['#52c87a', 24],   // motorcycle
+  ['#a052e0', 34],   // auto-rickshaw
+];
+
+const VEH_H   = 11;  // vehicle rect height (along road axis) for N/S queues
+const VEH_GAP =  3;  // gap between consecutive vehicles
+const MAX_VIS =  6;  // max individual vehicles drawn per queue arm
+
+/** Deterministic vehicle type for a given queue slot (direction × slot index). */
+function slotVehicleTypeIdx(dirIdx, slotIdx) {
+  const h = ((dirIdx * 31 + slotIdx * 97) >>> 0) % 100;
+  if (h < 60) return 0; // car
+  if (h < 80) return 3; // motorcycle
+  if (h < 90) return 2; // truck
+  if (h < 95) return 1; // bus
+  return 4;              // auto-rickshaw
+}
 
 // ── Renderer helpers ─────────────────────────────────────────────────────────
 
@@ -109,8 +119,8 @@ function drawPane(ctx, ox, state) {
   // ── Traffic signals ──────────────────────────────────────────────
   drawSignals(ctx, cx, cy, half, road, state.signalPhase);
 
-  // ── Queue bars ───────────────────────────────────────────────────
-  drawQueueBars(ctx, ox, cx, cy, half, PW, PH, state.queues);
+  // ── Vehicle queues ───────────────────────────────────────────────
+  drawVehicleQueues(ctx, cx, cy, half, state.queues);
 
   // ── Metrics overlay ──────────────────────────────────────────────
   drawMetrics(ctx, ox, PW, state);
@@ -121,50 +131,88 @@ function drawSignals(ctx, cx, cy, half, road, phase) {
   const nsColor = phase === 0 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
   const ewColor = phase === 2 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
 
-  const r = 6;
-  // North signal  (above intersection, on road right edge)
-  ctx.fillStyle = nsColor;
-  ctx.beginPath(); ctx.arc(cx + half + 10, cy - half - 14, r, 0, Math.PI * 2); ctx.fill();
-  // South signal
-  ctx.beginPath(); ctx.arc(cx - half - 10, cy + half + 14, r, 0, Math.PI * 2); ctx.fill();
-  // East signal
-  ctx.fillStyle = ewColor;
-  ctx.beginPath(); ctx.arc(cx + half + 14, cy + half + 10, r, 0, Math.PI * 2); ctx.fill();
-  // West signal
-  ctx.beginPath(); ctx.arc(cx - half - 14, cy - half - 10, r, 0, Math.PI * 2); ctx.fill();
+  function drawLight(x, y, color) {
+    const r = 7;
+    // Dark housing box
+    ctx.fillStyle = '#0d0d10';
+    ctx.beginPath();
+    ctx.roundRect(x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2, 3);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2);
+    // Glowing light
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // North signal (above intersection, right of road centreline)
+  drawLight(cx + half + 12, cy - half - 16, nsColor);
+  // South signal (below intersection, left of road centreline)
+  drawLight(cx - half - 12, cy + half + 16, nsColor);
+  // East signal (right of intersection, bottom of road centreline)
+  drawLight(cx + half + 16, cy + half + 12, ewColor);
+  // West signal (left of intersection, top of road centreline)
+  drawLight(cx - half - 16, cy - half - 12, ewColor);
 }
 
-function drawQueueBars(ctx, ox, cx, cy, half, PW, PH, queues) {
-  const maxQ  = 24;
-  const barW  = 18;
-  const barMaxH = 100;
+/**
+ * Draw individual vehicle rectangles stacked in each queue arm.
+ * Vehicle types are assigned deterministically by slot index using the probability
+ * distribution (60% car, 20% motorcycle, 10% truck, 5% bus, 5% auto-rickshaw).
+ */
+function drawVehicleQueues(ctx, cx, cy, half, queues) {
+  _drawArmNS(ctx, cx, cy - half, queues.n, 0, -1);  // N grows upward
+  _drawArmNS(ctx, cx, cy + half, queues.s, 1, +1);  // S grows downward
+  _drawArmEW(ctx, cx + half, cy, queues.e, 2, +1);  // E grows rightward
+  _drawArmEW(ctx, cx - half, cy, queues.w, 3, -1);  // W grows leftward
+}
 
-  // North queue — bar grows upward from intersection
-  const nH = Math.min(queues.n / maxQ, 1) * barMaxH;
-  ctx.fillStyle = 'rgba(224, 82, 82, 0.55)';
-  ctx.fillRect(cx - barW / 2, cy - half - nH, barW, nH);
-
-  // South queue — bar grows downward
-  const sH = Math.min(queues.s / maxQ, 1) * barMaxH;
-  ctx.fillRect(cx - barW / 2, cy + half, barW, sH);
-
-  // East queue — bar grows rightward
-  const eH = Math.min(queues.e / maxQ, 1) * barMaxH;
-  ctx.fillRect(cx + half, cy - barW / 2, eH, barW);
-
-  // West queue — bar grows leftward
-  const wH = Math.min(queues.w / maxQ, 1) * barMaxH;
-  ctx.fillRect(cx - half - wH, cy - barW / 2, wH, barW);
-
-  // Vehicle count labels
-  ctx.fillStyle = '#666';
+/** Draw a North or South queue arm (vehicles are horizontal rects across road). */
+function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign) {
+  const visible = Math.min(count, MAX_VIS);
+  for (let i = 0; i < visible; i++) {
+    const [color, nsW] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const offset = VEH_GAP + i * (VEH_H + VEH_GAP);
+    // sign<0 → draw above edgeY (north); sign>0 → draw below (south)
+    const y = sign < 0 ? edgeY - offset - VEH_H : edgeY + offset;
+    ctx.fillStyle = color + 'cc';
+    ctx.beginPath();
+    ctx.roundRect(cx - nsW / 2, y, nsW, VEH_H, 2);
+    ctx.fill();
+  }
+  // Queue count label beyond last vehicle
+  const labelOff = VEH_GAP + visible * (VEH_H + VEH_GAP) + 5;
+  ctx.fillStyle = count > 0 ? '#888' : '#444';
   ctx.font = '10px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(queues.n, cx, cy - half - nH - 4);
-  ctx.fillText(queues.s, cx, cy + half + sH + 12);
-  ctx.textAlign = 'left';
-  ctx.fillText(queues.e, cx + half + eH + 4, cy + 4);
-  ctx.fillText(queues.w, cx - half - wH - 22, cy + 4);
+  ctx.fillText(count, cx, sign < 0 ? edgeY - labelOff : edgeY + labelOff);
+}
+
+/** Draw an East or West queue arm (vehicles are vertical rects across road). */
+function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign) {
+  const visible = Math.min(count, MAX_VIS);
+  for (let i = 0; i < visible; i++) {
+    const [color, nsW] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const offset = VEH_GAP + i * (VEH_H + VEH_GAP);
+    // sign>0 → draw rightward (east); sign<0 → draw leftward (west)
+    const x = sign > 0 ? edgeX + offset : edgeX - offset - VEH_H;
+    ctx.fillStyle = color + 'cc';
+    ctx.beginPath();
+    ctx.roundRect(x, cy - nsW / 2, VEH_H, nsW, 2);
+    ctx.fill();
+  }
+  // Queue count label beyond last vehicle
+  const labelOff = VEH_GAP + visible * (VEH_H + VEH_GAP) + 5;
+  ctx.fillStyle = count > 0 ? '#888' : '#444';
+  ctx.font = '10px monospace';
+  ctx.textAlign = sign > 0 ? 'left' : 'right';
+  ctx.fillText(count, sign > 0 ? edgeX + labelOff : edgeX - labelOff, cy + 4);
 }
 
 function drawMetrics(ctx, ox, PW, s) {
@@ -187,8 +235,12 @@ function drawMetrics(ctx, ox, PW, s) {
   ];
 
   if (s.isCached) {
+    const speedup = (s.nocacheTps > 0 && s.tps > 0)
+      ? (s.tps / s.nocacheTps).toFixed(1) + '×'
+      : '—';
     lines.push(
       { label: '─── Cache ───', val: '', color: '#555' },
+      { label: 'Speedup',     val: speedup,                       color: '#ffe840' },
       { label: 'Hits',        val: fmt(s.cacheHits),             color: '#6bffb8' },
       { label: 'Misses',      val: fmt(s.cacheMisses),           color: '#ff9f6b' },
       { label: 'Hit ratio',   val: (s.cacheRatio * 100).toFixed(1) + '%', color: '#6bffb8' },
@@ -322,6 +374,7 @@ async function main() {
       simSeconds:    lab.cached_sim_seconds(),
       vehicles:      lab.cached_vehicles_processed(),
       tps:           lab.tps_cached(),
+      nocacheTps:    lab.tps_nocache(),
       cacheHits:     lab.cache_hits(),
       cacheMisses:   lab.cache_misses(),
       cacheRatio:    lab.cache_hit_ratio(),
