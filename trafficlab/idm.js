@@ -4,7 +4,7 @@
  * Each vehicle follows the IDM acceleration formula:
  *   a = a_max * [1 - (v/v0)^4 - (s*(v,dv)/gap)^2]
  *
- * Lane model (left-hand traffic / India style, 3 inbound lanes):
+ * Lane model (left-hand traffic / India style, 6 inbound lanes):
  *   Each arm has LANES inbound lanes on the LEFT side of the road centre.
  *   Opposite arm outbound traffic uses the right side — no overlap.
  *
@@ -30,10 +30,10 @@ const IDM_AMAX = 1.5;   // max acceleration (m/s²)
 const IDM_B    = 2.0;   // comfortable braking (m/s²)
 
 // Scale: pixels per meter
-const M2PX = 8;
+const M2PX = 5;
 
 // Road layout
-const LANES     = 3;     // inbound lanes per arm
+const LANES     = 6;     // inbound lanes per arm
 const LANE_W_M  = 3.5;  // lane width in metres
 const ROAD_M    = 36;    // road length in metres from stop-line to edge
 
