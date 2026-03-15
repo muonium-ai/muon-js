@@ -505,22 +505,46 @@ impl TrafficLab {
 
     // ── Main step (called each animation frame) ────────────────────────────
 
-    /// Advance both simulations by `wall_dt_ms` wall-clock milliseconds.
+    /// Advance both simulations using a time-budgeted loop.
+    ///
+    /// Each side gets the same wall-clock budget (`wall_dt_ms / 2`).  Within
+    /// that budget, the simulation runs as many fixed-size ticks as it can.
+    /// Because the nocache path includes synthetic overhead, it completes fewer
+    /// ticks per frame and its simulation clock falls behind the cached side —
+    /// making the speed difference *visually obvious* on the canvas.
     pub fn step_frame(&mut self, wall_dt_ms: f64) {
-        let sim_dt = wall_dt_ms * (self.config.speed_multiplier as f64);
         let n = self.grid_size as usize;
+        let warp = self.config.speed_multiplier as f64;
 
-        for s in &mut self.nocache {
-            s.step_nocache(sim_dt, &self.config);
-        }
-        for s in &mut self.cached {
-            s.step_cached(sim_dt, &self.config, &mut self.sim_cache);
+        // Each tick advances sim time by a fixed granule.
+        // At 1000× warp, each tick = 1 000 ms simulated time.
+        let tick_sim_dt = warp;  // 1 ms wall → `warp` ms sim per tick
+
+        // Wall-clock budget per side (half the frame time each).
+        let budget_ms = wall_dt_ms / 2.0;
+
+        // ── Nocache side ────────────────────────────────────────────────
+        let t0 = Self::now_ms();
+        loop {
+            if Self::now_ms() - t0 >= budget_ms { break; }
+            for s in &mut self.nocache {
+                s.step_nocache(tick_sim_dt, &self.config);
+            }
+            if n > 1 {
+                Self::route_grid(&mut self.nocache, n, &self.config, tick_sim_dt);
+            }
         }
 
-        // Inter-intersection routing for grids larger than 1×1.
-        if n > 1 {
-            Self::route_grid(&mut self.nocache, n, &self.config, sim_dt);
-            Self::route_grid(&mut self.cached,  n, &self.config, sim_dt);
+        // ── Cached side ─────────────────────────────────────────────────
+        let t0 = Self::now_ms();
+        loop {
+            if Self::now_ms() - t0 >= budget_ms { break; }
+            for s in &mut self.cached {
+                s.step_cached(tick_sim_dt, &self.config, &mut self.sim_cache);
+            }
+            if n > 1 {
+                Self::route_grid(&mut self.cached, n, &self.config, tick_sim_dt);
+            }
         }
 
         // TPS measurement every ~500 ms of wall time.
@@ -537,6 +561,22 @@ impl TrafficLab {
             self.tps_c_snap  = ca_tick;
             self.wall_ms_accum = 0.0;
         }
+    }
+
+    /// Cross-platform high-resolution timestamp in milliseconds.
+    #[cfg(target_arch = "wasm32")]
+    fn now_ms() -> f64 {
+        js_sys::Date::now()
+    }
+
+    /// Native fallback using std::time (used in tests).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn now_ms() -> f64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64() * 1_000.0
     }
 
     // ── Getters: no-cache instance ─────────────────────────────────────────
@@ -776,11 +816,14 @@ mod tests {
     #[test]
     fn headless_10k_ticks_no_panic() {
         let mut lab = TrafficLab::new();
-        for _ in 0..10_000 {
+        // With time-budgeted step_frame, each call runs many ticks.
+        // 100 frames × 16 ms = 1.6 s wall time, plenty for > 10 k ticks.
+        for _ in 0..100 {
             lab.step_frame(16.0); // ~60 fps
         }
-        assert_eq!(lab.nocache_tick(), 10_000, "nocache tick count");
-        assert_eq!(lab.cached_tick(),  10_000, "cached tick count");
+        assert!(lab.nocache_tick() > 100, "nocache should have run many ticks");
+        assert!(lab.cached_tick() > lab.nocache_tick(),
+            "cached should run more ticks than nocache");
         assert!(lab.nocache_vehicles_processed() > 0, "should have spawned vehicles");
         assert!(lab.tps_nocache() > 0.0, "tps should be measured after warmup");
     }
@@ -788,9 +831,11 @@ mod tests {
     #[test]
     fn per_tick_stats_are_sane() {
         let mut lab = TrafficLab::new();
-        lab.set_lane_count(3); // 3 lanes → discharge ≥ 1 veh/tick at 1 s steps
-        for _ in 0..100 {
-            lab.step_frame(1_000.0); // 100 × 1 000 ms = 100 s simulated
+        lab.set_lane_count(3); // 3 lanes → discharge ≥ 1 veh/tick
+        lab.set_speed_multiplier(1000); // tick_sim_dt = 1000 ms → meaningful discharge per tick
+        // 10 frames × 100 ms budget each → runs many ticks at 1000× warp.
+        for _ in 0..10 {
+            lab.step_frame(100.0);
         }
         assert!(lab.nocache_avg_wait_sec() >= 0.0, "avg wait must be non-negative");
         assert!(lab.cached_avg_wait_sec()  >= 0.0, "avg wait must be non-negative");
@@ -1055,7 +1100,8 @@ mod tests {
     fn headless_3x3_grid_1000_ticks_no_panic() {
         let mut lab = TrafficLab::new();
         lab.set_grid_size(3);
-        for _ in 0..1_000 {
+        // 50 frames × 16 ms = 0.8 s wall, runs many ticks per frame.
+        for _ in 0..50 {
             lab.step_frame(16.0); // 16 ms wall time, speed_multiplier=1
         }
         // All per-cell queues must be bounded (lane_cap = 3 * 8 = 24 per arm;
@@ -1078,9 +1124,10 @@ mod tests {
         lab.set_grid_size(3);
         lab.set_vehicles_per_min(600); // 10 veh/s per intersection
         lab.set_speed_multiplier(1000);
-        // 100 frames × 16 ms wall × 1000× warp = 1 600 sim-seconds per cell
-        // 10 veh/s × 1 600 s = 16 000 vehicles per cell (well above 10 k).
-        for _ in 0..100 {
+        // With time-budgeted loop, 20 frames × 16 ms = 0.32 s wall time.
+        // At 1000× warp, each tick = 1 000 ms sim time.  This should easily
+        // produce > 10 k vehicles per cell.
+        for _ in 0..20 {
             lab.step_frame(16.0);
         }
         let per_cell = lab.nocache_vehicles_processed();

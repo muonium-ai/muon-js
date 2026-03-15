@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "description": "TrafficLab benchmark baseline \u2014 cached vs nocache simulation throughput",
-  "generated_at": "2026-03-15T11:11:11Z",
+  "generated_at": "2026-03-15T12:28:49Z",
   "gates": {
     "min_ratio_at_1000x_warp": 10.0,
     "regression_tolerance": 0.2
@@ -9,25 +9,25 @@
   "rows": [
     {
       "warp": "1x",
-      "nc_tps": 1326656.0,
-      "ca_tps": 31570639.0,
-      "ratio": 23.8,
+      "nc_tps": 1638427.0,
+      "ca_tps": 93859699.0,
+      "ratio": 57.3,
       "hit_pct": 100.0,
       "keys": 3
     },
     {
       "warp": "100x",
-      "nc_tps": 858692.0,
-      "ca_tps": 45696738.0,
-      "ratio": 53.2,
+      "nc_tps": 1673827.0,
+      "ca_tps": 99875156.0,
+      "ratio": 59.7,
       "hit_pct": 100.0,
       "keys": 3
     },
     {
       "warp": "1000x",
-      "nc_tps": 930031.0,
-      "ca_tps": 60991229.0,
-      "ratio": 65.6,
+      "nc_tps": 1822752.0,
+      "ca_tps": 106007442.0,
+      "ratio": 58.2,
       "hit_pct": 100.0,
       "keys": 3
     }
