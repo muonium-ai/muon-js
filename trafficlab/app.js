@@ -905,90 +905,115 @@ async function main() {
   // ── Render loop ────────────────────────────────────────────────────
 
   let lastTime = performance.now();
+  let frameErrors = 0;
 
   function frame(now) {
-    const dt = Math.min(now - lastTime, 100); // clamp to 100ms to avoid spiral on tab switch
-    lastTime = now;
-
-    lab.step_frame(dt);
-
-    const dtSec = dt / 1000;
-    const lc = lab.lane_count();
-
-    // Collect state
-    const ncQueues = {
-      n: lab.nocache_queue_north(),
-      s: lab.nocache_queue_south(),
-      e: lab.nocache_queue_east(),
-      w: lab.nocache_queue_west(),
-    };
-    const caQueues = {
-      n: lab.cached_queue_north(),
-      s: lab.cached_queue_south(),
-      e: lab.cached_queue_east(),
-      w: lab.cached_queue_west(),
-    };
-
-    // Update animators (only for 1×1 view)
-    const gs = lab.grid_size();
-    if (gs === 1) {
-      ncAnimator.update(ncQueues, dtSec, lc);
-      caAnimator.update(caQueues, dtSec, lc);
-    }
-
-    const noCache = {
-      signalPhase: lab.nocache_signal_phase(),
-      queues: ncQueues,
-      tick:       lab.nocache_tick(),
-      simSeconds: lab.nocache_sim_seconds(),
-      vehicles:   lab.nocache_vehicles_processed(),
-      discharged: lab.nocache_vehicles_discharged(),
-      avgWait:    lab.nocache_avg_wait_sec(),
-      tps:        lab.tps_nocache(),
-      laneCount:  lc,
-      _animator:  ncAnimator,
-      isCached:   false,
-    };
-
-    const cached = {
-      signalPhase: lab.cached_signal_phase(),
-      queues: caQueues,
-      tick:          lab.cached_tick(),
-      simSeconds:    lab.cached_sim_seconds(),
-      vehicles:      lab.cached_vehicles_processed(),
-      discharged:    lab.cached_vehicles_discharged(),
-      avgWait:       lab.cached_avg_wait_sec(),
-      tps:           lab.tps_cached(),
-      laneCount:     lc,
-      _animator:     caAnimator,
-      nocacheTps:    lab.tps_nocache(),
-      cacheHits:     lab.cache_hits(),
-      cacheMisses:   lab.cache_misses(),
-      cacheRatio:    lab.cache_hit_ratio(),
-      cacheKeys:     lab.cache_keys(),
-      cacheLatency:  lab.cache_avg_latency_us(),
-      isCached:      true,
-    };
-
-    // Clear and draw
-    ctx.clearRect(0, 0, W, H);
-    if (gs === 1) {
-      drawPane(ctx, 0,    noCache);
-      drawPane(ctx, HALF, cached);
-    } else {
-      drawGridPane(ctx, 0,    gs, true,  lab, noCache);
-      drawGridPane(ctx, HALF, gs, false, lab, cached);
-    }
-
-    // Centre divider
-    ctx.strokeStyle = '#2a2a2e';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(HALF, 0);
-    ctx.lineTo(HALF, H);
-    ctx.stroke();
-
+    // Reschedule FIRST — the loop must never stop, even if this frame throws.
     requestAnimationFrame(frame);
+
+    try {
+      const dt = Math.min(now - lastTime, 100); // clamp to 100ms to avoid spiral on tab switch
+      lastTime = now;
+
+      lab.step_frame(dt);
+
+      const dtSec = dt / 1000;
+      const lc = lab.lane_count();
+
+      // Collect state
+      const ncQueues = {
+        n: lab.nocache_queue_north(),
+        s: lab.nocache_queue_south(),
+        e: lab.nocache_queue_east(),
+        w: lab.nocache_queue_west(),
+      };
+      const caQueues = {
+        n: lab.cached_queue_north(),
+        s: lab.cached_queue_south(),
+        e: lab.cached_queue_east(),
+        w: lab.cached_queue_west(),
+      };
+
+      // Update animators (only for 1×1 view)
+      const gs = lab.grid_size();
+      if (gs === 1) {
+        ncAnimator.update(ncQueues, dtSec, lc);
+        caAnimator.update(caQueues, dtSec, lc);
+      }
+
+      const noCache = {
+        signalPhase: lab.nocache_signal_phase(),
+        queues: ncQueues,
+        tick:       lab.nocache_tick(),
+        simSeconds: lab.nocache_sim_seconds(),
+        vehicles:   lab.nocache_vehicles_processed(),
+        discharged: lab.nocache_vehicles_discharged(),
+        avgWait:    lab.nocache_avg_wait_sec(),
+        tps:        lab.tps_nocache(),
+        laneCount:  lc,
+        _animator:  ncAnimator,
+        isCached:   false,
+      };
+
+      const cached = {
+        signalPhase: lab.cached_signal_phase(),
+        queues: caQueues,
+        tick:          lab.cached_tick(),
+        simSeconds:    lab.cached_sim_seconds(),
+        vehicles:      lab.cached_vehicles_processed(),
+        discharged:    lab.cached_vehicles_discharged(),
+        avgWait:       lab.cached_avg_wait_sec(),
+        tps:           lab.tps_cached(),
+        laneCount:     lc,
+        _animator:     caAnimator,
+        nocacheTps:    lab.tps_nocache(),
+        cacheHits:     lab.cache_hits(),
+        cacheMisses:   lab.cache_misses(),
+        cacheRatio:    lab.cache_hit_ratio(),
+        cacheKeys:     lab.cache_keys(),
+        cacheLatency:  lab.cache_avg_latency_us(),
+        isCached:      true,
+      };
+
+      // Clear and draw
+      ctx.clearRect(0, 0, W, H);
+      if (gs === 1) {
+        drawPane(ctx, 0,    noCache);
+        drawPane(ctx, HALF, cached);
+      } else {
+        drawGridPane(ctx, 0,    gs, true,  lab, noCache);
+        drawGridPane(ctx, HALF, gs, false, lab, cached);
+      }
+
+      // Centre divider
+      ctx.strokeStyle = '#2a2a2e';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(HALF, 0);
+      ctx.lineTo(HALF, H);
+      ctx.stroke();
+
+      // Clear error state on successful frame
+      if (frameErrors > 0) {
+        frameErrors = 0;
+        statusBar.textContent = 'WASM loaded — simulation running';
+      }
+    } catch (err) {
+      frameErrors++;
+      const msg = `Frame error #${frameErrors}: ${err.message || err}`;
+      console.error('[TrafficLab]', msg, err);
+      if (frameErrors <= 3) {
+        // Attempt recovery: reinitialise WASM state and animators
+        try {
+          lab = new TrafficLab();
+          lab.set_speed_multiplier(parseInt(document.getElementById('warp').value) || 1000);
+          resetAll();
+          applyMode(document.getElementById('mode').value);
+          applyCountry(document.getElementById('country').value);
+        } catch (_) { /* ignore recovery errors */ }
+      }
+      statusBar.textContent = msg;
+    }
   }
 
   requestAnimationFrame(frame);

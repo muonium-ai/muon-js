@@ -523,10 +523,25 @@ impl TrafficLab {
         // Wall-clock budget per side (half the frame time each).
         let budget_ms = wall_dt_ms / 2.0;
 
+        // Check time only every CHECK_INTERVAL ticks to amortize the cost of
+        // crossing the WASM→JS boundary for Date.now().  With coarse-resolution
+        // timers (browsers quantise Date.now to 1–5 ms for fingerprinting
+        // protection), checking every iteration causes the loop to over-run the
+        // budget by up to one interval.  Checking every 32 ticks reduces the
+        // boundary-crossing overhead by 32× while limiting over-run to at most
+        // 32 extra ticks (~32 µs at warp=1000).
+        // MAX_ITERS is a hard safety cap: even if now_ms() never advances, the
+        // loop terminates and the browser frame is not blocked indefinitely.
+        const CHECK_INTERVAL: u32 = 32;
+        const MAX_ITERS: u32 = 50_000;
+
         // ── Nocache side ────────────────────────────────────────────────
         let t0 = Self::now_ms();
+        let mut nc_iters: u32 = 0;
         loop {
-            if Self::now_ms() - t0 >= budget_ms { break; }
+            if nc_iters >= MAX_ITERS { break; }
+            if nc_iters % CHECK_INTERVAL == 0 && Self::now_ms() - t0 >= budget_ms { break; }
+            nc_iters += 1;
             for s in &mut self.nocache {
                 s.step_nocache(tick_sim_dt, &self.config);
             }
@@ -537,8 +552,11 @@ impl TrafficLab {
 
         // ── Cached side ─────────────────────────────────────────────────
         let t0 = Self::now_ms();
+        let mut ca_iters: u32 = 0;
         loop {
-            if Self::now_ms() - t0 >= budget_ms { break; }
+            if ca_iters >= MAX_ITERS { break; }
+            if ca_iters % CHECK_INTERVAL == 0 && Self::now_ms() - t0 >= budget_ms { break; }
+            ca_iters += 1;
             for s in &mut self.cached {
                 s.step_cached(tick_sim_dt, &self.config, &mut self.sim_cache);
             }
