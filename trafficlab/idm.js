@@ -895,7 +895,61 @@ export class IDMRenderer {
     }
   }
 
-  // ── Leaderboard overlay (populated by T-000124) ─────────────────
-  // eslint-disable-next-line no-unused-vars
-  drawLeaderboard(_rows, _currentId) {}
+  drawLeaderboard(rows, currentId) {
+    if (!rows || rows.length === 0) return;
+
+    const { ctx, W } = this;
+    const MARGIN     = 10;
+    const PAD_X      = 10;
+    const PAD_Y      = 8;
+    const ROW_H      = 18;
+    const FONT       = '11px "Segoe UI Mono", "Consolas", monospace';
+    const FONT_BOLD  = 'bold 12px "Segoe UI Mono", "Consolas", monospace';
+    const PANEL_W    = 248;
+    const panelH     = PAD_Y * 2 + ROW_H + rows.length * ROW_H;  // header + data rows
+    const x          = W - MARGIN - PANEL_W;
+    const y          = MARGIN;
+
+    ctx.save();
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.58)';
+    const r = 6;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + PANEL_W - r, y);
+    ctx.arcTo(x + PANEL_W, y, x + PANEL_W, y + r, r);
+    ctx.lineTo(x + PANEL_W, y + panelH - r);
+    ctx.arcTo(x + PANEL_W, y + panelH, x + PANEL_W - r, y + panelH, r);
+    ctx.lineTo(x + r, y + panelH);
+    ctx.arcTo(x, y + panelH, x, y + panelH - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+    ctx.fill();
+
+    // Header
+    ctx.font      = FONT_BOLD;
+    ctx.fillStyle = '#e0e0e0';
+    ctx.fillText('🏆 Top Runs', x + PAD_X, y + PAD_Y + 11);
+
+    // Data rows
+    let ry = y + PAD_Y + ROW_H;
+    for (const row of rows) {
+      const isCurrent = row.id === currentId;
+
+      if (isCurrent) {
+        ctx.fillStyle = 'rgba(255,200,0,0.22)';
+        ctx.fillRect(x + 2, ry - 13, PANEL_W - 4, ROW_H);
+      }
+
+      const label = `#${row.rank}  ${row.duration_s.toFixed(1)}s  ${row.cars_crossed} cars  ${row.max_wait_s.toFixed(1)}s wait`;
+      ctx.font      = isCurrent ? 'bold 11px "Segoe UI Mono","Consolas",monospace' : FONT;
+      ctx.fillStyle = isCurrent ? '#ffe066' : '#b0b0b0';
+      ctx.fillText(label, x + PAD_X, ry);
+      ry += ROW_H;
+    }
+
+    ctx.restore();
+  }
 }
