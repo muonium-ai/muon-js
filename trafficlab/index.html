@@ -228,12 +228,12 @@
   </header>
 
   <div class="tab-bar">
-    <button class="tab-btn tab-bench active" id="tab-btn-bench">&#9881; Benchmark</button>
-    <button class="tab-btn tab-idm"   id="tab-btn-idm">&#9873; IDM Live</button>
+    <button class="tab-btn tab-bench" id="tab-btn-bench">&#9881; Benchmark</button>
+    <button class="tab-btn tab-idm active"   id="tab-btn-idm">&#9873; IDM Live</button>
   </div>
 
   <!-- ── Benchmark tab ── -->
-  <div class="tab-panel active" id="tab-bench">
+  <div class="tab-panel" id="tab-bench">
   <div class="sim-wrapper">
     <div class="sim-labels">
       <div class="sim-label nocache">&#9747; No Cache</div>
@@ -313,7 +313,7 @@
   </div><!-- /#tab-bench -->
 
   <!-- ── IDM Live tab ── -->
-  <div class="tab-panel" id="tab-idm">
+  <div class="tab-panel active" id="tab-idm">
     <canvas id="idm-canvas" width="900" height="600" style="display:block;width:100%;max-width:900px;height:auto;border:1px solid #2a2a2e;border-radius:6px;background:#111114;margin:0 auto;"></canvas>
     <div class="controls" id="idm-controls">
       <div class="ctrl-group">

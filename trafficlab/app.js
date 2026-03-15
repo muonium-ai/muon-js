@@ -1077,8 +1077,23 @@ main().catch(err => {
   const idmCanvas = document.getElementById('idm-canvas');
   if (!idmCanvas) return;
 
-  const sim      = new IDMIntersection();
+  let sim      = new IDMIntersection();
   const renderer = new IDMRenderer(idmCanvas);
+
+  // ── Round management ─────────────────────────────────────────────
+  let roundNumber  = 1;
+  let roundEnding  = false;
+  let roundEndTime = 0;
+  const ROUND_PAUSE_MS = 3000;
+
+  function resetRound() {
+    const vpm      = parseInt(document.getElementById('idm-vpm').value);
+    const cycleMs  = parseInt(document.getElementById('idm-cycle').value) * 1000;
+    sim = new IDMIntersection();
+    sim.setVpm(vpm);
+    sim.setCycleMs(cycleMs);
+    roundEnding = false;
+  }
 
   // Controls
   document.getElementById('idm-vpm').addEventListener('input', e => {
@@ -1106,8 +1121,25 @@ main().catch(err => {
     const dt = Math.min((now - idmLastTime) / 1000, 0.1);  // seconds, capped at 100ms
     idmLastTime = now;
 
-    sim.step(dt);
-    renderer.draw(sim);
+    // Detect new collision → start round-end countdown
+    if (sim.collisionPair && !roundEnding) {
+      roundEnding  = true;
+      roundEndTime = now;
+    }
+
+    if (!roundEnding) {
+      sim.step(dt);
+    }
+
+    const elapsed   = now - roundEndTime;
+    const countdown = roundEnding ? Math.max(0, Math.ceil((ROUND_PAUSE_MS - elapsed) / 1000)) : null;
+    renderer.draw(sim, { roundNumber, countdown });
+
+    // After pause, start new round
+    if (roundEnding && elapsed >= ROUND_PAUSE_MS) {
+      roundNumber++;
+      resetRound();
+    }
   }
 
   // ── Tab switching ────────────────────────────────────────────────
@@ -1139,4 +1171,7 @@ main().catch(err => {
 
   btnBench.addEventListener('click', showBench);
   btnIdm.addEventListener('click', showIdm);
+
+  // IDM is the default tab — start immediately
+  showIdm();
 })();

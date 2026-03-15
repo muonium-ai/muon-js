@@ -627,7 +627,7 @@ export class IDMRenderer {
     this.H      = canvas.height;
   }
 
-  draw(sim) {
+  draw(sim, opts = {}) {
     const { ctx, W, H } = this;
     const cx = W / 2;
     const cy = H / 2;
@@ -644,7 +644,7 @@ export class IDMRenderer {
     this._drawSignals(cx, cy, roadPx, sim.drawPhase);
     this._drawLaneLabels(cx, cy, roadPx);
     this._drawVehicles(cx, cy, sim, roadPx, roadLenPx);
-    this._drawStats(sim);
+    this._drawStats(sim, opts);
   }
 
   _drawRoads(cx, cy, roadPx, roadLenPx) {
@@ -858,7 +858,7 @@ export class IDMRenderer {
     ctx.restore();
   }
 
-  _drawStats(sim) {
+  _drawStats(sim, opts = {}) {
     const { ctx, W, H } = this;
     const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0)
                    + sim.turning.length
@@ -876,12 +876,18 @@ export class IDMRenderer {
 
     if (sim.collisionPair) {
       const [a, b] = sim.collisionPair;
+      const round    = opts.roundNumber || 1;
+      const countdown = typeof opts.countdown === 'number' ? opts.countdown : null;
+      ctx.textAlign = 'center';
       ctx.font      = 'bold 15px "Segoe UI", system-ui, sans-serif';
       ctx.fillStyle = '#ff4444';
-      ctx.fillText(`⚠ COLLISION  #${a.num} ↔ #${b.num}  — simulation paused`, W / 2, H / 2 + 30);
+      ctx.fillText(`⚠ COLLISION  #${a.num} ↔ #${b.num}  — Round ${round} over`, W / 2, H / 2 + 30);
       ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
       ctx.fillStyle = '#ffaaaa';
-      ctx.fillText('Reload to restart', W / 2, H / 2 + 52);
+      if (countdown !== null) {
+        ctx.fillText(`Restarting in ${countdown}s`, W / 2, H / 2 + 52);
+      }
+      ctx.textAlign = 'left';
     }
   }
 }
