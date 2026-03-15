@@ -414,8 +414,12 @@ fn advance_signal(
 #[wasm_bindgen]
 pub struct TrafficLab {
     config: SimConfig,
-    nocache: SimState,
-    cached:  SimState,
+    /// 1, 2, or 3 — the NxN grid side length (default 1).
+    grid_size: u8,
+    /// No-cache simulation instances, row-major (grid_size² entries).
+    nocache: Vec<SimState>,
+    /// Cached simulation instances, row-major (grid_size² entries).
+    cached: Vec<SimState>,
 
     // ── In-process MuonCache integration (T-000109) ───────────────────────
     sim_cache: SimCache,
@@ -436,8 +440,9 @@ impl TrafficLab {
     pub fn new() -> Self {
         Self {
             config: SimConfig::new(),
-            nocache: SimState::new(0xdead_beef_cafe_babe),
-            cached:  SimState::new(0xfeed_face_dead_c0de),
+            grid_size: 1,
+            nocache: vec![SimState::new(0xdead_beef_cafe_babe)],
+            cached:  vec![SimState::new(0xfeed_face_dead_c0de)],
             sim_cache: SimCache::new(),
             wall_ms_accum: 0.0,
             tps_nocache: 0.0,
@@ -449,8 +454,24 @@ impl TrafficLab {
 
     pub fn reset(&mut self) {
         let cfg = self.config;
-        *self = Self::new();
-        self.config = cfg;
+        let n = self.grid_size as usize;
+        let cells = n * n;
+        *self = Self {
+            config: cfg,
+            grid_size: n as u8,
+            nocache: (0..cells).map(|i| SimState::new(
+                0xdead_beef_cafe_babe ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            )).collect(),
+            cached: (0..cells).map(|i| SimState::new(
+                0xfeed_face_dead_c0de ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            )).collect(),
+            sim_cache: SimCache::new(),
+            wall_ms_accum: 0.0,
+            tps_nocache: 0.0,
+            tps_cached: 0.0,
+            tps_nc_snap: 0,
+            tps_c_snap: 0,
+        };
     }
 
     // ── Configuration setters ──────────────────────────────────────────────
@@ -462,56 +483,80 @@ impl TrafficLab {
         self.config.speed_multiplier = match s { 1 | 10 | 100 | 1000 => s, _ => 1 };
     }
     pub fn set_free_left_turn(&mut self, v: bool) { self.config.free_left_turn = v; }
+    /// Reinitialise the grid with an NxN layout (n = 1, 2, or 3).
+    pub fn set_grid_size(&mut self, n: u8) {
+        let new_n = n.max(1).min(3);
+        if new_n != self.grid_size {
+            self.grid_size = new_n;
+            self.reset();
+        }
+    }
 
     // ── Main step (called each animation frame) ────────────────────────────
 
     /// Advance both simulations by `wall_dt_ms` wall-clock milliseconds.
     pub fn step_frame(&mut self, wall_dt_ms: f64) {
         let sim_dt = wall_dt_ms * (self.config.speed_multiplier as f64);
-        self.nocache.step_nocache(sim_dt, &self.config);
-        self.cached.step_cached(sim_dt, &self.config, &mut self.sim_cache);
+        let n = self.grid_size as usize;
+
+        for s in &mut self.nocache {
+            s.step_nocache(sim_dt, &self.config);
+        }
+        for s in &mut self.cached {
+            s.step_cached(sim_dt, &self.config, &mut self.sim_cache);
+        }
+
+        // Inter-intersection routing for grids larger than 1×1.
+        if n > 1 {
+            Self::route_grid(&mut self.nocache, n, &self.config, sim_dt);
+            Self::route_grid(&mut self.cached,  n, &self.config, sim_dt);
+        }
 
         // TPS measurement every ~500 ms of wall time.
+        // Scale by number of cells to report total grid throughput.
         self.wall_ms_accum += wall_dt_ms;
         if self.wall_ms_accum >= 500.0 {
             let secs = self.wall_ms_accum / 1_000.0;
-            self.tps_nocache = (self.nocache.tick - self.tps_nc_snap) as f64 / secs;
-            self.tps_cached  = (self.cached.tick  - self.tps_c_snap)  as f64 / secs;
-            self.tps_nc_snap = self.nocache.tick;
-            self.tps_c_snap  = self.cached.tick;
+            let cells = (n * n) as f64;
+            let nc_tick = self.nocache[0].tick;
+            let ca_tick = self.cached[0].tick;
+            self.tps_nocache = (nc_tick - self.tps_nc_snap) as f64 * cells / secs;
+            self.tps_cached  = (ca_tick - self.tps_c_snap)  as f64 * cells / secs;
+            self.tps_nc_snap = nc_tick;
+            self.tps_c_snap  = ca_tick;
             self.wall_ms_accum = 0.0;
         }
     }
 
     // ── Getters: no-cache instance ─────────────────────────────────────────
 
-    pub fn nocache_tick(&self) -> u64 { self.nocache.tick }
-    pub fn nocache_sim_seconds(&self) -> f64 { self.nocache.sim_ms / 1_000.0 }
-    /// Vehicles that entered the simulation (spawned).
-    pub fn nocache_vehicles_processed(&self) -> u64 { self.nocache.vehicles_spawned }
-    /// Vehicles that cleared the intersection (discharged).
-    pub fn nocache_vehicles_discharged(&self) -> u64 { self.nocache.vehicles_discharged }
-    pub fn nocache_queue_north(&self) -> u32 { self.nocache.queues.north }
-    pub fn nocache_queue_south(&self) -> u32 { self.nocache.queues.south }
-    pub fn nocache_queue_east(&self)  -> u32 { self.nocache.queues.east  }
-    pub fn nocache_queue_west(&self)  -> u32 { self.nocache.queues.west  }
-    pub fn nocache_signal_phase(&self) -> u8 { self.nocache.signal as u8 }
+    pub fn nocache_tick(&self) -> u64 { self.nocache[0].tick }
+    pub fn nocache_sim_seconds(&self) -> f64 { self.nocache[0].sim_ms / 1_000.0 }
+    /// Vehicles that entered the simulation (spawned) — cell [0].
+    pub fn nocache_vehicles_processed(&self) -> u64 { self.nocache[0].vehicles_spawned }
+    /// Vehicles that cleared the intersection (discharged) — cell [0].
+    pub fn nocache_vehicles_discharged(&self) -> u64 { self.nocache[0].vehicles_discharged }
+    pub fn nocache_queue_north(&self) -> u32 { self.nocache[0].queues.north }
+    pub fn nocache_queue_south(&self) -> u32 { self.nocache[0].queues.south }
+    pub fn nocache_queue_east(&self)  -> u32 { self.nocache[0].queues.east  }
+    pub fn nocache_queue_west(&self)  -> u32 { self.nocache[0].queues.west  }
+    pub fn nocache_signal_phase(&self) -> u8 { self.nocache[0].signal as u8 }
     /// Discharge-weighted average vehicle wait time in seconds.
-    pub fn nocache_avg_wait_sec(&self) -> f64 { self.nocache.avg_wait_sec() }
+    pub fn nocache_avg_wait_sec(&self) -> f64 { self.nocache[0].avg_wait_sec() }
     pub fn tps_nocache(&self) -> f64 { self.tps_nocache }
 
     // ── Getters: cached instance ───────────────────────────────────────────
 
-    pub fn cached_tick(&self) -> u64 { self.cached.tick }
-    pub fn cached_sim_seconds(&self) -> f64 { self.cached.sim_ms / 1_000.0 }
-    pub fn cached_vehicles_processed(&self) -> u64 { self.cached.vehicles_spawned }
-    pub fn cached_vehicles_discharged(&self) -> u64 { self.cached.vehicles_discharged }
-    pub fn cached_queue_north(&self) -> u32 { self.cached.queues.north }
-    pub fn cached_queue_south(&self) -> u32 { self.cached.queues.south }
-    pub fn cached_queue_east(&self)  -> u32 { self.cached.queues.east  }
-    pub fn cached_queue_west(&self)  -> u32 { self.cached.queues.west  }
-    pub fn cached_signal_phase(&self) -> u8 { self.cached.signal as u8 }
-    pub fn cached_avg_wait_sec(&self) -> f64 { self.cached.avg_wait_sec() }
+    pub fn cached_tick(&self) -> u64 { self.cached[0].tick }
+    pub fn cached_sim_seconds(&self) -> f64 { self.cached[0].sim_ms / 1_000.0 }
+    pub fn cached_vehicles_processed(&self) -> u64 { self.cached[0].vehicles_spawned }
+    pub fn cached_vehicles_discharged(&self) -> u64 { self.cached[0].vehicles_discharged }
+    pub fn cached_queue_north(&self) -> u32 { self.cached[0].queues.north }
+    pub fn cached_queue_south(&self) -> u32 { self.cached[0].queues.south }
+    pub fn cached_queue_east(&self)  -> u32 { self.cached[0].queues.east  }
+    pub fn cached_queue_west(&self)  -> u32 { self.cached[0].queues.west  }
+    pub fn cached_signal_phase(&self) -> u8 { self.cached[0].signal as u8 }
+    pub fn cached_avg_wait_sec(&self) -> f64 { self.cached[0].avg_wait_sec() }
     pub fn tps_cached(&self) -> f64 { self.tps_cached }
 
     // ── Getters: MuonCache metrics ─────────────────────────────────────────
@@ -522,6 +567,108 @@ impl TrafficLab {
     pub fn cache_keys(&self) -> u64 { self.sim_cache.len() }
     /// In-process HashMap lookup latency (fixed estimate — ~50 ns on modern hw).
     pub fn cache_avg_latency_us(&self) -> f64 { 0.05 }
+
+    // ── Grid info & per-cell getters (T-000114) ────────────────────────────
+
+    pub fn grid_size(&self) -> u8 { self.grid_size }
+
+    fn grid_idx(&self, row: u8, col: u8) -> usize {
+        (row as usize) * (self.grid_size as usize) + (col as usize)
+    }
+
+    pub fn grid_nocache_signal_phase(&self, row: u8, col: u8) -> u8 {
+        let i = self.grid_idx(row, col);
+        self.nocache.get(i).map(|s| s.signal as u8).unwrap_or(0)
+    }
+    pub fn grid_nocache_queue_north(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.nocache.get(i).map(|s| s.queues.north).unwrap_or(0)
+    }
+    pub fn grid_nocache_queue_south(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.nocache.get(i).map(|s| s.queues.south).unwrap_or(0)
+    }
+    pub fn grid_nocache_queue_east(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.nocache.get(i).map(|s| s.queues.east).unwrap_or(0)
+    }
+    pub fn grid_nocache_queue_west(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.nocache.get(i).map(|s| s.queues.west).unwrap_or(0)
+    }
+
+    pub fn grid_cached_signal_phase(&self, row: u8, col: u8) -> u8 {
+        let i = self.grid_idx(row, col);
+        self.cached.get(i).map(|s| s.signal as u8).unwrap_or(0)
+    }
+    pub fn grid_cached_queue_north(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.cached.get(i).map(|s| s.queues.north).unwrap_or(0)
+    }
+    pub fn grid_cached_queue_south(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.cached.get(i).map(|s| s.queues.south).unwrap_or(0)
+    }
+    pub fn grid_cached_queue_east(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.cached.get(i).map(|s| s.queues.east).unwrap_or(0)
+    }
+    pub fn grid_cached_queue_west(&self, row: u8, col: u8) -> u32 {
+        let i = self.grid_idx(row, col);
+        self.cached.get(i).map(|s| s.queues.west).unwrap_or(0)
+    }
+}
+
+// ── Private (non-WASM) TrafficLab helpers ─────────────────────────────────────
+
+impl TrafficLab {
+    /// Transfer a fraction of discharged vehicles to adjacent intersections.
+    ///
+    /// After each tick, vehicles that clear a green-phase arm flow into the
+    /// opposite arm of the neighbouring intersection, creating realistic
+    /// inter-intersection traffic and amplifying cache reuse at scale.
+    fn route_grid(states: &mut Vec<SimState>, size: usize, cfg: &SimConfig, dt_ms: f64) {
+        const ROUTE_FRAC: f64 = 0.35;
+        let lane_cap = (cfg.lane_count as u32) * 8;
+
+        // Collect (destination_idx, arm:0=N/1=S/2=E/3=W, count) without mutably
+        // borrowing `states` twice.
+        let mut transfers: Vec<(usize, u8, u32)> = Vec::with_capacity(size * size * 2);
+
+        for r in 0..size {
+            for c in 0..size {
+                let idx = r * size + c;
+                let sig = states[idx].signal;
+                let d = SimState::compute_discharge(
+                    sig, cfg.lane_count, cfg.free_left_turn, dt_ms,
+                );
+                if d == 0 { continue; }
+                let route = ((d as f64 * ROUTE_FRAC) as u32).max(1);
+                match sig {
+                    SignalPhase::NSGreen => {
+                        if r > 0       { transfers.push(((r-1)*size+c, 1, route)); }
+                        if r+1 < size  { transfers.push(((r+1)*size+c, 0, route)); }
+                    }
+                    SignalPhase::EWGreen => {
+                        if c+1 < size  { transfers.push((r*size+c+1,   3, route)); }
+                        if c > 0       { transfers.push((r*size+c-1,   2, route)); }
+                    }
+                    SignalPhase::AllRed => {}
+                }
+            }
+        }
+
+        for (idx, arm, count) in transfers {
+            let q = &mut states[idx].queues;
+            match arm {
+                0 => q.north = (q.north + count).min(lane_cap),
+                1 => q.south = (q.south + count).min(lane_cap),
+                2 => q.east  = (q.east  + count).min(lane_cap),
+                3 => q.west  = (q.west  + count).min(lane_cap),
+                _ => {}
+            }
+        }
+    }
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────────────────
@@ -887,5 +1034,76 @@ mod tests {
         assert_eq!(q1.east,  q2.east,  "E queue not deterministic");
         assert_eq!(q1.west,  q2.west,  "W queue not deterministic");
         assert_eq!(d1, d2, "vehicles_discharged not deterministic");
+    }
+
+    // ── T-000114: multi-intersection grid tests ────────────────────────────────
+
+    /// Headless 3×3 grid: 1 000 ticks must complete without panic and all
+    /// queues must stay within reasonable bounds.
+    #[test]
+    fn headless_3x3_grid_1000_ticks_no_panic() {
+        let mut lab = TrafficLab::new();
+        lab.set_grid_size(3);
+        for _ in 0..1_000 {
+            lab.step_frame(16.0); // 16 ms wall time, speed_multiplier=1
+        }
+        // All per-cell queues must be bounded (lane_cap = 3 * 8 = 24 per arm;
+        // routing may temporarily bump up to ~2× lane_cap before re-discharge).
+        let cap_check = 64u32;
+        for r in 0..3u8 {
+            for c in 0..3u8 {
+                assert!(lab.grid_nocache_queue_north(r, c) <= cap_check);
+                assert!(lab.grid_nocache_queue_south(r, c) <= cap_check);
+                assert!(lab.grid_cached_queue_north(r, c)  <= cap_check);
+                assert!(lab.grid_cached_queue_south(r, c)  <= cap_check);
+            }
+        }
+    }
+
+    /// Scale test: spawn > 10 000 vehicles through a 3×3 grid without panic.
+    #[test]
+    fn scale_10k_vehicles_3x3_no_panic() {
+        let mut lab = TrafficLab::new();
+        lab.set_grid_size(3);
+        lab.set_vehicles_per_min(600); // 10 veh/s per intersection
+        lab.set_speed_multiplier(1000);
+        // 100 frames × 16 ms wall × 1000× warp = 1 600 sim-seconds per cell
+        // 10 veh/s × 1 600 s = 16 000 vehicles per cell (well above 10 k).
+        for _ in 0..100 {
+            lab.step_frame(16.0);
+        }
+        let per_cell = lab.nocache_vehicles_processed();
+        assert!(per_cell >= 10_000,
+            "expected >= 10 000 vehicles per cell, got {per_cell}");
+    }
+
+    /// Cache hit ratio in 3×3 mode must be >= 1×1 mode after a brief warm-up,
+    /// because nine cells share one cache and warm it faster.
+    #[test]
+    fn cache_ratio_3x3_ge_1x1_after_brief_warmup() {
+        let cfg = SimConfig::new();
+        const WARMUP: usize = 20;
+        const DT: f64 = 16.0 * 1_000.0;
+
+        // 1×1: single intersection
+        let mut sc_1x1 = SimCache::new();
+        let mut s1 = SimState::new(0x1234);
+        for _ in 0..WARMUP { s1.step_cached(DT, &cfg, &mut sc_1x1); }
+        let ratio_1x1 = sc_1x1.hit_ratio();
+
+        // 3×3: nine cells sharing one cache
+        let mut sc_3x3 = SimCache::new();
+        let mut cells: Vec<SimState> =
+            (0..9usize).map(|i| SimState::new(0x1234 + i as u64)).collect();
+        for _ in 0..WARMUP {
+            for c in cells.iter_mut() { c.step_cached(DT, &cfg, &mut sc_3x3); }
+        }
+        let ratio_3x3 = sc_3x3.hit_ratio();
+
+        assert!(
+            ratio_3x3 >= ratio_1x1,
+            "3×3 hit ratio {:.1}% should be >= 1×1 {:.1}%",
+            ratio_3x3 * 100.0, ratio_1x1 * 100.0,
+        );
     }
 }
