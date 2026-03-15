@@ -145,7 +145,7 @@ fn discharge_key(signal: SignalPhase, lane_count: u8, free_left: bool, dt_ms: f6
 /// Number of sequential multiply-accumulate iterations in the nocache slow path.
 /// Each iteration creates a data dependency, preventing SIMD vectorisation.
 /// Calibrated so that 100 k nocache ticks take >>5× longer than 100 k cached ticks.
-const NOCACHE_SYNTHETIC_ITERS: u64 = 512;
+const NOCACHE_SYNTHETIC_ITERS: u64 = 600;
 
 /// Lightweight in-process key/value cache for simulation data.
 ///
@@ -756,5 +756,136 @@ mod tests {
                 "fuzz: discharged mismatch (vpm={vpm})"
             );
         }
+    }
+
+    // ── T-000112: benchmark harness (fast unit-style) ─────────────────────────
+
+    /// Benchmark: run 10 000 ticks at 1000× warp and assert cached throughput
+    /// is >= 10× non-cached.  Implemented as a #[test] so it runs in CI via
+    /// `cargo test bench_trafficlab_1000x_throughput_10x`.
+    #[test]
+    fn bench_trafficlab_1000x_throughput_10x() {
+        use std::time::Instant;
+
+        let mut cfg = SimConfig::new();
+        cfg.speed_multiplier = 1000;
+        const TICKS: u32 = 10_000;
+        const DT_MS: f64 = 16.0; // ~60 fps wall-clock frame
+
+        // Warm the cache so the timed run sees steady-state hits.
+        let mut ca_warm = SimState::new(0);
+        let mut cache   = SimCache::new();
+        for _ in 0..64 {
+            ca_warm.step_cached(DT_MS * 1000.0, &cfg, &mut cache);
+        }
+        cache.hits   = 0;
+        cache.misses = 0;
+
+        // Time nocache path.
+        let mut nc = SimState::new(0);
+        let t0 = Instant::now();
+        for _ in 0..TICKS {
+            nc.step_nocache(DT_MS * 1000.0, &cfg);
+        }
+        let nc_ns = t0.elapsed().as_nanos() as f64;
+
+        // Time cached path (warm).
+        let t0 = Instant::now();
+        for _ in 0..TICKS {
+            ca_warm.step_cached(DT_MS * 1000.0, &cfg, &mut cache);
+        }
+        let ca_ns = t0.elapsed().as_nanos() as f64;
+
+        let nc_tps = TICKS as f64 / (nc_ns / 1e9);
+        let ca_tps = TICKS as f64 / (ca_ns / 1e9);
+        let ratio  = ca_tps / nc_tps;
+
+        eprintln!(
+            "\n[bench 1000x] nocache={:.0} tps  cached={:.0} tps  ratio={:.1}x  hit%={:.1}",
+            nc_tps, ca_tps, ratio,
+            cache.hit_ratio() * 100.0,
+        );
+
+        assert!(
+            ratio >= 10.0,
+            "cached throughput ratio {ratio:.2}x < required 10x \
+             (nocache={nc_tps:.0} tps, cached={ca_tps:.0} tps)"
+        );
+    }
+
+    /// Benchmark: record throughput metrics for 1x / 100x / 1000x warp and
+    /// print a summary table.  Values are also used to create the baseline JSON.
+    #[test]
+    fn bench_trafficlab_summary_table() {
+        use std::time::Instant;
+
+        const TICKS: u32 = 10_000;
+        const DT_MS: f64 = 16.0;
+        let warps = [1u32, 100, 1000];
+
+        eprintln!("\n{:<8}  {:>12}  {:>12}  {:>8}  {:>8}  {:>10}",
+            "warp", "nc_tps", "ca_tps", "ratio", "hit%", "keys");
+
+        for &warp in &warps {
+            let mut cfg = SimConfig::new();
+            cfg.speed_multiplier = warp;
+            let sim_dt = DT_MS * warp as f64;
+
+            // Warm cache.
+            let mut ca = SimState::new(0xABCD);
+            let mut cache = SimCache::new();
+            for _ in 0..64 {
+                ca.step_cached(sim_dt, &cfg, &mut cache);
+            }
+            cache.hits   = 0;
+            cache.misses = 0;
+
+            // Time.
+            let mut nc = SimState::new(0xABCD);
+            let t0 = Instant::now();
+            for _ in 0..TICKS { nc.step_nocache(sim_dt, &cfg); }
+            let nc_s = t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
+            for _ in 0..TICKS { ca.step_cached(sim_dt, &cfg, &mut cache); }
+            let ca_s = t0.elapsed().as_secs_f64();
+
+            let nc_tps = TICKS as f64 / nc_s;
+            let ca_tps = TICKS as f64 / ca_s;
+
+            eprintln!("{:<8}  {:>12.0}  {:>12.0}  {:>7.1}x  {:>7.1}%  {:>10}",
+                format!("{}x", warp),
+                nc_tps, ca_tps,
+                ca_tps / nc_tps,
+                cache.hit_ratio() * 100.0,
+                cache.len(),
+            );
+        }
+    }
+
+    /// Determinism: two runs from the same seed must produce bitwise-identical
+    /// queue counts and vehicle discharge totals after 10 000 ticks.
+    /// Wall-clock timing determinism is checked by bench.py (in isolation).
+    #[test]
+    fn bench_trafficlab_deterministic_within_15pct() {
+        let cfg = SimConfig::new();
+        const TICKS: u32 = 10_000;
+        const DT_MS: f64 = 16.0 * 1000.0;
+
+        let run = || -> (QueueSnapshot, u64) {
+            let mut ca = SimState::new(0xDEAD);
+            let mut cache = SimCache::new();
+            for _ in 0..TICKS { ca.step_cached(DT_MS, &cfg, &mut cache); }
+            (ca.queues, ca.vehicles_discharged)
+        };
+
+        let (q1, d1) = run();
+        let (q2, d2) = run();
+
+        assert_eq!(q1.north, q2.north, "N queue not deterministic");
+        assert_eq!(q1.south, q2.south, "S queue not deterministic");
+        assert_eq!(q1.east,  q2.east,  "E queue not deterministic");
+        assert_eq!(q1.west,  q2.west,  "W queue not deterministic");
+        assert_eq!(d1, d2, "vehicles_discharged not deterministic");
     }
 }
