@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test cargo-package-verify cargo-publish
+.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test cargo-package-verify cargo-publish build-trafficlab serve-trafficlab release-trafficlab bench-trafficlab
 
 MUON_CACHE_HOST ?= 127.0.0.1
 MUON_CACHE_PORT ?= 6379
@@ -112,6 +112,21 @@ web-demo-build: web-demo-wasm
 
 web-demo-test: web-demo-wasm
 	$(MAKE) -C $(WEB_DEMO_DIR) test
+
+## TrafficLab WASM demo targets
+build-trafficlab:
+	$(MAKE) -C trafficlab build
+
+serve-trafficlab:
+	$(MAKE) -C trafficlab serve
+
+release-trafficlab:
+	$(MAKE) -C trafficlab release
+
+bench-trafficlab:
+	@echo "[bench-trafficlab] Running cached vs non-cached benchmark (T-000112 implements full harness)"
+	$(CARGO) test --release --manifest-path trafficlab/Cargo.toml bench_ -- --nocapture 2>/dev/null || true
+	@echo "[bench-trafficlab] TODO: full benchmark harness implemented in T-000112"
 
 js-runtime-bench: sync-version
 	@mkdir -p tmp/comparison
