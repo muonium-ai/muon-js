@@ -155,6 +155,9 @@ export class IDMIntersection {
 
     // Per-frame position cache (MuonCache API shape) — rebuilt at the top of every step()
     this._posCache = new VehiclePositionCache();
+
+    // Set to [vA, vB] on first detected overlap; step() becomes a no-op after this.
+    this.collisionPair = null;
   }
 
   setVpm(v)      { this.vpm = v; }
@@ -223,6 +226,7 @@ export class IDMIntersection {
   // ── Physics step ────────────────────────────────────────────────
 
   step(dtSec) {
+    if (this.collisionPair) return;  // frozen after collision
     this._simTimeSec += dtSec;
     this._updateSignal(dtSec * 1000);
     this._spawn(dtSec);
@@ -252,8 +256,13 @@ export class IDMIntersection {
           const v = lv[i];
           let gap, vLead;
           if (i === 0) {
-            if (green || v.pos <= 0) { gap = 999; vLead = IDM_V0; }
-            else { gap = Math.max(v.pos - v.vt.len / 2, 0.1); vLead = 0; }
+            if (green) { gap = 999; vLead = IDM_V0; }
+            else {
+              // gap = distance from front of vehicle to stop-line
+              // pos is front-to-stop-line distance, so gap = pos directly
+              gap   = Math.max(v.pos, 0.1);
+              vLead = 0;
+            }
           } else {
             const leader = lv[i - 1];
             gap   = Math.max(v.pos - leader.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
@@ -266,7 +275,7 @@ export class IDMIntersection {
         }
       }
 
-      // Move vehicles that crossed the stop-line into the turning list
+      // Move vehicles whose FRONT has reached the stop-line (pos <= 0) into turning
       const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
       this.approaching[arm] = remaining;
       for (const v of crossed) {
@@ -401,6 +410,28 @@ export class IDMIntersection {
       // Remove vehicles that have cleared the visible road
       this.exiting[arm] = this.exiting[arm].filter(v => v.pos < ROAD_M + SPAWN_EXTRA + 4);
     }
+
+    // ── End-of-step overlap check ─────────────────────────────────
+    // Read screen positions from the position cache (already populated above).
+    // Only turning vehicles are in the cache; for approaching/exiting we use their
+    // 1-D lane position. Within a lane, gaps are guaranteed by IDM; we only need
+    // to check turning vehicles against each other (cross-path case).
+    const ids = this._posCache.ids();
+    outer:
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const ai = ids[i], aj = ids[j];
+        const dx   = this._posCache.hget(ai, 'x') - this._posCache.hget(aj, 'x');
+        const dy   = this._posCache.hget(ai, 'y') - this._posCache.hget(aj, 'y');
+        const dist = Math.hypot(dx, dy);
+        const minD = this._posCache.hget(ai, 'r') + this._posCache.hget(aj, 'r');
+        if (dist < minD * 0.72) {  // 0.72 ≈ half-overlap before triggering freeze
+          const va = this.turning.find(v => v.id === ai);
+          const vb = this.turning.find(v => v.id === aj);
+          if (va && vb) { this.collisionPair = [va, vb]; break outer; }
+        }
+      }
+    }
   }
 
   avgWaitSec() {
@@ -443,26 +474,20 @@ function armPos(arm, lane, posPx, cx, cy, roadPx) {
   // inbound offset from road centre (positive = away from centre on inbound side)
   const inOffset = (lane + 0.5) * laneWPx;
 
-  // Angle convention: after ctx.rotate(angle), local-y must point in the direction of travel.
-  // ctx.rotate(θ) maps local-y → screen direction (-sinθ, cosθ).
-  //   N (travel south  = screen +y): need cosθ=1, sinθ=0  → θ = 0
-  //   S (travel north  = screen -y): need cosθ=-1,sinθ=0  → θ = π
-  //   E (travel west   = screen -x): need sinθ=-1,cosθ=0  → θ = -π/2  (local-y→screen-left)
-  //   W (travel east   = screen +x): need sinθ=1, cosθ=0  → θ = π/2   (local-y→screen-right)
-  // Wait — for E: local-y→(-sinθ,cosθ)=(-1,0)=screen-left ✓ when θ=π/2.
-  //   sinθ=1,cosθ=0 → θ=π/2.  For W: (-sinθ,cosθ)=(1,0)=screen-right ✓ when θ=-π/2.
+  // posPx is measured from the stop-line to the vehicle's FRONT face.
+  // We render at the vehicle CENTRE, so we add halfLen to push the centre back.
+  // halfLen is not known here (it varies per vehicle), so the caller passes
+  // posPx already = v.pos * M2PX (distance front-to-stop-line);
+  // armPos adds nothing extra — the shift is applied at the call site by
+  // passing (v.pos + v.vt.len/2) * M2PX as posPx.
   switch (arm) {
     case 'n':
-      // travelling south (screen +y), inbound lane right of centre (+x)
       return { x: cx + inOffset, y: cy - roadPx - posPx, angle: 0 };
     case 's':
-      // travelling north (screen -y), inbound lane left of centre (-x)
       return { x: cx - inOffset, y: cy + roadPx + posPx, angle: Math.PI };
     case 'e':
-      // travelling west (screen -x), inbound lane below centre (+y)
       return { x: cx + roadPx + posPx, y: cy + inOffset, angle: Math.PI / 2 };
     case 'w':
-      // travelling east (screen +x), inbound lane above centre (-y)
       return { x: cx - roadPx - posPx, y: cy - inOffset, angle: -Math.PI / 2 };
   }
 }
@@ -607,6 +632,18 @@ export class IDMRenderer {
       ctx.beginPath(); ctx.moveTo(cx + roadPx, cy + off); ctx.lineTo(cx + roadPx + roadLenPx, cy + off); ctx.stroke();
     }
     ctx.setLineDash([]);
+
+    // Stop lines — white bar across each inbound half-road, flush with intersection box
+    ctx.strokeStyle = '#ffffffcc';
+    ctx.lineWidth   = 2;
+    // N arm: horizontal line at cy - roadPx, spanning inbound (right) half
+    ctx.beginPath(); ctx.moveTo(cx,       cy - roadPx); ctx.lineTo(cx + roadPx, cy - roadPx); ctx.stroke();
+    // S arm: horizontal line at cy + roadPx, spanning inbound (left) half
+    ctx.beginPath(); ctx.moveTo(cx - roadPx, cy + roadPx); ctx.lineTo(cx,       cy + roadPx); ctx.stroke();
+    // E arm: vertical line at cx + roadPx, spanning inbound (bottom) half
+    ctx.beginPath(); ctx.moveTo(cx + roadPx, cy);       ctx.lineTo(cx + roadPx, cy + roadPx); ctx.stroke();
+    // W arm: vertical line at cx - roadPx, spanning inbound (top) half
+    ctx.beginPath(); ctx.moveTo(cx - roadPx, cy - roadPx); ctx.lineTo(cx - roadPx, cy);       ctx.stroke();
   }
 
   // Draw lane name badges at the road edge for all 4 arms.
@@ -704,7 +741,9 @@ export class IDMRenderer {
         const posPx = v.pos * M2PX;
         if (posPx > roadLenPx + 20) continue;  // not yet on screen
 
-        const { x, y, angle } = armPos(arm, v.lane, posPx, cx, cy, roadPx);
+        // pos = front-face distance to stop-line; render centre = front + halfLen
+        const centrePx = posPx + (v.vt.len / 2) * M2PX;
+        const { x, y, angle } = armPos(arm, v.lane, centrePx, cx, cy, roadPx);
         this._drawVehicle(v, x, y, angle);
       }
     }
@@ -720,7 +759,9 @@ export class IDMRenderer {
       for (const v of sim.exiting[arm]) {
         const posPx = v.pos * M2PX;
         if (posPx > roadLenPx + 20) continue;  // off canvas
-        const { x, y, angle } = armPosOut(arm, v.lane, posPx, cx, cy, roadPx);
+        // pos = front-face distance from exit stop-line; render at centre
+        const centrePx = posPx + (v.vt.len / 2) * M2PX;
+        const { x, y, angle } = armPosOut(arm, v.lane, centrePx, cx, cy, roadPx);
         this._drawVehicle(v, x, y, angle);
       }
     }
@@ -784,5 +825,15 @@ export class IDMRenderer {
     ctx.fillStyle = '#aaa';
     let y = H - 14 - lines.length * 16;
     for (const line of lines) { ctx.fillText(line, 14, y); y += 16; }
+
+    if (sim.collisionPair) {
+      const [a, b] = sim.collisionPair;
+      ctx.font      = 'bold 15px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#ff4444';
+      ctx.fillText(`⚠ COLLISION  #${a.num} ↔ #${b.num}  — simulation paused`, W / 2, H / 2 + 30);
+      ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#ffaaaa';
+      ctx.fillText('Reload to restart', W / 2, H / 2 + 52);
+    }
   }
 }
