@@ -4,7 +4,7 @@ CARGO ?= cargo
 RUSTUP ?= rustup
 WEB_DEMO_DIR ?= web/demo
 
-.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test
+.PHONY: build test release release-all clean sync-version test-integration test-mquickjs test-mquickjs-detailed test-all js-runtime-bench js-runtime-bench-baseline js-runtime-bench-check muoncache muoncache-release muoncache-persist muoncache-persist-release muoncache-persist-release-bg muoncache-stop muoncache-parity muoncache-parity-verbose muoncache-runloop muoncache-benchmark muoncache-pipelined-benchmark redis-run redis-benchmark redis-pipelined-benchmark redis-stop redis-lua-tests redis-lua-benchmark muoncache-js-tests muoncache-js-tests-faithful redis-lua-scripting-bench muoncache-js-scripting-bench muoncache-js-scripting-bench-hotspots lua-js-perf-baseline lua-js-perf-check lua-js-mt-bench pipelined-benchmark-compare perf-benchmark perf-benchmark-no-redis web-demo-wasm web-demo-dev web-demo-build web-demo-test cargo-package-verify cargo-publish
 
 MUON_CACHE_HOST ?= 127.0.0.1
 MUON_CACHE_PORT ?= 6379
@@ -553,6 +553,16 @@ lua-js-mt-bench: sync-version
 	@echo "Running multi-threaded Lua-vs-JS benchmark"
 	@echo "Threads: $(MT_BENCH_THREADS)  Total/case: $(MT_BENCH_TOTAL)  Rounds: $(MT_BENCH_ROUNDS)"
 	python3 tools/lua_js_mt_bench.py --rounds $(MT_BENCH_ROUNDS) --threads $(MT_BENCH_THREADS) --total $(MT_BENCH_TOTAL) --warmup $(MT_BENCH_WARMUP) --redis-base-port $(MT_BENCH_REDIS_BASE_PORT) --log-dir $(MT_BENCH_LOG_DIR) --out $(MT_BENCH_OUT)
+
+cargo-package-verify: sync-version
+	@echo "Verifying crate package..."
+	$(CARGO) package --verify
+	@echo "Package file list:"
+	$(CARGO) package --list
+
+cargo-publish: sync-version
+	@echo "Publishing muon-js to crates.io..."
+	$(CARGO) publish
 
 clean:
 	$(CARGO) clean

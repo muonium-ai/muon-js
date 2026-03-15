@@ -3,6 +3,31 @@ name = "muon-js"
 version = "1.0.0"
 edition = "2021"
 license = "MIT"
+description = "A tiny, embeddable JavaScript runtime written in pure Rust (native port of mquickjs, not a C wrapper)"
+repository = "https://github.com/muonium-ai/muon-js"
+homepage = "https://github.com/muonium-ai/muon-js"
+documentation = "https://docs.rs/muon-js"
+readme = "readme.md"
+keywords = ["javascript", "runtime", "embedded", "quickjs", "wasm"]
+categories = ["embedded", "wasm", "compilers"]
+exclude = [
+    "vendor/",
+    "tmp/",
+    "target/",
+    "tickets/",
+    "devdocs/",
+    "web/",
+    "work_product/",
+    "scripts/",
+    "tools/",
+    "tests/",
+    "samples/",
+    ".github/",
+    "todo.md",
+    "performance.md",
+    "AGENTS.md",
+    ".claude/",
+]
 
 [lib]
 name = "muon_js"

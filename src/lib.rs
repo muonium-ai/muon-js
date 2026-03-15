@@ -1,4 +1,28 @@
-//! Muon JS: a native Rust port of MQuickJS (not a wrapper).
+//! # Muon JS
+//!
+//! A tiny, embeddable JavaScript runtime written in pure Rust.
+//! Native port of mquickjs semantics and API shape — not a C wrapper or FFI shim.
+//!
+//! ## Quick start
+//!
+//! ```rust
+//! use muon_js::*;
+//!
+//! let mut mem = vec![0u8; 64 * 1024];
+//! let mut ctx = JS_NewContext(&mut mem);
+//!
+//! // Evaluate a JS expression and get the result
+//! let val = JS_Eval(&mut ctx, "1 + 2", "eval", JS_EVAL_RETVAL);
+//! assert_eq!(JS_ToInt32(&mut ctx, val).unwrap(), 3);
+//! ```
+//!
+//! ## Features
+//!
+//! - **Default** — JS runtime only (small footprint, no optional deps)
+//! - **`muoncache-core`** — core embedded cache data structures
+//! - **`muoncache`** — full cache server with tokio, ctrlc, mimalloc
+//! - **`muoncache-libsql`** — persistence backend via libsql
+//! - **`muoncache-wasm`** — WebAssembly support via wasm-bindgen
 
 /// MuonJS runtime version (from MUONJS_VERSION file).
 pub const MUONJS_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/MUONJS_VERSION"));
