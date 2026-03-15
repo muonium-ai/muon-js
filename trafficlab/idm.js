@@ -585,8 +585,14 @@ function turnBezier(v, t, cx, cy, roadPx) {
   return { x: bx, y: by, angle };
 }
 
-// Arrow characters per turn direction
-const TURN_ARROW = { straight: '↑', left: '←', right: '→' };
+// Arrow characters per turn direction.
+// These are rendered in the vehicle's ROTATED local frame:
+//   ctx.rotate(θ) maps local +y → travel direction.
+//   Text "up" sweeps clockwise by θ, so ↑ appears BACKWARD.
+//   ↓ → local +y → forward (travel direction)      ✓ straight
+//   → → local +x → driver's LEFT  (for all arms)   ✓ left turn
+//   ← → local −x → driver's RIGHT (for all arms)   ✓ right turn
+const TURN_ARROW = { straight: '↓', left: '→', right: '←' };
 
 /**
  * armPosOut — screen position for a vehicle that has exited the intersection
