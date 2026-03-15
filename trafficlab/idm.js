@@ -4,7 +4,7 @@
  * Each vehicle follows the IDM acceleration formula:
  *   a = a_max * [1 - (v/v0)^4 - (s*(v,dv)/gap)^2]
  *
- * Lane model (left-hand traffic / India style, 6 inbound lanes):
+ * Lane model (left-hand traffic / India style, 3 inbound + 3 outbound lanes per arm):
  *   Each arm has LANES inbound lanes on the LEFT side of the road centre.
  *   Opposite arm outbound traffic uses the right side — no overlap.
  *
@@ -30,18 +30,22 @@ const IDM_AMAX = 1.5;   // max acceleration (m/s²)
 const IDM_B    = 2.0;   // comfortable braking (m/s²)
 
 // Scale: pixels per meter
-const M2PX = 5;
+const M2PX = 8;
 
 // Road layout
-const LANES     = 6;     // inbound lanes per arm
+const LANES     = 3;     // inbound lanes per arm (same count outbound)
 const LANE_W_M  = 3.5;  // lane width in metres
 const ROAD_M    = 36;    // road length in metres from stop-line to edge
 
 const SPAWN_EXTRA  = 6;   // extra metres beyond road edge
 const TURN_DIST    = 18;  // metres past stop-line to complete a turn
 
-// Lane letter labels: lane 0 = 'A' (inner, nearest centre divider) … LANES-1 = outer
-const LANE_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, LANES);
+// Unique lane names per arm:
+//   Inbound  lanes : arm-letter + 1..LANES        e.g. N1, N2, N3
+//   Outbound lanes : arm-letter + LANES+1..2*LANES e.g. N4, N5, N6
+// This means every lane in the whole intersection has a distinct name.
+function inboundLabel(arm, lane)  { return arm.toUpperCase() + (lane + 1); }
+function outboundLabel(arm, lane) { return arm.toUpperCase() + (LANES + lane + 1); }
 
 // ── Vehicle type palette ───────────────────────────────────────────
 const IDM_VT = [
@@ -465,44 +469,55 @@ export class IDMRenderer {
     ctx.setLineDash([]);
   }
 
-  // Draw lane letter badges near the stop-line on every inbound lane for all 4 arms.
-  // Badge = filled circle with letter, placed just outside the intersection box.
+  // Draw lane name badges at the road edge for all 4 arms.
+  // Inbound  badges (warm amber)  : arm-letter + 1-3  e.g. N1 N2 N3  – on the inbound lane side
+  // Outbound badges (cool cyan)   : arm-letter + 4-6  e.g. N4 N5 N6  – on the outbound lane side
   _drawLaneLabels(cx, cy, roadPx) {
-    const { ctx } = this;
+    const { ctx }  = this;
     const laneWPx  = roadPx / LANES;
-    const BADGE_R  = 8;   // badge circle radius px
+    const BADGE_R  = 8;
     const OFFSET   = roadPx + BADGE_R + 6;  // distance from centre to badge centre
 
-    ctx.font         = `bold ${BADGE_R * 1.2}px monospace`;
+    ctx.font         = `bold ${BADGE_R * 1.15}px monospace`;
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
 
+    // inbound badge colours (warm) and outbound badge colours (cool)
+    const IN_COLORS  = ['#ffb347', '#ff7f7f', '#ffec6e'];  // amber/red/yellow
+    const OUT_COLORS = ['#4ec9ff', '#7fffb2', '#c47fff'];  // cyan/green/purple
+
+    const drawBadge = (x, y, label, bg) => {
+      ctx.beginPath();
+      ctx.arc(x, y, BADGE_R, 0, Math.PI * 2);
+      ctx.fillStyle   = bg + 'bb';
+      ctx.fill();
+      ctx.strokeStyle = bg;
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+      ctx.fillStyle   = '#111';
+      ctx.fillText(label, x, y);
+    };
+
     for (let lane = 0; lane < LANES; lane++) {
-      const label    = LANE_LABELS[lane];
-      const inOffset = (lane + 0.5) * laneWPx;  // same offset as armPos inbound
+      const off = (lane + 0.5) * laneWPx;
+      const inC  = IN_COLORS[lane];
+      const outC = OUT_COLORS[lane];
 
-      // Colour cycles per lane: A=cyan, B=orange, C=purple …
-      const BADGE_COLORS = ['#4ec9ff', '#ffaa44', '#c47fff', '#7fffb2', '#ff7fa0', '#ffe040'];
-      const bg = BADGE_COLORS[lane % BADGE_COLORS.length];
+      // N arm  — inbound: +x side,  outbound: −x side
+      drawBadge(cx + off, cy - OFFSET, inboundLabel('n', lane),  inC);
+      drawBadge(cx - off, cy - OFFSET, outboundLabel('n', lane), outC);
 
-      const positions = [
-        { x: cx + inOffset,  y: cy - OFFSET },  // N arm inbound
-        { x: cx - inOffset,  y: cy + OFFSET },  // S arm inbound
-        { x: cx + OFFSET,    y: cy + inOffset }, // E arm inbound
-        { x: cx - OFFSET,    y: cy - inOffset }, // W arm inbound
-      ];
+      // S arm  — inbound: −x side,  outbound: +x side
+      drawBadge(cx - off, cy + OFFSET, inboundLabel('s', lane),  inC);
+      drawBadge(cx + off, cy + OFFSET, outboundLabel('s', lane), outC);
 
-      for (const { x, y } of positions) {
-        ctx.beginPath();
-        ctx.arc(x, y, BADGE_R, 0, Math.PI * 2);
-        ctx.fillStyle = bg + 'cc';
-        ctx.fill();
-        ctx.strokeStyle = bg;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        ctx.fillStyle = '#111';
-        ctx.fillText(label, x, y);
-      }
+      // E arm  — inbound: +y side,  outbound: −y side
+      drawBadge(cx + OFFSET, cy + off, inboundLabel('e', lane),  inC);
+      drawBadge(cx + OFFSET, cy - off, outboundLabel('e', lane), outC);
+
+      // W arm  — inbound: −y side,  outbound: +y side
+      drawBadge(cx - OFFSET, cy - off, inboundLabel('w', lane),  inC);
+      drawBadge(cx - OFFSET, cy + off, outboundLabel('w', lane), outC);
     }
   }
 
@@ -595,14 +610,14 @@ export class IDMRenderer {
     ctx.textBaseline = 'middle';
     ctx.fillText(String(v.num % 100), 0, -lenPx * 0.18);
 
-    // Exit-lane badge: turn arrow + lane letter (e.g. "→B")
-    // exitLane is set at spawn; for vehicles in turning/exiting it stays the same
-    const exitLabel = LANE_LABELS[v.exitLane ?? 0] ?? '?';
-    const arrStr    = (TURN_ARROW[v.turn] || '↑') + exitLabel;
-    const arrSize   = Math.min(widPx * 0.52, 8);
-    ctx.font         = `bold ${arrSize}px monospace`;
-    ctx.fillStyle    = '#ffe040dd';
-    ctx.fillText(arrStr, 0, lenPx * 0.25);
+    // Destination badge: turn arrow + unique outbound lane name (e.g. "→N5")
+    // exitArm and exitLane are both set at spawn so all vehicles, including approaching,
+    // already know their destination lane.
+    const destStr = (TURN_ARROW[v.turn] || '↑') + outboundLabel(v.exitArm, v.exitLane ?? 0);
+    const arrSize = Math.min(widPx * 0.52, 8);
+    ctx.font      = `bold ${arrSize}px monospace`;
+    ctx.fillStyle = '#ffe040dd';
+    ctx.fillText(destStr, 0, lenPx * 0.25);
 
     ctx.restore();
   }
