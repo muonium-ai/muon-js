@@ -11,6 +11,7 @@
     "test": "npm run typecheck"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.66",
     "typescript": "^5.9.2",
     "vite": "^7.1.8"
