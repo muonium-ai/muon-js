@@ -119,9 +119,14 @@ function idmAccel(v, gap, vLead) {
 }
 
 // ── Signal helpers ────────────────────────────────────────────────
+// 8-phase sequential cycle: N-green, N-yellow, E-green, E-yellow,
+//                            S-green, S-yellow, W-green, W-yellow.
+// Only one arm flows at a time — no crossing traffic, no central congestion.
+const PHASE_ARM   = ['n', 'n', 'e', 'e', 's', 's', 'w', 'w'];
+const PHASE_STATE = ['green', 'yellow', 'green', 'yellow', 'green', 'yellow', 'green', 'yellow'];
+
 function isGreen(arm, phase) {
-  if (arm === 'n' || arm === 's') return phase === 0;
-  return phase === 2;
+  return PHASE_STATE[phase] === 'green' && PHASE_ARM[phase] === arm;
 }
 
 // ── IDM Intersection ──────────────────────────────────────────────
@@ -160,9 +165,13 @@ export class IDMIntersection {
   _updateSignal(dtMs) {
     this.elapsed += dtMs;
     const c = this.cycleMs;
-    const durations = [c * 0.45, c * 0.05, c * 0.45, c * 0.05];
+    // Each arm gets equal green time; yellow is 5% of that slice.
+    const slice  = c / 4;                   // time per arm
+    const yellow = slice * 0.10;            // 10% of slice = yellow
+    const green  = slice - yellow;          // 90% = green
+    const durations = [green, yellow, green, yellow, green, yellow, green, yellow];
     let boundary = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 8; i++) {
       boundary += durations[i];
       if (this.elapsed < boundary) { this.phase = i; return; }
     }
@@ -171,8 +180,8 @@ export class IDMIntersection {
   }
 
   get drawPhase() {
-    // 0=NS-green, 1=yellow, 2=EW-green, (3=yellow→NS treated as yellow)
-    return this.phase <= 1 ? this.phase : (this.phase === 2 ? 2 : 1);
+    // Returns { arm, state } so the renderer can colour each signal independently.
+    return { arm: PHASE_ARM[this.phase], state: PHASE_STATE[this.phase] };
   }
 
   // ── Spawning ────────────────────────────────────────────────────
@@ -657,10 +666,16 @@ export class IDMRenderer {
     this.ctx.fillRect(cx - roadPx, cy - roadPx, roadPx * 2, roadPx * 2);
   }
 
-  _drawSignals(cx, cy, roadPx, phase) {
+  _drawSignals(cx, cy, roadPx, drawPhase) {
     const { ctx } = this;
-    const nsColor = phase === 0 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
-    const ewColor = phase === 2 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
+    const GREEN  = '#52c87a';
+    const YELLOW = '#e8c84a';
+    const RED    = '#e05252';
+
+    const armColor = (arm) => {
+      if (drawPhase.arm === arm) return drawPhase.state === 'green' ? GREEN : YELLOW;
+      return RED;
+    };
 
     const drawLight = (x, y, color) => {
       const r = 7;
@@ -672,11 +687,12 @@ export class IDMRenderer {
       ctx.beginPath(); ctx.arc(x, y, r,     0, Math.PI * 2); ctx.fill();
     };
 
+    // One light per arm, at the near corner of the intersection box
     const o = roadPx + 14;
-    drawLight(cx - o, cy - o, nsColor);
-    drawLight(cx + o, cy - o, nsColor);
-    drawLight(cx - o, cy + o, ewColor);
-    drawLight(cx + o, cy + o, ewColor);
+    drawLight(cx,     cy - o, armColor('n'));  // N: top-centre
+    drawLight(cx,     cy + o, armColor('s'));  // S: bottom-centre
+    drawLight(cx + o, cy,     armColor('e'));  // E: right-centre
+    drawLight(cx - o, cy,     armColor('w'));  // W: left-centre
   }
 
   _drawVehicles(cx, cy, sim, roadPx, roadLenPx) {
@@ -758,7 +774,7 @@ export class IDMRenderer {
     const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0)
                    + sim.turning.length
                    + Object.values(sim.exiting).reduce((s, a) => s + a.length, 0);
-    const phase    = ['NS ▶', 'Yellow ●', 'EW ▶', 'Yellow ●'][sim.phase];
+    const phase    = ['N ▶', 'N ●', 'E ▶', 'E ●', 'S ▶', 'S ●', 'W ▶', 'W ●'][sim.phase];
     const lines = [
       `Signal: ${phase}`,
       `Active: ${totalVeh}  Throughput: ${sim.throughput}`,
