@@ -23,8 +23,6 @@ const TRAFFIC_MODES = {
   rain:     { vpm:  60, cycleMultiplier: 1.2 },
 };
 
-const WARP_OPTIONS = [1, 10, 100, 1000];
-
 // Vehicle type visual properties: [color, length-px, width-px]
 // length = along travel direction, width = across road
 // Order matches probability CDF: car 60%, motorcycle 20%, truck 10%, bus 5%, auto-rickshaw 5%
@@ -37,7 +35,6 @@ const VT = [
 ];
 
 const VEH_GAP =  2;  // gap between consecutive vehicles
-const MAX_VIS =  6;  // max individual vehicles drawn per queue arm
 
 // ── Vehicle shape drawing ────────────────────────────────────────────────────
 
@@ -181,6 +178,125 @@ function slotVehicleTypeIdx(dirIdx, slotIdx) {
   return 4;              // auto-rickshaw
 }
 
+// ── Vehicle animation system ─────────────────────────────────────────────────
+
+/**
+ * Visual vehicle for smooth animation.
+ * @typedef {{
+ *   typeIdx: number,  lane: number,
+ *   pos: number,      targetPos: number,
+ *   state: 'approach'|'queued'|'discharge',
+ *   age: number
+ * }} VisVehicle
+ */
+
+const APPROACH_DIST = 200;   // px from intersection edge where vehicles spawn
+const DISCHARGE_DIST = 180;  // px past intersection edge before removal
+const MOVE_SPEED = 400;      // px/sec base approach/discharge speed
+const QUEUE_LERP = 12;       // lerp factor for settling into queue position
+
+/**
+ * Manages visual vehicle lists for one pane (4 directions).
+ * Reconciles with WASM queue counts each frame and produces smooth motion.
+ */
+class PaneAnimator {
+  constructor() {
+    this.dirs = { n: [], s: [], e: [], w: [] };
+    this._nextId = 0;
+  }
+
+  /** Clear all vehicles (on sim reset). */
+  reset() {
+    for (const k of ['n','s','e','w']) this.dirs[k] = [];
+  }
+
+  /**
+   * Update visual vehicles to match the simulation queue counts.
+   * @param {{n:number,s:number,e:number,w:number}} queues - current WASM counts
+   * @param {number} dt - wall-clock seconds since last frame
+   * @param {number} laneCount
+   * @param {number} signalPhase - 0=NSGreen, 1=AllRed, 2=EWGreen
+   */
+  update(queues, dt, laneCount) {
+    for (const dir of ['n','s','e','w']) {
+      this._updateDir(dir, queues[dir], dt, laneCount);
+    }
+  }
+
+  _updateDir(dir, targetCount, dt, laneCount) {
+    const list = this.dirs[dir];
+    const dirIdx = { n:0, s:1, e:2, w:3 }[dir];
+
+    // Separate queued/approaching from discharging
+    const active = list.filter(v => v.state !== 'discharge');
+    const discharging = list.filter(v => v.state === 'discharge');
+
+    // ── Reconcile count ──────────────────────────────────────────
+    while (active.length < targetCount) {
+      // Spawn new vehicle at approach distance
+      const idx = active.length;
+      const vtIdx = slotVehicleTypeIdx(dirIdx, idx);
+      const lane = slotLane(idx, laneCount);
+      active.push({
+        typeIdx: vtIdx, lane,
+        pos: APPROACH_DIST + Math.random() * 40,
+        targetPos: 0,
+        state: 'approach',
+        age: 0,
+      });
+    }
+    while (active.length > targetCount) {
+      // Discharge front vehicle (smallest pos = closest to intersection)
+      active.sort((a, b) => a.pos - b.pos);
+      const v = active.shift();
+      if (v) {
+        v.state = 'discharge';
+        v.pos = 0;
+        discharging.push(v);
+      }
+    }
+
+    // ── Compute target positions (queue stacking) ────────────────
+    // Sort by lane, then assign stacking positions per lane
+    const laneSlots = new Array(laneCount).fill(0);
+    // Re-assign lanes based on current index
+    for (let i = 0; i < active.length; i++) {
+      active[i].lane = slotLane(i, laneCount);
+    }
+    for (let i = 0; i < active.length; i++) {
+      const [, vLen] = VT[active[i].typeIdx];
+      const lane = active[i].lane;
+      const depth = laneSlots[lane];
+      laneSlots[lane]++;
+      active[i].targetPos = VEH_GAP + depth * (vLen + VEH_GAP);
+      active[i].state = 'queued';
+    }
+
+    // ── Animate positions ────────────────────────────────────────
+    for (const v of active) {
+      v.age += dt;
+      // Lerp toward target queue position
+      const diff = v.targetPos - v.pos;
+      if (Math.abs(diff) < 0.5) {
+        v.pos = v.targetPos;
+      } else {
+        v.pos += diff * Math.min(QUEUE_LERP * dt, 1);
+      }
+    }
+
+    // Animate discharging vehicles (move away from intersection)
+    for (const v of discharging) {
+      v.pos -= MOVE_SPEED * dt; // negative = past intersection
+      v.age += dt;
+    }
+
+    // Remove discharged vehicles that are off-screen
+    const kept = discharging.filter(v => v.pos > -DISCHARGE_DIST);
+
+    this.dirs[dir] = [...active, ...kept];
+  }
+}
+
 // ── Renderer helpers ─────────────────────────────────────────────────────────
 
 const W = 1200;
@@ -282,8 +398,10 @@ function drawPane(ctx, ox, state) {
   // ── Traffic signals ──────────────────────────────────────────────
   drawSignals(ctx, cx, cy, half, road, state.signalPhase);
 
-  // ── Vehicle queues ───────────────────────────────────────────────
-  drawVehicleQueues(ctx, cx, cy, half, state.queues, state.laneCount || 3);
+  // ── Vehicle queues (animated) ───────────────────────────────────
+  if (state._animator) {
+    drawAnimatedVehicles(ctx, cx, cy, half, state._animator, state.laneCount || 3, state.queues);
+  }
 
   // ── Metrics overlay ──────────────────────────────────────────────
   drawMetrics(ctx, ox, PW, state);
@@ -325,19 +443,6 @@ function drawSignals(ctx, cx, cy, half, road, phase) {
 }
 
 /**
- * Draw individual vehicle rectangles stacked in each queue arm.
- * Vehicles are positioned in lanes across the road width.
- * Vehicle types are assigned deterministically by slot index using the probability
- * distribution (60% car, 20% motorcycle, 10% truck, 5% bus, 5% auto-rickshaw).
- */
-function drawVehicleQueues(ctx, cx, cy, half, queues, laneCount) {
-  _drawArmNS(ctx, cx, cy - half, queues.n, 0, -1, half, laneCount);  // N grows upward
-  _drawArmNS(ctx, cx, cy + half, queues.s, 1, +1, half, laneCount);  // S grows downward
-  _drawArmEW(ctx, cx + half, cy, queues.e, 2, +1, half, laneCount);  // E grows rightward
-  _drawArmEW(ctx, cx - half, cy, queues.w, 3, -1, half, laneCount);  // W grows leftward
-}
-
-/**
  * Assign a vehicle to a lane index (0-based).
  * Distributes vehicles round-robin across available lanes.
  */
@@ -346,38 +451,83 @@ function slotLane(slotIdx, laneCount) {
 }
 
 /**
- * Draw a North or South queue arm.
- * Vehicles are drawn as width × length rects (narrow across road, tall along road).
- * Each vehicle is positioned in its assigned lane within the road half.
+ * Draw animated vehicles from a PaneAnimator for one pane.
+ * Converts each VisVehicle's logical `pos` into canvas coordinates and draws
+ * the correct shape at the correct rotation.
  *
- * For N queue: vehicles use the left half of the road (cx - half to cx).
- * For S queue: vehicles use the right half of the road (cx to cx + half).
- * This mimics vehicles on their side of a divided road.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cx - road centre X
+ * @param {number} cy - intersection centre Y
+ * @param {number} roadHalf - half of total road width
+ * @param {PaneAnimator} animator
+ * @param {number} laneCount
+ * @param {{n:number,s:number,e:number,w:number}} queues - for count labels
  */
-function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign, roadHalf, laneCount) {
-  const visible = Math.min(count, MAX_VIS * laneCount);
-  const laneWidth = roadHalf / laneCount;
-  const laneBase = (sign < 0) ? cx - roadHalf : cx;
-  const angle = (sign < 0) ? 0 : Math.PI; // N=0, S=π
+function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues) {
+  const laneW = roadHalf / laneCount;
 
-  const laneDepth = new Array(laneCount).fill(0);
-
-  for (let i = 0; i < visible; i++) {
-    const vtIdx = slotVehicleTypeIdx(dirIdx, i);
-    const [color, vLen, vWid] = VT[vtIdx];
-    const lane = slotLane(i, laneCount);
-    const depth = laneDepth[lane];
-    laneDepth[lane]++;
-
-    const offset = VEH_GAP + depth * (vLen + VEH_GAP);
-    const vy = sign < 0 ? edgeY - offset - vLen / 2 : edgeY + offset + vLen / 2;
-    const laneCx = laneBase + (lane + 0.5) * laneWidth;
-
-    drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, vtIdx, angle);
+  // ── N arm (left half, grows upward) ────────────────────────────
+  {
+    const edgeY = cy - roadHalf;
+    const laneBase = cx - roadHalf;
+    for (const v of animator.dirs.n) {
+      const [color, vLen, vWid] = VT[v.typeIdx];
+      const laneCx = laneBase + (v.lane + 0.5) * laneW;
+      const vy = edgeY - v.pos - vLen / 2;
+      drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, 0);
+    }
+    _drawQueueLabel(ctx, cx, edgeY, queues.n, -1, animator.dirs.n, laneCount);
   }
-  // Queue count label beyond deepest vehicle
-  const maxDepth = Math.max(...laneDepth, 0);
-  const avgLen = 26; // approximate average vehicle length for label offset
+
+  // ── S arm (right half, grows downward) ─────────────────────────
+  {
+    const edgeY = cy + roadHalf;
+    const laneBase = cx;
+    for (const v of animator.dirs.s) {
+      const [color, vLen, vWid] = VT[v.typeIdx];
+      const laneCx = laneBase + (v.lane + 0.5) * laneW;
+      const vy = edgeY + v.pos + vLen / 2;
+      drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, Math.PI);
+    }
+    _drawQueueLabel(ctx, cx, edgeY, queues.s, +1, animator.dirs.s, laneCount);
+  }
+
+  // ── E arm (bottom half, grows rightward) ───────────────────────
+  {
+    const edgeX = cx + roadHalf;
+    const laneBase = cy;
+    for (const v of animator.dirs.e) {
+      const [color, vLen, vWid] = VT[v.typeIdx];
+      const laneCy = laneBase + (v.lane + 0.5) * laneW;
+      const vx = edgeX + v.pos + vLen / 2;
+      drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI / 2);
+    }
+    _drawQLabelEW(ctx, cy, edgeX, queues.e, +1, animator.dirs.e, laneCount);
+  }
+
+  // ── W arm (top half, grows leftward) ───────────────────────────
+  {
+    const edgeX = cx - roadHalf;
+    const laneBase = cy - roadHalf;
+    for (const v of animator.dirs.w) {
+      const [color, vLen, vWid] = VT[v.typeIdx];
+      const laneCy = laneBase + (v.lane + 0.5) * laneW;
+      const vx = edgeX - v.pos - vLen / 2;
+      drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI * 1.5);
+    }
+    _drawQLabelEW(ctx, cy, edgeX, queues.w, -1, animator.dirs.w, laneCount);
+  }
+}
+
+/** Queue count label for N/S arms. */
+function _drawQueueLabel(ctx, cx, edgeY, count, sign, vehicles, laneCount) {
+  // Find max depth among queued vehicles
+  const laneDepths = new Array(laneCount).fill(0);
+  for (const v of vehicles) {
+    if (v.state === 'queued') laneDepths[v.lane]++;
+  }
+  const maxDepth = Math.max(...laneDepths, 0);
+  const avgLen = 26;
   const labelOff = VEH_GAP + maxDepth * (avgLen + VEH_GAP) + 5;
   ctx.fillStyle = count > 0 ? '#888' : '#444';
   ctx.font = '10px monospace';
@@ -385,37 +535,13 @@ function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign, roadHalf, laneCount) {
   ctx.fillText(count, cx, sign < 0 ? edgeY - labelOff : edgeY + labelOff);
 }
 
-/**
- * Draw an East or West queue arm.
- * Vehicles are drawn as length × width rects (wide along road, narrow across road).
- * Each vehicle is positioned in its assigned lane within the road half.
- *
- * For E queue: vehicles use the bottom half of the road (cy to cy + roadHalf).
- * For W queue: vehicles use the top half of the road (cy - roadHalf to cy).
- */
-function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign, roadHalf, laneCount) {
-  const visible = Math.min(count, MAX_VIS * laneCount);
-  const laneWidth = roadHalf / laneCount;
-  const laneBase = (sign > 0) ? cy : cy - roadHalf;
-  const angle = (sign > 0) ? Math.PI / 2 : Math.PI * 1.5; // E=π/2, W=3π/2
-
-  const laneDepth = new Array(laneCount).fill(0);
-
-  for (let i = 0; i < visible; i++) {
-    const vtIdx = slotVehicleTypeIdx(dirIdx, i);
-    const [color, vLen, vWid] = VT[vtIdx];
-    const lane = slotLane(i, laneCount);
-    const depth = laneDepth[lane];
-    laneDepth[lane]++;
-
-    const offset = VEH_GAP + depth * (vLen + VEH_GAP);
-    const vx = sign > 0 ? edgeX + offset + vLen / 2 : edgeX - offset - vLen / 2;
-    const laneCy = laneBase + (lane + 0.5) * laneWidth;
-
-    drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, vtIdx, angle);
+/** Queue count label for E/W arms. */
+function _drawQLabelEW(ctx, cy, edgeX, count, sign, vehicles, laneCount) {
+  const laneDepths = new Array(laneCount).fill(0);
+  for (const v of vehicles) {
+    if (v.state === 'queued') laneDepths[v.lane]++;
   }
-  // Queue count label beyond deepest vehicle
-  const maxDepth = Math.max(...laneDepth, 0);
+  const maxDepth = Math.max(...laneDepths, 0);
   const avgLen = 26;
   const labelOff = VEH_GAP + maxDepth * (avgLen + VEH_GAP) + 5;
   ctx.fillStyle = count > 0 ? '#888' : '#444';
@@ -678,6 +804,19 @@ async function main() {
   applyMode('normal');
   lab.set_speed_multiplier(1000);
 
+  // ── Animation state ─────────────────────────────────────────────────
+
+  const ncAnimator = new PaneAnimator();
+  const caAnimator = new PaneAnimator();
+
+  // Reset animators when sim resets
+  const origReset = lab.reset.bind(lab);
+  lab.reset = function() {
+    origReset();
+    ncAnimator.reset();
+    caAnimator.reset();
+  };
+
   // ── Render loop ────────────────────────────────────────────────────
 
   let lastTime = performance.now();
@@ -688,40 +827,55 @@ async function main() {
 
     lab.step_frame(dt);
 
+    const dtSec = dt / 1000;
+    const lc = lab.lane_count();
+
     // Collect state
+    const ncQueues = {
+      n: lab.nocache_queue_north(),
+      s: lab.nocache_queue_south(),
+      e: lab.nocache_queue_east(),
+      w: lab.nocache_queue_west(),
+    };
+    const caQueues = {
+      n: lab.cached_queue_north(),
+      s: lab.cached_queue_south(),
+      e: lab.cached_queue_east(),
+      w: lab.cached_queue_west(),
+    };
+
+    // Update animators (only for 1×1 view)
+    const gs = lab.grid_size();
+    if (gs === 1) {
+      ncAnimator.update(ncQueues, dtSec, lc);
+      caAnimator.update(caQueues, dtSec, lc);
+    }
+
     const noCache = {
       signalPhase: lab.nocache_signal_phase(),
-      queues: {
-        n: lab.nocache_queue_north(),
-        s: lab.nocache_queue_south(),
-        e: lab.nocache_queue_east(),
-        w: lab.nocache_queue_west(),
-      },
+      queues: ncQueues,
       tick:       lab.nocache_tick(),
       simSeconds: lab.nocache_sim_seconds(),
       vehicles:   lab.nocache_vehicles_processed(),
       discharged: lab.nocache_vehicles_discharged(),
       avgWait:    lab.nocache_avg_wait_sec(),
       tps:        lab.tps_nocache(),
-      laneCount:  lab.lane_count(),
+      laneCount:  lc,
+      _animator:  ncAnimator,
       isCached:   false,
     };
 
     const cached = {
       signalPhase: lab.cached_signal_phase(),
-      queues: {
-        n: lab.cached_queue_north(),
-        s: lab.cached_queue_south(),
-        e: lab.cached_queue_east(),
-        w: lab.cached_queue_west(),
-      },
+      queues: caQueues,
       tick:          lab.cached_tick(),
       simSeconds:    lab.cached_sim_seconds(),
       vehicles:      lab.cached_vehicles_processed(),
       discharged:    lab.cached_vehicles_discharged(),
       avgWait:       lab.cached_avg_wait_sec(),
       tps:           lab.tps_cached(),
-      laneCount:     lab.lane_count(),
+      laneCount:     lc,
+      _animator:     caAnimator,
       nocacheTps:    lab.tps_nocache(),
       cacheHits:     lab.cache_hits(),
       cacheMisses:   lab.cache_misses(),
@@ -733,7 +887,6 @@ async function main() {
 
     // Clear and draw
     ctx.clearRect(0, 0, W, H);
-    const gs = lab.grid_size();
     if (gs === 1) {
       drawPane(ctx, 0,    noCache);
       drawPane(ctx, HALF, cached);
