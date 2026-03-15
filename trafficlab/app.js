@@ -215,10 +215,10 @@ function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign) {
   ctx.fillText(count, sign > 0 ? edgeX + labelOff : edgeX - labelOff, cy + 4);
 }
 
-function drawMetrics(ctx, ox, PW, s) {
+function drawMetrics(ctx, ox, PW, s, yStart = 14) {
   const x = ox + 10;
   const lineH = 16;
-  let y = 14;
+  let y = yStart;
 
   const fmt = (n, dec = 0) => Number(n).toLocaleString('en-US', { maximumFractionDigits: dec });
   const simTime = s.simSeconds >= 3600
@@ -260,7 +260,112 @@ function drawMetrics(ctx, ox, PW, s) {
     y += lineH;
   }
 }
+// ── Grid renderer ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Draw one mini-intersection cell inside a grid pane.
+ * All sizing is derived from cellW/cellH, so renders correctly at any grid scale.
+ */
+function drawMiniIntersection(ctx, ox, oy, cellW, cellH, phase, queues) {
+  const cx = ox + cellW / 2;
+  const cy = oy + cellH / 2;
+  const road = Math.round(Math.min(cellW, cellH) * 0.22); // road width
+  const half = road / 2;
+  const barMaxH = Math.min(cellH * 0.28, 44);
+  const barW = Math.max(Math.round(road * 0.28), 6);
+
+  // Road surfaces
+  ctx.fillStyle = '#1e1e22';
+  ctx.fillRect(cx - half, oy, road, cellH);
+  ctx.fillRect(ox, cy - half, cellW, road);
+
+  // Intersection box
+  ctx.fillStyle = '#252528';
+  ctx.fillRect(cx - half, cy - half, road, road);
+
+  // Signal dots with glow
+  const nsColor = phase === 0 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
+  const ewColor = phase === 2 ? '#52c87a' : (phase === 1 ? '#e8c84a' : '#e05252');
+  const sr = 4;
+  function dot(x, y, color) {
+    ctx.shadowColor = color; ctx.shadowBlur = 8;
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, sr, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  dot(cx + half + 7,  cy - half - 9,  nsColor);
+  dot(cx - half - 7,  cy + half + 9,  nsColor);
+  dot(cx + half + 9,  cy + half + 7,  ewColor);
+  dot(cx - half - 9,  cy - half - 7,  ewColor);
+
+  // Queue bars (simple proportional bars per arm)
+  const maxQ = 24;
+  ctx.fillStyle = 'rgba(224, 82, 82, 0.55)';
+  const nH = Math.min(queues.n / maxQ, 1) * barMaxH;
+  if (nH > 0) ctx.fillRect(cx - barW / 2, cy - half - nH, barW, nH);
+  const sH = Math.min(queues.s / maxQ, 1) * barMaxH;
+  if (sH > 0) ctx.fillRect(cx - barW / 2, cy + half, barW, sH);
+  const eH = Math.min(queues.e / maxQ, 1) * barMaxH;
+  if (eH > 0) ctx.fillRect(cx + half, cy - barW / 2, eH, barW);
+  const wH = Math.min(queues.w / maxQ, 1) * barMaxH;
+  if (wH > 0) ctx.fillRect(cx - half - wH, cy - barW / 2, wH, barW);
+}
+
+/**
+ * Draw a full NxN grid pane (left or right half of the canvas).
+ * Metrics are shown in a strip at the bottom of the pane.
+ */
+function drawGridPane(ctx, ox, gridSize, isNocache, lab, aggregateState) {
+  const PW = HALF;
+  const METRICS_H = 130;
+  const gridH = H - METRICS_H;
+  const cellW = Math.floor(PW / gridSize);
+  const cellH = Math.floor(gridH / gridSize);
+
+  // Background
+  ctx.fillStyle = '#111114';
+  ctx.fillRect(ox, 0, PW, H);
+
+  // Grid cells
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      const phase = isNocache
+        ? lab.grid_nocache_signal_phase(r, c)
+        : lab.grid_cached_signal_phase(r, c);
+      const queues = {
+        n: isNocache ? lab.grid_nocache_queue_north(r, c) : lab.grid_cached_queue_north(r, c),
+        s: isNocache ? lab.grid_nocache_queue_south(r, c) : lab.grid_cached_queue_south(r, c),
+        e: isNocache ? lab.grid_nocache_queue_east(r, c)  : lab.grid_cached_queue_east(r, c),
+        w: isNocache ? lab.grid_nocache_queue_west(r, c)  : lab.grid_cached_queue_west(r, c),
+      };
+      drawMiniIntersection(ctx, ox + c * cellW, r * cellH, cellW, cellH, phase, queues);
+    }
+  }
+
+  // Cell dividers
+  ctx.strokeStyle = '#22222a';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([]);
+  for (let r = 1; r < gridSize; r++) {
+    ctx.beginPath();
+    ctx.moveTo(ox, r * cellH); ctx.lineTo(ox + PW, r * cellH);
+    ctx.stroke();
+  }
+  for (let c = 1; c < gridSize; c++) {
+    ctx.beginPath();
+    ctx.moveTo(ox + c * cellW, 0); ctx.lineTo(ox + c * cellW, gridH);
+    ctx.stroke();
+  }
+
+  // Grid-area bottom border
+  ctx.strokeStyle = '#2a2a2e';
+  ctx.beginPath();
+  ctx.moveTo(ox, gridH); ctx.lineTo(ox + PW, gridH);
+  ctx.stroke();
+
+  // Aggregate metrics below grid
+  drawMetrics(ctx, ox, PW, aggregateState, gridH + 10);
+}
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -309,6 +414,10 @@ async function main() {
     const v = parseInt(e.target.value);
     document.getElementById('lanes-val').textContent = v;
     lab.set_lane_count(v);
+  });
+
+  document.getElementById('grid').addEventListener('change', e => {
+    lab.set_grid_size(parseInt(e.target.value));
   });
 
   document.getElementById('warp').addEventListener('change', e => {
@@ -397,8 +506,14 @@ async function main() {
 
     // Clear and draw
     ctx.clearRect(0, 0, W, H);
-    drawPane(ctx, 0,    noCache);
-    drawPane(ctx, HALF, cached);
+    const gs = lab.grid_size();
+    if (gs === 1) {
+      drawPane(ctx, 0,    noCache);
+      drawPane(ctx, HALF, cached);
+    } else {
+      drawGridPane(ctx, 0,    gs, true,  lab, noCache);
+      drawGridPane(ctx, HALF, gs, false, lab, cached);
+    }
 
     // Centre divider
     ctx.strokeStyle = '#2a2a2e';
