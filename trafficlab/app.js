@@ -190,10 +190,18 @@ function slotVehicleTypeIdx(dirIdx, slotIdx) {
  * }} VisVehicle
  */
 
-const APPROACH_DIST = 200;   // px from intersection edge where vehicles spawn
-const DISCHARGE_DIST = 180;  // px past intersection edge before removal
-const MOVE_SPEED = 400;      // px/sec base approach/discharge speed
-const QUEUE_LERP = 12;       // lerp factor for settling into queue position
+// Road geometry (derived from drawPane):
+// N arm: ~200px from canvas top to intersection edge
+// S arm: ~220px from intersection edge to road end
+// E/W arms: ~230px from intersection edge to pane edge
+// Vehicles spawn at the road edge and drive the full length to the signal.
+// After discharge, they cross the intersection and exit the opposite road.
+const SPAWN_DIST_NS  = 200;   // px from intersection edge — approx full N/S road length
+const SPAWN_DIST_EW  = 230;   // px for E/W roads (pane edge to intersection)
+const EXIT_DIST      = 230;   // px past intersection before removal (opposite road length)
+const APPROACH_SPEED = 180;   // px/sec — smooth driving speed toward intersection
+const DISCHARGE_SPEED = 220;  // px/sec — slightly faster exit through intersection
+const QUEUE_LERP = 12;        // lerp factor for settling into queue position
 
 /**
  * Manages visual vehicle lists for one pane (4 directions).
@@ -226,6 +234,8 @@ class PaneAnimator {
   _updateDir(dir, targetCount, dt, laneCount) {
     const list = this.dirs[dir];
     const dirIdx = { n:0, s:1, e:2, w:3 }[dir];
+    const isNS = (dir === 'n' || dir === 's');
+    const spawnDist = isNS ? SPAWN_DIST_NS : SPAWN_DIST_EW;
 
     // Separate queued/approaching from discharging
     const active = list.filter(v => v.state !== 'discharge');
@@ -233,13 +243,13 @@ class PaneAnimator {
 
     // ── Reconcile count ──────────────────────────────────────────
     while (active.length < targetCount) {
-      // Spawn new vehicle at approach distance
+      // Spawn at the far edge of the road
       const idx = active.length;
       const vtIdx = slotVehicleTypeIdx(dirIdx, idx);
       const lane = slotLane(idx, laneCount);
       active.push({
         typeIdx: vtIdx, lane,
-        pos: APPROACH_DIST + Math.random() * 40,
+        pos: spawnDist + Math.random() * 20,
         targetPos: 0,
         state: 'approach',
         age: 0,
@@ -257,9 +267,7 @@ class PaneAnimator {
     }
 
     // ── Compute target positions (queue stacking) ────────────────
-    // Sort by lane, then assign stacking positions per lane
     const laneSlots = new Array(laneCount).fill(0);
-    // Re-assign lanes based on current index
     for (let i = 0; i < active.length; i++) {
       active[i].lane = slotLane(i, laneCount);
     }
@@ -269,29 +277,38 @@ class PaneAnimator {
       const depth = laneSlots[lane];
       laneSlots[lane]++;
       active[i].targetPos = VEH_GAP + depth * (vLen + VEH_GAP);
-      active[i].state = 'queued';
     }
 
     // ── Animate positions ────────────────────────────────────────
     for (const v of active) {
       v.age += dt;
-      // Lerp toward target queue position
       const diff = v.targetPos - v.pos;
       if (Math.abs(diff) < 0.5) {
         v.pos = v.targetPos;
+        v.state = 'queued';
+      } else if (v.state === 'approach') {
+        // Drive toward intersection at steady speed, but don't overshoot target
+        const step = APPROACH_SPEED * dt;
+        if (v.pos - step <= v.targetPos) {
+          v.pos = v.targetPos;
+          v.state = 'queued';
+        } else {
+          v.pos -= step;
+        }
       } else {
+        // Queued vehicle settling (e.g. queue shifted forward)
         v.pos += diff * Math.min(QUEUE_LERP * dt, 1);
       }
     }
 
-    // Animate discharging vehicles (move away from intersection)
+    // Animate discharging vehicles — drive through intersection and out opposite road
     for (const v of discharging) {
-      v.pos -= MOVE_SPEED * dt; // negative = past intersection
+      v.pos -= DISCHARGE_SPEED * dt; // negative = past intersection, into opposite road
       v.age += dt;
     }
 
-    // Remove discharged vehicles that are off-screen
-    const kept = discharging.filter(v => v.pos > -DISCHARGE_DIST);
+    // Remove discharged vehicles that have exited the opposite road
+    const kept = discharging.filter(v => v.pos > -EXIT_DIST);
 
     this.dirs[dir] = [...active, ...kept];
   }
