@@ -395,7 +395,9 @@ async function main() {
   }
 
   function applyCountry(country) {
-    lab.set_free_left_turn(country === 'india');
+    const isIndia = country === 'india';
+    lab.set_free_left_turn(isIndia);
+    lab.set_motorcycle_splitting(isIndia);
   }
 
   document.getElementById('vpm').addEventListener('input', e => {

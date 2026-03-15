@@ -81,6 +81,9 @@ pub struct SimConfig {
     pub speed_multiplier: u32,
     /// Enable free left-turn (India rule).
     pub free_left_turn: bool,
+    /// Motorcycle lane-splitting: motorcycles bypass queue (India rule).
+    /// Effectively increases discharge rate for the motorcycle fraction (~20%).
+    pub motorcycle_splitting: bool,
 }
 
 #[wasm_bindgen]
@@ -93,6 +96,7 @@ impl SimConfig {
             lane_count: 3,
             speed_multiplier: 1,
             free_left_turn: false,
+            motorcycle_splitting: false,
         }
     }
 }
@@ -132,14 +136,15 @@ pub enum SignalPhase {
 // ── In-process simulation cache (MuonCache GET/SET API shape) ─────────────────
 
 /// Bit-packed cache key.
-/// Layout: [signal:4][lane_count:8][free_left:1][dt_ms:16] — 29 bits used.
+/// Layout: [signal:4][lane_count:8][free_left:1][moto_split:1][dt_ms:16] — 30 bits used.
 #[inline]
-fn discharge_key(signal: SignalPhase, lane_count: u8, free_left: bool, dt_ms: f64) -> u32 {
+fn discharge_key(signal: SignalPhase, lane_count: u8, free_left: bool, motorcycle_splitting: bool, dt_ms: f64) -> u32 {
     let dt_u16 = (dt_ms.round() as u32).min(0xFFFF) as u16;
     (signal as u32)
         | ((lane_count as u32) << 4)
         | ((free_left as u32) << 12)
-        | ((dt_u16 as u32) << 13)
+        | ((motorcycle_splitting as u32) << 13)
+        | ((dt_u16 as u32) << 14)
 }
 
 /// Number of sequential multiply-accumulate iterations in the nocache slow path.
@@ -305,12 +310,17 @@ impl SimState {
     /// Fast discharge formula (saturation-flow model).
     /// Saturation flow ≈ 1 500 veh/hr/lane = 0.417 veh/s/lane.
     /// Free-left-turn (India): ~0.55 veh/s/lane effective.
+    /// Motorcycle lane-splitting (India): adds ~20% effective throughput as
+    /// motorcycles filter between queued vehicles and discharge independently.
     #[inline]
-    fn compute_discharge(signal: SignalPhase, lane_count: u8, free_left: bool, dt_ms: f64) -> u32 {
+    fn compute_discharge(signal: SignalPhase, lane_count: u8, free_left: bool, motorcycle_splitting: bool, dt_ms: f64) -> u32 {
         if matches!(signal, SignalPhase::AllRed) {
             return 0;
         }
-        let rate = if free_left { 0.55_f64 } else { 0.417_f64 };
+        let mut rate = if free_left { 0.55_f64 } else { 0.417_f64 };
+        if motorcycle_splitting {
+            rate *= 1.20; // ~20% of traffic is motorcycles that bypass queues
+        }
         (lane_count as f64 * rate * dt_ms / 1_000.0) as u32
     }
 
@@ -325,7 +335,7 @@ impl SimState {
     pub fn step_nocache(&mut self, sim_dt_ms: f64, cfg: &SimConfig) {
         self.step_prepare(sim_dt_ms, cfg);
         let discharge = Self::compute_discharge(
-            self.signal, cfg.lane_count, cfg.free_left_turn, sim_dt_ms,
+            self.signal, cfg.lane_count, cfg.free_left_turn, cfg.motorcycle_splitting, sim_dt_ms,
         );
         // Synthetic overhead: sequential MAC chain (data-dependency prevents SIMD).
         let mut acc = self.waste;
@@ -349,12 +359,12 @@ impl SimState {
     /// ensuring both instances produce the same traffic outcomes for the same seed.
     pub fn step_cached(&mut self, sim_dt_ms: f64, cfg: &SimConfig, cache: &mut SimCache) {
         self.step_prepare(sim_dt_ms, cfg);
-        let key = discharge_key(self.signal, cfg.lane_count, cfg.free_left_turn, sim_dt_ms);
+        let key = discharge_key(self.signal, cfg.lane_count, cfg.free_left_turn, cfg.motorcycle_splitting, sim_dt_ms);
         let discharge = match cache.get(key) {
             Some(d) => d,
             None => {
                 let d = Self::compute_discharge(
-                    self.signal, cfg.lane_count, cfg.free_left_turn, sim_dt_ms,
+                    self.signal, cfg.lane_count, cfg.free_left_turn, cfg.motorcycle_splitting, sim_dt_ms,
                 );
                 cache.set(key, d);
                 d
@@ -483,6 +493,7 @@ impl TrafficLab {
         self.config.speed_multiplier = match s { 1 | 10 | 100 | 1000 => s, _ => 1 };
     }
     pub fn set_free_left_turn(&mut self, v: bool) { self.config.free_left_turn = v; }
+    pub fn set_motorcycle_splitting(&mut self, v: bool) { self.config.motorcycle_splitting = v; }
     /// Reinitialise the grid with an NxN layout (n = 1, 2, or 3).
     pub fn set_grid_size(&mut self, n: u8) {
         let new_n = n.max(1).min(3);
@@ -640,7 +651,7 @@ impl TrafficLab {
                 let idx = r * size + c;
                 let sig = states[idx].signal;
                 let d = SimState::compute_discharge(
-                    sig, cfg.lane_count, cfg.free_left_turn, dt_ms,
+                    sig, cfg.lane_count, cfg.free_left_turn, cfg.motorcycle_splitting, dt_ms,
                 );
                 if d == 0 { continue; }
                 let route = ((d as f64 * ROUTE_FRAC) as u32).max(1);
@@ -1075,6 +1086,145 @@ mod tests {
         let per_cell = lab.nocache_vehicles_processed();
         assert!(per_cell >= 10_000,
             "expected >= 10 000 vehicles per cell, got {per_cell}");
+    }
+
+    // ── T-000115: traffic mode and country preset tests ────────────────────────
+
+    /// Rush Hour must produce >= 2× the vehicles of Normal after 1 000 ticks.
+    #[test]
+    fn rush_hour_gte_2x_normal_vehicles() {
+        let dt = 100.0_f64;
+        const TICKS: usize = 1_000;
+
+        // Normal: 120 vpm, 60 s cycle
+        let mut cfg_normal = SimConfig::new();
+        cfg_normal.vehicles_per_min = 120;
+        cfg_normal.signal_cycle_secs = 60;
+        let mut s_normal = SimState::new(0x1111);
+        for _ in 0..TICKS { s_normal.step_nocache(dt, &cfg_normal); }
+
+        // Rush Hour: 420 vpm, 48 s cycle (0.8×)
+        let mut cfg_rush = SimConfig::new();
+        cfg_rush.vehicles_per_min = 420;
+        cfg_rush.signal_cycle_secs = 48;
+        let mut s_rush = SimState::new(0x1111);
+        for _ in 0..TICKS { s_rush.step_nocache(dt, &cfg_rush); }
+
+        assert!(
+            s_rush.vehicles_spawned >= s_normal.vehicles_spawned * 2,
+            "rush ({}) should be >= 2× normal ({})",
+            s_rush.vehicles_spawned, s_normal.vehicles_spawned
+        );
+    }
+
+    /// All four modes produce measurably different queue behavior.
+    #[test]
+    fn four_modes_produce_different_queue_totals() {
+        let dt = 100.0_f64;
+        const TICKS: usize = 500;
+
+        let modes: [(u32, u32); 4] = [
+            (120, 60),  // normal
+            (420, 48),  // rush
+            (600, 36),  // festival
+            ( 60, 72),  // rain
+        ];
+
+        let mut totals = Vec::new();
+        for &(vpm, cycle) in &modes {
+            let mut cfg = SimConfig::new();
+            cfg.vehicles_per_min = vpm;
+            cfg.signal_cycle_secs = cycle;
+            let mut s = SimState::new(0x2222);
+            for _ in 0..TICKS { s.step_nocache(dt, &cfg); }
+            totals.push(s.vehicles_spawned);
+        }
+
+        // All four must be distinct
+        for i in 0..totals.len() {
+            for j in (i+1)..totals.len() {
+                assert_ne!(
+                    totals[i], totals[j],
+                    "mode {i} and {j} produced same vehicle count: {}",
+                    totals[i]
+                );
+            }
+        }
+    }
+
+    /// India preset (free_left + motorcycle_splitting) discharges more vehicles
+    /// than US preset (strict lanes) under the same arrival rate.
+    #[test]
+    fn india_preset_discharges_more_than_us() {
+        let dt = 1_000.0_f64; // 1 s steps so discharge > 0 per tick
+        const TICKS: usize = 1_000;
+
+        // US: strict lanes (6 lanes so discharge difference is visible after truncation)
+        let mut cfg_us = SimConfig::new();
+        cfg_us.vehicles_per_min = 300;
+        cfg_us.lane_count = 6;
+        cfg_us.free_left_turn = false;
+        cfg_us.motorcycle_splitting = false;
+        let mut s_us = SimState::new(0x3333);
+        for _ in 0..TICKS { s_us.step_nocache(dt, &cfg_us); }
+
+        // India: free left + motorcycle splitting
+        let mut cfg_in = SimConfig::new();
+        cfg_in.vehicles_per_min = 300;
+        cfg_in.lane_count = 6;
+        cfg_in.free_left_turn = true;
+        cfg_in.motorcycle_splitting = true;
+        let mut s_in = SimState::new(0x3333);
+        for _ in 0..TICKS { s_in.step_nocache(dt, &cfg_in); }
+
+        assert!(
+            s_in.vehicles_discharged > s_us.vehicles_discharged,
+            "India ({}) should discharge more than US ({})",
+            s_in.vehicles_discharged, s_us.vehicles_discharged
+        );
+    }
+
+    /// Cache adapts to different modes: switching config invalidates cached
+    /// discharge values, producing different queue behavior per mode.
+    #[test]
+    fn cache_adapts_to_mode_switch() {
+        let dt = 1_000.0_f64;
+        const TICKS: usize = 500;
+
+        // Run Normal US mode with a shared cache
+        let mut cfg = SimConfig::new();
+        cfg.vehicles_per_min = 120;
+        cfg.lane_count = 6;
+        cfg.free_left_turn = false;
+        cfg.motorcycle_splitting = false;
+        let mut s = SimState::new(0x4444);
+        let mut cache = SimCache::new();
+        for _ in 0..TICKS { s.step_cached(dt, &cfg, &mut cache); }
+        let queues_normal = s.queues.total();
+        let keys_after_normal = cache.len();
+
+        // Switch to Rush India mode on the SAME cache — new keys get added
+        cfg.vehicles_per_min = 420;
+        cfg.signal_cycle_secs = 48;
+        cfg.free_left_turn = true;
+        cfg.motorcycle_splitting = true;
+        for _ in 0..TICKS { s.step_cached(dt, &cfg, &mut cache); }
+        let queues_rush = s.queues.total();
+        let keys_after_rush = cache.len();
+
+        // Switching mode must add new cache keys (different key bits)
+        assert!(
+            keys_after_rush > keys_after_normal,
+            "mode switch should add cache keys: before={} after={}",
+            keys_after_normal, keys_after_rush
+        );
+
+        // Queue behavior must differ between modes
+        assert_ne!(
+            queues_normal, queues_rush,
+            "queue totals should differ: normal={} rush={}",
+            queues_normal, queues_rush
+        );
     }
 
     /// Cache hit ratio in 3×3 mode must be >= 1×1 mode after a brief warm-up,
