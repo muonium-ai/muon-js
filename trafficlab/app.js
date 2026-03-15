@@ -740,6 +740,18 @@ async function main() {
   let lab = new TrafficLab();
   lab.set_speed_multiplier(1000);
 
+  // ── Animation state ─────────────────────────────────────────────────
+
+  const ncAnimator = new PaneAnimator();
+  const caAnimator = new PaneAnimator();
+
+  /** Reset simulation and animators. Use this instead of lab.reset() directly. */
+  function resetAll() {
+    lab.reset();
+    ncAnimator.reset();
+    caAnimator.reset();
+  }
+
   // ── Wire controls ──────────────────────────────────────────────────
 
   function applyMode(mode) {
@@ -763,25 +775,27 @@ async function main() {
     const v = parseInt(e.target.value);
     document.getElementById('vpm-val').textContent = v;
     lab.set_vehicles_per_min(v);
-    lab.reset();
+    resetAll();
   });
 
   document.getElementById('cycle').addEventListener('input', e => {
     const v = parseInt(e.target.value);
     document.getElementById('cycle-val').textContent = v;
     lab.set_signal_cycle_secs(v);
-    lab.reset();
+    resetAll();
   });
 
   document.getElementById('lanes').addEventListener('input', e => {
     const v = parseInt(e.target.value);
     document.getElementById('lanes-val').textContent = v;
     lab.set_lane_count(v);
-    lab.reset();
+    resetAll();
   });
 
   document.getElementById('grid').addEventListener('change', e => {
     lab.set_grid_size(parseInt(e.target.value));
+    ncAnimator.reset();
+    caAnimator.reset();
   });
 
   document.getElementById('warp').addEventListener('change', e => {
@@ -790,16 +804,16 @@ async function main() {
 
   document.getElementById('mode').addEventListener('change', e => {
     applyMode(e.target.value);
-    lab.reset();
+    resetAll();
   });
 
   document.getElementById('country').addEventListener('change', e => {
     applyCountry(e.target.value);
-    lab.reset();
+    resetAll();
   });
 
   document.getElementById('btn-reset').addEventListener('click', () => {
-    lab.reset();
+    resetAll();
     applyMode(document.getElementById('mode').value);
     applyCountry(document.getElementById('country').value);
     lab.set_speed_multiplier(parseInt(document.getElementById('warp').value));
@@ -820,19 +834,6 @@ async function main() {
   // Apply defaults
   applyMode('normal');
   lab.set_speed_multiplier(1000);
-
-  // ── Animation state ─────────────────────────────────────────────────
-
-  const ncAnimator = new PaneAnimator();
-  const caAnimator = new PaneAnimator();
-
-  // Reset animators when sim resets
-  const origReset = lab.reset.bind(lab);
-  lab.reset = function() {
-    origReset();
-    ncAnimator.reset();
-    caAnimator.reset();
-  };
 
   // ── Render loop ────────────────────────────────────────────────────
 
