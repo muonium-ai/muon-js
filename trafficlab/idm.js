@@ -276,19 +276,27 @@ function armPos(arm, lane, posPx, cx, cy, roadPx) {
   // inbound offset from road centre (positive = away from centre on inbound side)
   const inOffset = (lane + 0.5) * laneWPx;
 
+  // Angle convention: after ctx.rotate(angle), local-y must point in the direction of travel.
+  // ctx.rotate(θ) maps local-y → screen direction (-sinθ, cosθ).
+  //   N (travel south  = screen +y): need cosθ=1, sinθ=0  → θ = 0
+  //   S (travel north  = screen -y): need cosθ=-1,sinθ=0  → θ = π
+  //   E (travel west   = screen -x): need sinθ=-1,cosθ=0  → θ = -π/2  (local-y→screen-left)
+  //   W (travel east   = screen +x): need sinθ=1, cosθ=0  → θ = π/2   (local-y→screen-right)
+  // Wait — for E: local-y→(-sinθ,cosθ)=(-1,0)=screen-left ✓ when θ=π/2.
+  //   sinθ=1,cosθ=0 → θ=π/2.  For W: (-sinθ,cosθ)=(1,0)=screen-right ✓ when θ=-π/2.
   switch (arm) {
     case 'n':
-      // travelling south (positive y direction), inbound = right of centre (positive x)
-      return { x: cx + inOffset, y: cy - roadPx - posPx, angle: Math.PI / 2 };
+      // travelling south (screen +y), inbound lane right of centre (+x)
+      return { x: cx + inOffset, y: cy - roadPx - posPx, angle: 0 };
     case 's':
-      // travelling north (negative y direction), inbound = left of centre (negative x)
-      return { x: cx - inOffset, y: cy + roadPx + posPx, angle: -Math.PI / 2 };
+      // travelling north (screen -y), inbound lane left of centre (-x)
+      return { x: cx - inOffset, y: cy + roadPx + posPx, angle: Math.PI };
     case 'e':
-      // travelling west (negative x direction), inbound = below centre (positive y)
-      return { x: cx + roadPx + posPx, y: cy + inOffset, angle: Math.PI };
+      // travelling west (screen -x), inbound lane below centre (+y)
+      return { x: cx + roadPx + posPx, y: cy + inOffset, angle: Math.PI / 2 };
     case 'w':
-      // travelling east (positive x direction), inbound = above centre (negative y)
-      return { x: cx - roadPx - posPx, y: cy - inOffset, angle: 0 };
+      // travelling east (screen +x), inbound lane above centre (-y)
+      return { x: cx - roadPx - posPx, y: cy - inOffset, angle: -Math.PI / 2 };
   }
 }
 
@@ -331,10 +339,12 @@ function turnBezier(v, t, cx, cy, roadPx) {
   const bx = mt * mt * p0.x + 2 * mt * t * c1.x + t * t * p2.x;
   const by = mt * mt * p0.y + 2 * mt * t * c1.y + t * t * p2.y;
 
-  // Tangent angle
+  // Tangent direction: atan2(ty, tx) gives screen angle of velocity vector.
+  // We need draw angle θ such that local-y aligns with travel: (-sinθ, cosθ) = normalised(tx_,ty_).
+  // Solving: θ = atan2(tx_, -ty_)  — equivalent to atan2(ty_,tx_) - π/2
   const tx_ = 2 * (1 - t) * (c1.x - p0.x) + 2 * t * (p2.x - c1.x);
   const ty_ = 2 * (1 - t) * (c1.y - p0.y) + 2 * t * (p2.y - c1.y);
-  const angle = Math.atan2(ty_, tx_);
+  const angle = Math.atan2(tx_, -ty_);  // rotate 90° so local-y → travel direction
 
   return { x: bx, y: by, angle };
 }
