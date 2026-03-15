@@ -428,7 +428,42 @@ export class IDMIntersection {
         if (dist < minD * 0.72) {  // 0.72 ≈ half-overlap before triggering freeze
           const va = this.turning.find(v => v.id === ai);
           const vb = this.turning.find(v => v.id === aj);
-          if (va && vb) { this.collisionPair = [va, vb]; break outer; }
+          if (va && vb) {
+            this.collisionPair = [va, vb];
+            console.group('%c⚠ IDM COLLISION DETECTED', 'color:#ff4444;font-weight:bold;font-size:14px');
+            console.log('Sim time :', this._simTimeSec.toFixed(2), 's');
+            console.log('Overlap  :', ((1 - dist / minD) * 100).toFixed(1), '%  (dist', dist.toFixed(1), 'px, minSafe', minD.toFixed(1), 'px)');
+            console.table([
+              {
+                vehicle : `#${va.num} (id ${va.id})`,
+                type    : va.vt.label,
+                from    : va.arm.toUpperCase(),
+                to      : va.exitArm.toUpperCase(),
+                turn    : va.turn,
+                inLane  : inboundLabel(va.arm, va.lane),
+                outLane : outboundLabel(va.exitArm, va.exitLane),
+                progress: (va.turnPos * 100).toFixed(1) + '%',
+                speed   : va.turnSpeed.toFixed(2) + ' m/s',
+                posX    : this._posCache.hget(ai, 'x').toFixed(1),
+                posY    : this._posCache.hget(ai, 'y').toFixed(1),
+              },
+              {
+                vehicle : `#${vb.num} (id ${vb.id})`,
+                type    : vb.vt.label,
+                from    : vb.arm.toUpperCase(),
+                to      : vb.exitArm.toUpperCase(),
+                turn    : vb.turn,
+                inLane  : inboundLabel(vb.arm, vb.lane),
+                outLane : outboundLabel(vb.exitArm, vb.exitLane),
+                progress: (vb.turnPos * 100).toFixed(1) + '%',
+                speed   : vb.turnSpeed.toFixed(2) + ' m/s',
+                posX    : this._posCache.hget(aj, 'x').toFixed(1),
+                posY    : this._posCache.hget(aj, 'y').toFixed(1),
+              },
+            ]);
+            console.groupEnd();
+            break outer;
+          }
         }
       }
     }
