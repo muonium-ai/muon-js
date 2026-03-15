@@ -152,6 +152,7 @@ export class IDMIntersection {
     this.throughput = 0;
     this.waitSum    = 0;
     this._simTimeSec = 0;
+    this.maxWait    = 0;
 
     // Per-frame position cache (MuonCache API shape) — rebuilt at the top of every step()
     this._posCache = new VehiclePositionCache();
@@ -271,7 +272,10 @@ export class IDMIntersection {
           const a = idmAccel(v.vel, gap, vLead);
           v.vel = Math.max(0, v.vel + a * dtSec);
           v.pos -= v.vel * dtSec;
-          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) v.waiting += dtSec;
+          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) {
+            v.waiting += dtSec;
+            if (v.waiting > this.maxWait) this.maxWait = v.waiting;
+          }
         }
       }
 
@@ -867,7 +871,7 @@ export class IDMRenderer {
     const lines = [
       `Signal: ${phase}`,
       `Active: ${totalVeh}  Throughput: ${sim.throughput}`,
-      `Avg wait: ${sim.avgWaitSec().toFixed(1)}s`,
+      `Avg wait: ${sim.avgWaitSec().toFixed(1)}s  Max: ${sim.maxWait.toFixed(1)}s`,
     ];
     ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
     ctx.fillStyle = '#aaa';
@@ -890,4 +894,8 @@ export class IDMRenderer {
       ctx.textAlign = 'left';
     }
   }
+
+  // ── Leaderboard overlay (populated by T-000124) ─────────────────
+  // eslint-disable-next-line no-unused-vars
+  drawLeaderboard(_rows, _currentId) {}
 }
