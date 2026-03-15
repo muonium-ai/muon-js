@@ -39,6 +39,138 @@ const VT = [
 const VEH_GAP =  2;  // gap between consecutive vehicles
 const MAX_VIS =  6;  // max individual vehicles drawn per queue arm
 
+// ── Vehicle shape drawing ────────────────────────────────────────────────────
+
+/**
+ * Draw a top-down vehicle shape on the canvas.
+ * Draws at origin facing UP (north), then uses ctx transforms for rotation.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cx   - centre X of vehicle
+ * @param {number} cy   - centre Y of vehicle
+ * @param {number} vLen - vehicle length (along travel axis)
+ * @param {number} vWid - vehicle width (across travel axis)
+ * @param {string} color - fill color
+ * @param {number} typeIdx - vehicle type (0=car,1=bus,2=truck,3=motorcycle,4=auto)
+ * @param {number} angle  - rotation in radians (0=north/up, π/2=east, π=south, 3π/2=west)
+ */
+function drawVehicleShape(ctx, cx, cy, vLen, vWid, color, typeIdx, angle) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  // Draw shapes centred at origin, facing UP (−Y is front)
+  const hw = vWid / 2;
+  const hl = vLen / 2;
+  ctx.fillStyle = color + 'cc';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 0.5;
+
+  switch (typeIdx) {
+    case 0: _drawCar(ctx, hw, hl); break;
+    case 1: _drawBus(ctx, hw, hl); break;
+    case 2: _drawTruck(ctx, hw, hl); break;
+    case 3: _drawMotorcycle(ctx, hw, hl); break;
+    case 4: _drawAutoRickshaw(ctx, hw, hl); break;
+    default: _drawCar(ctx, hw, hl); break;
+  }
+  ctx.restore();
+}
+
+/** Car: rounded body + windshield notch + rear window */
+function _drawCar(ctx, hw, hl) {
+  // Body
+  ctx.beginPath();
+  ctx.roundRect(-hw, -hl, hw * 2, hl * 2, 3);
+  ctx.fill();
+  ctx.stroke();
+  // Windshield (front = top = -Y)
+  ctx.fillStyle = '#22334488';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 2, -hl + 2, hw * 2 - 4, hl * 0.35, 2);
+  ctx.fill();
+  // Rear window
+  ctx.beginPath();
+  ctx.roundRect(-hw + 3, hl - hl * 0.28, hw * 2 - 6, hl * 0.22, 1);
+  ctx.fill();
+}
+
+/** Bus: long body with window dots along sides */
+function _drawBus(ctx, hw, hl) {
+  // Body
+  ctx.beginPath();
+  ctx.roundRect(-hw, -hl, hw * 2, hl * 2, 2);
+  ctx.fill();
+  ctx.stroke();
+  // Front windshield
+  ctx.fillStyle = '#22334466';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 2, -hl + 2, hw * 2 - 4, hl * 0.2, 2);
+  ctx.fill();
+  // Side windows (small squares along each side)
+  ctx.fillStyle = '#4466aa55';
+  const winCount = Math.floor(hl * 2 / 8);
+  for (let i = 1; i < winCount; i++) {
+    const wy = -hl + hl * 0.3 + i * ((hl * 1.5) / winCount);
+    ctx.fillRect(-hw + 1, wy, 2, 3);
+    ctx.fillRect(hw - 3, wy, 2, 3);
+  }
+}
+
+/** Truck: cab (front) + cargo bed (rear), slightly narrower cab */
+function _drawTruck(ctx, hw, hl) {
+  // Cargo bed (rear, full width)
+  ctx.beginPath();
+  ctx.roundRect(-hw, -hl * 0.1, hw * 2, hl * 1.1, 1);
+  ctx.fill();
+  ctx.stroke();
+  // Cab (front, slightly narrower)
+  const cabW = hw * 0.85;
+  ctx.beginPath();
+  ctx.roundRect(-cabW, -hl, cabW * 2, hl * 0.45, 3);
+  ctx.fill();
+  ctx.stroke();
+  // Cab windshield
+  ctx.fillStyle = '#22334488';
+  ctx.beginPath();
+  ctx.roundRect(-cabW + 2, -hl + 2, cabW * 2 - 4, hl * 0.2, 2);
+  ctx.fill();
+}
+
+/** Motorcycle: narrow oval body */
+function _drawMotorcycle(ctx, hw, hl) {
+  // Body oval
+  ctx.beginPath();
+  ctx.ellipse(0, 0, hw, hl, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  // Handlebar (front line)
+  ctx.strokeStyle = ctx.fillStyle;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-hw - 1, -hl * 0.5);
+  ctx.lineTo(hw + 1, -hl * 0.5);
+  ctx.stroke();
+}
+
+/** Auto-rickshaw: teardrop-like body, wider at front */
+function _drawAutoRickshaw(ctx, hw, hl) {
+  ctx.beginPath();
+  // Start from front-left, draw a rounded shape wider at front
+  ctx.moveTo(-hw, -hl * 0.3);
+  ctx.quadraticCurveTo(-hw, -hl, 0, -hl);           // front-left curve
+  ctx.quadraticCurveTo(hw, -hl, hw, -hl * 0.3);     // front-right curve
+  ctx.lineTo(hw * 0.7, hl);                           // right side tapers
+  ctx.quadraticCurveTo(0, hl + 2, -hw * 0.7, hl);   // rounded rear
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  // Windshield
+  ctx.fillStyle = '#22334488';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 2, -hl + 2, hw * 2 - 4, hl * 0.35, 2);
+  ctx.fill();
+}
+
 /** Deterministic vehicle type for a given queue slot (direction × slot index). */
 function slotVehicleTypeIdx(dirIdx, slotIdx) {
   const h = ((dirIdx * 31 + slotIdx * 97) >>> 0) % 100;
@@ -224,31 +356,24 @@ function slotLane(slotIdx, laneCount) {
  */
 function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign, roadHalf, laneCount) {
   const visible = Math.min(count, MAX_VIS * laneCount);
-  // Lane geometry: vehicles in N arm use left half (cx - roadHalf .. cx),
-  // vehicles in S arm use right half (cx .. cx + roadHalf).
   const laneWidth = roadHalf / laneCount;
-  const laneBase = (sign < 0) ? cx - roadHalf : cx; // N: left half, S: right half
+  const laneBase = (sign < 0) ? cx - roadHalf : cx;
+  const angle = (sign < 0) ? 0 : Math.PI; // N=0, S=π
 
-  // Track per-lane depth so vehicles stack correctly in their own lane
   const laneDepth = new Array(laneCount).fill(0);
 
   for (let i = 0; i < visible; i++) {
-    const [color, vLen, vWid] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const vtIdx = slotVehicleTypeIdx(dirIdx, i);
+    const [color, vLen, vWid] = VT[vtIdx];
     const lane = slotLane(i, laneCount);
     const depth = laneDepth[lane];
     laneDepth[lane]++;
 
     const offset = VEH_GAP + depth * (vLen + VEH_GAP);
-    // sign<0 → draw above edgeY (north); sign>0 → draw below (south)
-    const y = sign < 0 ? edgeY - offset - vLen : edgeY + offset;
-    // Centre vehicle within its lane
+    const vy = sign < 0 ? edgeY - offset - vLen / 2 : edgeY + offset + vLen / 2;
     const laneCx = laneBase + (lane + 0.5) * laneWidth;
-    const x = laneCx - vWid / 2;
 
-    ctx.fillStyle = color + 'cc';
-    ctx.beginPath();
-    ctx.roundRect(x, y, vWid, vLen, 2);
-    ctx.fill();
+    drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, vtIdx, angle);
   }
   // Queue count label beyond deepest vehicle
   const maxDepth = Math.max(...laneDepth, 0);
@@ -271,27 +396,23 @@ function _drawArmNS(ctx, cx, edgeY, count, dirIdx, sign, roadHalf, laneCount) {
 function _drawArmEW(ctx, edgeX, cy, count, dirIdx, sign, roadHalf, laneCount) {
   const visible = Math.min(count, MAX_VIS * laneCount);
   const laneWidth = roadHalf / laneCount;
-  const laneBase = (sign > 0) ? cy : cy - roadHalf; // E: bottom half, W: top half
+  const laneBase = (sign > 0) ? cy : cy - roadHalf;
+  const angle = (sign > 0) ? Math.PI / 2 : Math.PI * 1.5; // E=π/2, W=3π/2
 
   const laneDepth = new Array(laneCount).fill(0);
 
   for (let i = 0; i < visible; i++) {
-    const [color, vLen, vWid] = VT[slotVehicleTypeIdx(dirIdx, i)];
+    const vtIdx = slotVehicleTypeIdx(dirIdx, i);
+    const [color, vLen, vWid] = VT[vtIdx];
     const lane = slotLane(i, laneCount);
     const depth = laneDepth[lane];
     laneDepth[lane]++;
 
     const offset = VEH_GAP + depth * (vLen + VEH_GAP);
-    // sign>0 → draw rightward (east); sign<0 → draw leftward (west)
-    const x = sign > 0 ? edgeX + offset : edgeX - offset - vLen;
-    // Centre vehicle within its lane
+    const vx = sign > 0 ? edgeX + offset + vLen / 2 : edgeX - offset - vLen / 2;
     const laneCy = laneBase + (lane + 0.5) * laneWidth;
-    const y = laneCy - vWid / 2;
 
-    ctx.fillStyle = color + 'cc';
-    ctx.beginPath();
-    ctx.roundRect(x, y, vLen, vWid, 2);
-    ctx.fill();
+    drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, vtIdx, angle);
   }
   // Queue count label beyond deepest vehicle
   const maxDepth = Math.max(...laneDepth, 0);
