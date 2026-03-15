@@ -1,0 +1,82 @@
+# tickets/maintain.yaml
+# Enable/disable categories and configure external tools for mt maintain scan.
+# Configured for: muon-js (Rust runtime + JS/TS web demo)
+
+# Global settings
+settings:
+  log_file: tickets/maintain.log
+  timeout: 60
+  enabled: true
+
+# Per-category tool configuration
+# Use {repo} as placeholder for the repository root path.
+
+security:
+  cve_scanner:
+    enabled: true
+    command: cargo audit --json
+  secret_scanner:
+    enabled: true
+    command: gitleaks detect --source={repo} --report-format=json --no-git
+  ssl_check:
+    enabled: false
+
+deps:
+  outdated_check:
+    enabled: true
+    command: cargo outdated --root-deps-only --format=json
+  license_check:
+    enabled: false
+  unused_deps:
+    enabled: false
+
+code_health:
+  complexity:
+    enabled: false
+  linter:
+    enabled: true
+    command: cargo clippy --message-format=json -- -D warnings
+  formatter_check:
+    enabled: true
+    command: cargo fmt --check
+  type_check:
+    enabled: false
+
+performance:
+  profiler:
+    enabled: false
+  bundle_size:
+    enabled: false
+
+database:
+  migration_check:
+    enabled: false
+  query_analyzer:
+    enabled: false
+
+infrastructure:
+  container_scan:
+    enabled: false
+  k8s_health:
+    enabled: false
+  terraform_drift:
+    enabled: false
+
+observability:
+  prometheus_check:
+    enabled: false
+  alert_check:
+    enabled: false
+
+testing:
+  coverage:
+    enabled: false
+  test_runner:
+    enabled: true
+    command: cargo test --message-format=json
+
+documentation:
+  link_checker:
+    enabled: false
+  openapi_diff:
+    enabled: false

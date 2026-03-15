@@ -93,3 +93,81 @@ uv run python3 tickets/mt/muontickets/muontickets/mt.py done T-000001
 	- acceptance criteria,
 	- dependencies,
 	- test plan.
+
+## Preventive Maintenance (`mt maintain`)
+
+MuonTickets includes 150 maintenance rules across 9 categories. The `maintain` command supports a **scan-first, create-later** workflow — verify issues exist before creating tickets.
+
+### Installed tools
+
+The following external tools are configured in `tickets/maintain.yaml` for this project:
+
+| Tool | Category | Command | Purpose |
+|------|----------|---------|---------|
+| `cargo audit` | security / cve_scanner | `cargo audit --json` | Scan Rust dependencies for known CVEs |
+| `gitleaks` | security / secret_scanner | `gitleaks detect --source={repo} --report-format=json --no-git` | Detect secrets and credentials in the repo |
+| `cargo outdated` | deps / outdated_check | `cargo outdated --root-deps-only --format=json` | Check for outdated Rust dependencies |
+| `cargo clippy` | code_health / linter | `cargo clippy --message-format=json -- -D warnings` | Rust linting and common mistake detection |
+| `cargo fmt` | code_health / formatter_check | `cargo fmt --check` | Verify Rust code formatting |
+| `cargo test` | testing / test_runner | `cargo test --message-format=json` | Run Rust test suite |
+
+### Categories
+
+| Slug | Rules | Enabled Tools | Description |
+|------|------:|---------------|-------------|
+| `security` | 1-20 | cargo audit, gitleaks + built-in (secrets, passwords, .env, root container) | CVE, secrets, SSL, headers, auth |
+| `deps` | 21-40 | cargo outdated | Outdated, deprecated, unused dependencies |
+| `code-health` | 41-60 | cargo clippy, cargo fmt + built-in (large files, TODO density) | Complexity, dead code, formatting |
+| `performance` | 61-80 | — | Slow queries, memory leaks, latency |
+| `database` | 81-100 | — | Indexes, bloat, migrations |
+| `infrastructure` | 101-120 | — | Containers, CI, cloud resources |
+| `observability` | 121-130 | — | Metrics, alerts, tracing |
+| `testing` | 131-140 | cargo test | Flaky tests, coverage, CI pipeline |
+| `docs` | 141-150 | built-in (broken links, stale README) | API docs, README, changelog |
+
+### Quick reference
+
+```bash
+# List all 150 rules
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain list
+
+# Scan a specific category
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain scan --category security
+
+# Scan all enabled categories
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain scan \
+  --category security --category deps --category code-health \
+  --category testing --category docs
+
+# Create tickets only for verified failures
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain create --category security
+
+# Preview without creating tickets
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain create --category deps --dry-run
+
+# JSON output for agent consumption
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain scan --category code-health --format json
+```
+
+### Configuration
+
+Tools are configured in `tickets/maintain.yaml`. To regenerate the default config:
+
+```bash
+uv run python3 tickets/mt/muontickets/muontickets/mt.py maintain init-config
+```
+
+### Installing maintenance tools
+
+```bash
+# Rust CVE scanning
+cargo install cargo-audit
+
+# Rust dependency freshness
+cargo install cargo-outdated
+
+# Secret detection
+brew install gitleaks
+```
+
+Cargo clippy, cargo fmt, and cargo test are bundled with the Rust toolchain.
