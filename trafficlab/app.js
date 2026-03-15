@@ -178,6 +178,65 @@ function slotVehicleTypeIdx(dirIdx, slotIdx) {
   return 4;              // auto-rickshaw
 }
 
+/**
+ * Draw a vehicle number badge + turn-direction arrow overlay.
+ * Must be called immediately after drawVehicleShape with the same cx/cy/angle.
+ * Only intended for the 1×1 pane view (not grid cells).
+ *
+ * Turn direction is assigned by lane discipline:
+ *   - leftmost lane (0)              → left turn  ←
+ *   - rightmost lane (laneCount-1)   → right turn →
+ *   - middle lanes / single lane     → straight   ↑
+ *
+ * Both badges are drawn in the vehicle's rotated local space, so they
+ * automatically face the correct direction for all four approach arms.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cx        - vehicle centre X
+ * @param {number} cy        - vehicle centre Y
+ * @param {number} vLen      - vehicle length (along travel axis)
+ * @param {number} num       - 1-based slot index within the queue arm
+ * @param {number} lane      - 0-based lane index assigned to this vehicle
+ * @param {number} laneCount - total lanes
+ * @param {number} angle     - same rotation angle passed to drawVehicleShape
+ */
+function drawVehicleOverlay(ctx, cx, cy, vLen, num, lane, laneCount, angle) {
+  let arrowChar;
+  if (laneCount <= 1) {
+    arrowChar = '\u2191';          // ↑ straight
+  } else if (lane === 0) {
+    arrowChar = '\u2190';          // ← left
+  } else if (lane >= laneCount - 1) {
+    arrowChar = '\u2192';          // → right
+  } else {
+    arrowChar = '\u2191';          // ↑ straight (middle lanes)
+  }
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // ── Number badge (near vehicle front = top in local space) ──────────
+  const numY = -vLen * 0.22;
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.fillRect(-7, numY - 5, 14, 10);
+  ctx.font = 'bold 7px monospace';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(num, 0, numY);
+
+  // ── Arrow badge (near vehicle rear = bottom in local space) ─────────
+  const arrY = vLen * 0.22;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(-6, arrY - 5, 12, 10);
+  ctx.font = '8px sans-serif';
+  ctx.fillStyle = '#ffe840';
+  ctx.fillText(arrowChar, 0, arrY);
+
+  ctx.restore();
+}
+
 // ── Vehicle animation system ─────────────────────────────────────────────────
 
 /**
@@ -487,11 +546,13 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
   {
     const edgeY = cy - roadHalf;
     const laneBase = cx - roadHalf;
-    for (const v of animator.dirs.n) {
+    for (let i = 0; i < animator.dirs.n.length; i++) {
+      const v = animator.dirs.n[i];
       const [color, vLen, vWid] = VT[v.typeIdx];
       const laneCx = laneBase + (v.lane + 0.5) * laneW;
       const vy = edgeY - v.pos - vLen / 2;
       drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, 0);
+      drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, 0);
     }
     _drawQueueLabel(ctx, cx, edgeY, queues.n, -1, animator.dirs.n, laneCount);
   }
@@ -500,11 +561,13 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
   {
     const edgeY = cy + roadHalf;
     const laneBase = cx;
-    for (const v of animator.dirs.s) {
+    for (let i = 0; i < animator.dirs.s.length; i++) {
+      const v = animator.dirs.s[i];
       const [color, vLen, vWid] = VT[v.typeIdx];
       const laneCx = laneBase + (v.lane + 0.5) * laneW;
       const vy = edgeY + v.pos + vLen / 2;
       drawVehicleShape(ctx, laneCx, vy, vLen, vWid, color, v.typeIdx, Math.PI);
+      drawVehicleOverlay(ctx, laneCx, vy, vLen, i + 1, v.lane, laneCount, Math.PI);
     }
     _drawQueueLabel(ctx, cx, edgeY, queues.s, +1, animator.dirs.s, laneCount);
   }
@@ -513,11 +576,13 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
   {
     const edgeX = cx + roadHalf;
     const laneBase = cy;
-    for (const v of animator.dirs.e) {
+    for (let i = 0; i < animator.dirs.e.length; i++) {
+      const v = animator.dirs.e[i];
       const [color, vLen, vWid] = VT[v.typeIdx];
       const laneCy = laneBase + (v.lane + 0.5) * laneW;
       const vx = edgeX + v.pos + vLen / 2;
       drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI / 2);
+      drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI / 2);
     }
     _drawQLabelEW(ctx, cy, edgeX, queues.e, +1, animator.dirs.e, laneCount);
   }
@@ -526,11 +591,13 @@ function drawAnimatedVehicles(ctx, cx, cy, roadHalf, animator, laneCount, queues
   {
     const edgeX = cx - roadHalf;
     const laneBase = cy - roadHalf;
-    for (const v of animator.dirs.w) {
+    for (let i = 0; i < animator.dirs.w.length; i++) {
+      const v = animator.dirs.w[i];
       const [color, vLen, vWid] = VT[v.typeIdx];
       const laneCy = laneBase + (v.lane + 0.5) * laneW;
       const vx = edgeX - v.pos - vLen / 2;
       drawVehicleShape(ctx, vx, laneCy, vLen, vWid, color, v.typeIdx, Math.PI * 1.5);
+      drawVehicleOverlay(ctx, vx, laneCy, vLen, i + 1, v.lane, laneCount, Math.PI * 1.5);
     }
     _drawQLabelEW(ctx, cy, edgeX, queues.w, -1, animator.dirs.w, laneCount);
   }
