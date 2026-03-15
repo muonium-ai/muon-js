@@ -37,8 +37,9 @@ const LANES     = 3;     // inbound lanes per arm (same count outbound)
 const LANE_W_M  = 3.5;  // lane width in metres
 const ROAD_M    = 36;    // road length in metres from stop-line to edge
 
-const SPAWN_EXTRA  = 6;   // extra metres beyond road edge
-const TURN_DIST    = 18;  // metres past stop-line to complete a turn
+const SPAWN_EXTRA     = 6;    // extra metres beyond road edge
+const TURN_DIST       = 18;   // metres past stop-line to complete a turn
+const SAFETY_BUFFER_M = 1.5;  // extra gap headroom beyond vehicle length (all phases)
 
 // Unique lane names per arm:
 //   Inbound  lanes : arm-letter + 1..LANES        e.g. N1, N2, N3
@@ -205,7 +206,7 @@ export class IDMIntersection {
             else { gap = Math.max(v.pos - v.vt.len / 2, 0.1); vLead = 0; }
           } else {
             const leader = lv[i - 1];
-            gap   = Math.max(v.pos - leader.pos - leader.vt.len, IDM_S0 * 0.5);
+            gap   = Math.max(v.pos - leader.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
             vLead = leader.vel;
           }
           const a = idmAccel(v.vel, gap, vLead);
@@ -225,10 +226,58 @@ export class IDMIntersection {
     }
 
     // ── Turning vehicles (Bezier arc through intersection) ───────
-    const stillTurning = [];
+
+    // Step 1: free-flow acceleration for all turning vehicles
     for (const v of this.turning) {
       v.turnSpeed = Math.min(IDM_V0 * 0.65, v.turnSpeed + IDM_AMAX * dtSec);
-      v.turnPos  += (v.turnSpeed * dtSec) / TURN_DIST;
+    }
+
+    // Step 2: same-path IDM — vehicles sharing the same exit arm + lane follow each other
+    const pathMap = {};
+    for (const v of this.turning) {
+      const key = v.exitArm + ':' + v.exitLane;
+      (pathMap[key] = pathMap[key] || []).push(v);
+    }
+    for (const grp of Object.values(pathMap)) {
+      grp.sort((a, b) => b.turnPos - a.turnPos);  // highest turnPos = leader
+      for (let i = 1; i < grp.length; i++) {
+        const leader = grp[i - 1];
+        const v      = grp[i];
+        const gapM   = (leader.turnPos - v.turnPos) * TURN_DIST
+                       - leader.vt.len - SAFETY_BUFFER_M;
+        const a      = idmAccel(v.turnSpeed, Math.max(gapM, IDM_S0 * 0.5), leader.turnSpeed);
+        v.turnSpeed  = Math.max(0.5, v.turnSpeed + a * dtSec);
+      }
+    }
+
+    // Step 3: cross-path proximity — brake the earlier vehicle when two turning
+    // vehicles from different paths come within their combined safety radius
+    if (this.turning.length > 1) {
+      const roadPxC = LANES * LANE_W_M * M2PX;  // use cx=cy=0 for relative distances
+      const pts = this.turning.map(v => turnBezier(v, v.turnPos, 0, 0, roadPxC));
+      for (let i = 0; i < this.turning.length; i++) {
+        for (let j = i + 1; j < this.turning.length; j++) {
+          const vi = this.turning[i], vj = this.turning[j];
+          if (vi.exitArm === vj.exitArm && vi.exitLane === vj.exitLane) continue; // same path
+          const dist     = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+          const safetyPx = (vi.vt.len + vj.vt.len) * 0.5 * M2PX + SAFETY_BUFFER_M * M2PX;
+          if (dist < safetyPx) {
+            const squeeze = 1 - dist / safetyPx;  // 0 = just touching, 1 = full overlap
+            // Yield to whichever vehicle is further along (let it clear first)
+            if (vi.turnPos <= vj.turnPos) {
+              vi.turnSpeed = Math.max(0.5, vi.turnSpeed * (1 - squeeze * 0.6));
+            } else {
+              vj.turnSpeed = Math.max(0.5, vj.turnSpeed * (1 - squeeze * 0.6));
+            }
+          }
+        }
+      }
+    }
+
+    // Step 4: advance position and graduate completed turns
+    const stillTurning = [];
+    for (const v of this.turning) {
+      v.turnPos += (v.turnSpeed * dtSec) / TURN_DIST;
 
       if (v.turnPos >= 1) {
         // Graduate onto exit arm as an outbound vehicle
@@ -261,7 +310,7 @@ export class IDMIntersection {
             gap = 999; vLead = IDM_V0;  // leader: free flow
           } else {
             const leader = lv[i - 1];  // further ahead (higher pos)
-            gap   = Math.max(leader.pos - v.pos - leader.vt.len, IDM_S0 * 0.5);
+            gap   = Math.max(leader.pos - v.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
             vLead = leader.vel;
           }
           const a = idmAccel(v.vel, gap, vLead);
