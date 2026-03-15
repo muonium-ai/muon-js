@@ -95,7 +95,8 @@ function isGreen(arm, phase) {
 export class IDMIntersection {
   constructor() {
     this.approaching = { n: [], s: [], e: [], w: [] };  // vehicles before stop-line
-    this.turning     = [];   // vehicles mid-turn (after stop-line, before exit)
+    this.turning     = [];   // vehicles mid-turn (Bezier through intersection)
+    this.exiting     = { n: [], s: [], e: [], w: [] };  // vehicles after turn, leaving on exit arm
     this.nextId  = 0;
     this.vehNum  = 0;   // sequential display number
 
@@ -147,15 +148,20 @@ export class IDMIntersection {
         this.spawnAcc[arm] -= 1;
         const vt   = pickVehicleType();
         const turn = pickTurn();
-        // Lane from right edge (0 = nearest kerb, LANES-1 = nearest centre)
         const lane = Math.floor(Math.random() * LANES);
+        const spawnPos = ROAD_M + SPAWN_EXTRA * Math.random();
+        // Don't spawn if a vehicle in the same lane is too close to the spawn point
+        const tooClose = this.approaching[arm].some(
+          v => v.lane === lane && Math.abs(v.pos - spawnPos) < v.vt.len + IDM_S0 * 2
+        );
+        if (tooClose) continue;
         this.approaching[arm].push({
           id:        this.nextId++,
           num:       ++this.vehNum,
           arm,
           lane,
           turn,
-          pos:       ROAD_M + SPAWN_EXTRA * Math.random(),
+          pos:       spawnPos,
           vel:       IDM_V0 * (0.6 + 0.4 * Math.random()),
           vt,
           waiting:   0,
@@ -172,80 +178,95 @@ export class IDMIntersection {
     this._updateSignal(dtSec * 1000);
     this._spawn(dtSec);
 
-    // ── Approaching vehicles (IDM + stop-line) ──────────────────
+    // ── Approaching vehicles: per-lane IDM + stop-line ──────────────────
     for (const arm of ['n', 's', 'e', 'w']) {
-      const list = this.approaching[arm];
-      list.sort((a, b) => a.pos - b.pos);  // ascending pos = closest to stop-line first
-
       const green = isGreen(arm, this.phase);
+      // Process each lane independently — vehicles in different lanes don't block each other
+      for (let lane = 0; lane < LANES; lane++) {
+        const lv = this.approaching[arm]
+          .filter(v => v.lane === lane)
+          .sort((a, b) => a.pos - b.pos);  // closest to stop-line first
 
-      for (let i = 0; i < list.length; i++) {
-        const v = list[i];
-        let gap, vLead;
-
-        if (i === 0) {
-          if (green || v.pos <= 0) {
-            gap   = 999;
-            vLead = IDM_V0;
+        for (let i = 0; i < lv.length; i++) {
+          const v = lv[i];
+          let gap, vLead;
+          if (i === 0) {
+            if (green || v.pos <= 0) { gap = 999; vLead = IDM_V0; }
+            else { gap = Math.max(v.pos - v.vt.len / 2, 0.1); vLead = 0; }
           } else {
-            gap   = Math.max(v.pos - v.vt.len / 2, 0.1);
-            vLead = 0;
+            const leader = lv[i - 1];
+            gap   = Math.max(v.pos - leader.pos - leader.vt.len, IDM_S0 * 0.5);
+            vLead = leader.vel;
           }
-        } else {
-          const leader = list[i - 1];
-          gap   = Math.max(v.pos - leader.pos - leader.vt.len, IDM_S0 * 0.5);
-          vLead = leader.vel;
-        }
-
-        const a = idmAccel(v.vel, gap, vLead);
-        v.vel = Math.max(0, v.vel + a * dtSec);
-        v.pos -= v.vel * dtSec;
-
-        if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) {
-          v.waiting += dtSec;
+          const a = idmAccel(v.vel, gap, vLead);
+          v.vel = Math.max(0, v.vel + a * dtSec);
+          v.pos -= v.vel * dtSec;
+          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) v.waiting += dtSec;
         }
       }
 
       // Move vehicles that crossed the stop-line into the turning list
-      const [crossed, remaining] = partition(list, v => v.pos <= 0);
+      const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
       this.approaching[arm] = remaining;
       for (const v of crossed) {
-        this.turning.push({
-          ...v,
-          exitArm:   TURN_EXIT[arm][v.turn],
-          turnDist:  TURN_DIST,
-          turnPos:   0,         // 0..1 progress through the turn
-          turnSpeed: v.vel,
-        });
+        const exitArm  = TURN_EXIT[arm][v.turn];
+        const exitLane = exitLaneFor(v.turn, v.lane);
+        this.turning.push({ ...v, exitArm, exitLane, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
       }
     }
 
-    // ── Turning vehicles (smooth arc through intersection) ───────
+    // ── Turning vehicles (Bezier arc through intersection) ───────
     const stillTurning = [];
     for (const v of this.turning) {
-      v.turnSpeed = Math.min(IDM_V0 * 0.7, v.turnSpeed + IDM_AMAX * dtSec);
-      v.turnPos  += (v.turnSpeed * dtSec) / v.turnDist;  // advance t
+      v.turnSpeed = Math.min(IDM_V0 * 0.65, v.turnSpeed + IDM_AMAX * dtSec);
+      v.turnPos  += (v.turnSpeed * dtSec) / TURN_DIST;
 
       if (v.turnPos >= 1) {
-        // Transition: release into exit arm approaching list as outbound vehicle
+        // Graduate onto exit arm as an outbound vehicle
         this.throughput++;
         this.waitSum += v.waiting;
-        // (we don't model the outbound queue in detail — vehicle exits)
+        this.exiting[v.exitArm].push({
+          ...v,
+          arm:  v.exitArm,
+          lane: v.exitLane,
+          pos:  0,          // 0 = at exit stop-line, increases as vehicle moves away
+          vel:  v.turnSpeed,
+        });
       } else {
         stillTurning.push(v);
       }
     }
     this.turning = stillTurning;
+
+    // ── Exiting vehicles: per-lane IDM, pos increases away from intersection ──
+    for (const arm of ['n', 's', 'e', 'w']) {
+      for (let lane = 0; lane < LANES; lane++) {
+        const lv = this.exiting[arm]
+          .filter(v => v.lane === lane)
+          .sort((a, b) => b.pos - a.pos);  // furthest from intersection first = leader
+
+        for (let i = 0; i < lv.length; i++) {
+          const v = lv[i];
+          let gap, vLead;
+          if (i === 0) {
+            gap = 999; vLead = IDM_V0;  // leader: free flow
+          } else {
+            const leader = lv[i - 1];  // further ahead (higher pos)
+            gap   = Math.max(leader.pos - v.pos - leader.vt.len, IDM_S0 * 0.5);
+            vLead = leader.vel;
+          }
+          const a = idmAccel(v.vel, gap, vLead);
+          v.vel = Math.max(0, v.vel + a * dtSec);
+          v.pos += v.vel * dtSec;  // pos increases (moving away from intersection)
+        }
+      }
+      // Remove vehicles that have cleared the visible road
+      this.exiting[arm] = this.exiting[arm].filter(v => v.pos < ROAD_M + SPAWN_EXTRA + 4);
+    }
   }
 
   avgWaitSec() {
     return this.throughput > 0 ? this.waitSum / this.throughput : 0;
-  }
-
-  get allVehicles() {
-    const list = [...this.turning];
-    for (const arm of ['n', 's', 'e', 'w']) list.push(...this.approaching[arm]);
-    return list;
   }
 }
 
@@ -253,6 +274,14 @@ function partition(arr, pred) {
   const yes = [], no = [];
   for (const x of arr) (pred(x) ? yes : no).push(x);
   return [yes, no];
+}
+
+// Map turn direction + inbound lane → exit lane number
+// right turn = outer lane (kerb side = 0), left = inner (centre side = LANES-1), straight = same
+function exitLaneFor(turn, inLane) {
+  if (turn === 'right') return 0;
+  if (turn === 'left')  return LANES - 1;
+  return inLane;
 }
 
 // ── Geometry helpers ──────────────────────────────────────────────
@@ -307,9 +336,7 @@ function armPos(arm, lane, posPx, cx, cy, roadPx) {
 function turnBezier(v, t, cx, cy, roadPx) {
   const laneWPx   = roadPx / LANES;
   const inOffset  = (v.lane + 0.5) * laneWPx;
-  // Use exit lane = outer lane (LANES-1) for simplicity
-  const outLane   = LANES - 1 - v.lane;
-  const outOffset = (outLane + 0.5) * laneWPx;
+  const outOffset = (v.exitLane + 0.5) * laneWPx;
 
   // Start point: stop-line of entry arm
   let p0, p2, c1;
@@ -351,6 +378,22 @@ function turnBezier(v, t, cx, cy, roadPx) {
 
 // Arrow characters per turn direction
 const TURN_ARROW = { straight: '↑', left: '←', right: '→' };
+
+/**
+ * armPosOut — screen position for a vehicle that has exited the intersection
+ * and is traveling AWAY on arm `arm`. pos=0 = stop-line, pos increases toward canvas edge.
+ * Outbound traffic uses the opposite side of road from inbound.
+ */
+function armPosOut(arm, lane, posPx, cx, cy, roadPx) {
+  const laneWPx   = roadPx / LANES;
+  const outOffset = (lane + 0.5) * laneWPx;  // offset on outbound side
+  switch (arm) {
+    case 'n': return { x: cx - outOffset, y: cy - roadPx - posPx, angle: Math.PI };
+    case 's': return { x: cx + outOffset, y: cy + roadPx + posPx, angle: 0 };
+    case 'e': return { x: cx + roadPx + posPx, y: cy - outOffset, angle: -Math.PI / 2 };
+    case 'w': return { x: cx - roadPx - posPx, y: cy + outOffset, angle:  Math.PI / 2 };
+  }
+}
 
 // ── IDMRenderer ───────────────────────────────────────────────────
 
@@ -462,6 +505,16 @@ export class IDMRenderer {
       const { x, y, angle } = turnBezier(v, v.turnPos, cx, cy, roadPx);
       this._drawVehicle(v, x, y, angle);
     }
+
+    // ── Exiting vehicles (outbound, leaving the intersection) ───
+    for (const arm of ['n', 's', 'e', 'w']) {
+      for (const v of sim.exiting[arm]) {
+        const posPx = v.pos * M2PX;
+        if (posPx > roadLenPx + 20) continue;  // off canvas
+        const { x, y, angle } = armPosOut(arm, v.lane, posPx, cx, cy, roadPx);
+        this._drawVehicle(v, x, y, angle);
+      }
+    }
   }
 
   _drawVehicle(v, cx, cy, angle) {
@@ -506,7 +559,9 @@ export class IDMRenderer {
 
   _drawStats(sim) {
     const { ctx, W, H } = this;
-    const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0) + sim.turning.length;
+    const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0)
+                   + sim.turning.length
+                   + Object.values(sim.exiting).reduce((s, a) => s + a.length, 0);
     const phase    = ['NS ▶', 'Yellow ●', 'EW ▶', 'Yellow ●'][sim.phase];
     const lines = [
       `Signal: ${phase}`,
