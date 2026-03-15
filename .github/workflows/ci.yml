@@ -37,7 +37,7 @@ jobs:
         run: cargo test --features muoncache-core
 
       - name: Verify crate package
-        run: cargo package --verify
+        run: cargo package
 
       - name: Browser demo build
         run: make web-demo-build

@@ -9,3 +9,10 @@ web/demo/dist/
 web/demo/src/wasm/*.js
 web/demo/src/wasm/*.wasm
 web/demo/src/wasm/*.d.ts
+# TrafficLab WASM build outputs
+trafficlab/pkg/
+trafficlab/dist/
+trafficlab/target/
+trafficlab/Cargo.lock
+# TrafficLab deployed assets (built by CI / make deploy-trafficlab)
+web/trafficlab/
