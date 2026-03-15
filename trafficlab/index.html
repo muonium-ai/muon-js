@@ -156,6 +156,35 @@
       color: #555;
       letter-spacing: 0.5px;
     }
+
+    /* ── Footer ── */
+    .footer {
+      margin-top: 24px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      font-size: 0.75rem;
+    }
+    .footer a {
+      color: #7ec8ff;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .footer a:hover { color: #b06fff; }
+    .share-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #1a1a1e;
+      color: #d0d0d0;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .share-btn:hover { background: #252530; }
   </style>
 </head>
 <body>
@@ -227,6 +256,12 @@
   </div>
 
   <div id="status-bar">Loading WASM…</div>
+
+  <div class="footer">
+    <a href="https://github.com/muonium-ai/muon-js" target="_blank" rel="noopener">GitHub</a>
+    <span style="color:#333">|</span>
+    <button class="share-btn" id="btn-share" title="Copy demo link to clipboard">&#128279; Share</button>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>

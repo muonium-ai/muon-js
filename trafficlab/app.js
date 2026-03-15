@@ -332,6 +332,18 @@ async function main() {
     lab.set_speed_multiplier(parseInt(document.getElementById('warp').value));
   });
 
+  // Share button
+  document.getElementById('btn-share').addEventListener('click', () => {
+    const url = window.location.href;
+    navigator.clipboard.writeText(url).then(() => {
+      const btn = document.getElementById('btn-share');
+      btn.textContent = '\u2713 Copied!';
+      setTimeout(() => { btn.innerHTML = '&#128279; Share'; }, 2000);
+    }).catch(() => {
+      window.prompt('Copy this URL:', window.location.href);
+    });
+  });
+
   // Apply defaults
   applyMode('normal');
   lab.set_speed_multiplier(1000);
