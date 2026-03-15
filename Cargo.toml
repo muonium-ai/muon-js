@@ -17,6 +17,7 @@ exclude = [
     "tickets/",
     "devdocs/",
     "web/",
+    "trafficlab/",
     "work_product/",
     "scripts/",
     "tools/",

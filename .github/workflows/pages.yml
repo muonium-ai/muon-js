@@ -2,7 +2,7 @@ name: Deploy Demo to GitHub Pages
 
 on:
   push:
-    branches: [main, feature/trafficlab-wasm-demo]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
