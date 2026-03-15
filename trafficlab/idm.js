@@ -3,10 +3,22 @@
  *
  * Each vehicle follows the IDM acceleration formula:
  *   a = a_max * [1 - (v/v0)^4 - (s*(v,dv)/gap)^2]
- * where s*(v,dv) = s0 + vT + v*dv / (2*sqrt(a_max*b))
  *
- * Signal braking: treated as a virtual stationary vehicle at the stop line.
- * Poisson arrivals: vehicles spawn off-canvas and drive in.
+ * Lane model (left-hand traffic / India style, 3 inbound + 3 outbound lanes per arm):
+ *   Each arm has LANES inbound lanes on the LEFT side of the road centre.
+ *   Opposite arm outbound traffic uses the right side — no overlap.
+ *
+ *   Road half-width = LANES * LANE_W_M metres.
+ *   Inbound lanes:  offset from centre = +laneW*(0.5 .. LANES-0.5)  (right of centre from driver POV)
+ *   Outbound lanes: offset from centre = -laneW*(0.5 .. LANES-0.5)  (left of centre from driver POV)
+ *   In screen coords this means: vehicles approaching from N travel in the +x half of the N road.
+ *
+ * Turn model:
+ *   On spawn each vehicle is assigned: 'straight' | 'left' | 'right'
+ *   After passing pos=0 (stop-line) the vehicle follows a smooth quadratic Bezier
+ *   into the correct exit arm/lane, animated by t ∈ [0,1] over TURN_DIST metres.
+ *
+ * Overlay: vehicle number and directional arrow drawn via ctx.save/restore.
  */
 
 // ── IDM parameters ─────────────────────────────────────────────────
@@ -16,26 +28,33 @@ const IDM_T    = 1.5;   // desired time headway (s)
 const IDM_S0   = 2.0;   // minimum gap (m)
 const IDM_AMAX = 1.5;   // max acceleration (m/s²)
 const IDM_B    = 2.0;   // comfortable braking (m/s²)
-const IDM_LEN  = 5.0;   // average vehicle length (m)
 
-// Scale: pixels per meter (canvas units)
+// Scale: pixels per meter
 const M2PX = 8;
 
-// ── Road geometry (canvas coordinates) ────────────────────────────
-// Four arms: N, S, E, W — each carries vehicles toward the centre.
-// pos: distance from stop-line (positive = approaching, negative = past stop-line/exited)
-// 0 = stop-line. Vehicles spawn at pos = ROAD_M + small random offset.
+// Road layout
+const LANES     = 3;     // inbound lanes per arm (same count outbound)
+const LANE_W_M  = 3.5;  // lane width in metres
+const ROAD_M    = 36;    // road length in metres from stop-line to edge
 
-const ROAD_M    = 35;   // road length in metres (≈ 280 px)
-const SPAWN_EXTRA = 5;  // extra metres beyond road edge for spawning
+const SPAWN_EXTRA     = 6;    // extra metres beyond road edge
+const TURN_DIST       = 18;   // metres past stop-line to complete a turn
+const SAFETY_BUFFER_M = 1.5;  // extra gap headroom beyond vehicle length (all phases)
+
+// Unique lane names per arm:
+//   Inbound  lanes : arm-letter + 1..LANES        e.g. N1, N2, N3
+//   Outbound lanes : arm-letter + LANES+1..2*LANES e.g. N4, N5, N6
+// This means every lane in the whole intersection has a distinct name.
+function inboundLabel(arm, lane)  { return arm.toUpperCase() + (lane + 1); }
+function outboundLabel(arm, lane) { return arm.toUpperCase() + (LANES + lane + 1); }
 
 // ── Vehicle type palette ───────────────────────────────────────────
 const IDM_VT = [
-  { label: 'Car',         color: '#e05252', len: 4.5, wid: 2.0, pct: 60 },
-  { label: 'Bus',         color: '#e8c84a', len: 12,  wid: 2.8, pct:  5 },
-  { label: 'Truck',       color: '#5270e0', len: 8.0, wid: 2.5, pct: 10 },
-  { label: 'Motorcycle',  color: '#52c87a', len: 2.2, wid: 1.0, pct: 20 },
-  { label: 'Auto',        color: '#a052e0', len: 3.5, wid: 1.8, pct:  5 },
+  { label: 'Car',        color: '#e05252', len: 4.5, wid: 2.0, pct: 60 },
+  { label: 'Bus',        color: '#e8c84a', len: 12,  wid: 2.8, pct:  5 },
+  { label: 'Truck',      color: '#5270e0', len: 8.0, wid: 2.5, pct: 10 },
+  { label: 'Motorcycle', color: '#52c87a', len: 2.2, wid: 1.0, pct: 20 },
+  { label: 'Auto',       color: '#a052e0', len: 3.5, wid: 1.8, pct:  5 },
 ];
 
 function pickVehicleType() {
@@ -48,17 +67,58 @@ function pickVehicleType() {
   return IDM_VT[0];
 }
 
-// ── IDM core ──────────────────────────────────────────────────────
-
-function idmAccel(v, gap, vLead, vt) {
-  const dv   = v - vLead;
-  const sStar = IDM_S0 + Math.max(0, v * IDM_T + v * dv / (2 * Math.sqrt(IDM_AMAX * IDM_B)));
-  const sRatio = sStar / Math.max(gap, 0.1);
-  return IDM_AMAX * (1 - Math.pow(v / IDM_V0, 4) - sRatio * sRatio);
+function pickTurn() {
+  const r = Math.random();
+  if (r < 0.20) return 'left';
+  if (r < 0.40) return 'right';
+  return 'straight';
 }
 
-// ── Signal state helper ───────────────────────────────────────────
-// phase 0 = NS green/EW red, 1 = yellow, 2 = NS red/EW green
+// ── Turn routing table ────────────────────────────────────────────
+// For each arm + turn direction → exit arm.
+const TURN_EXIT = {
+  n: { left: 'e', straight: 's', right: 'w' },
+  s: { left: 'w', straight: 'n', right: 'e' },
+  e: { left: 's', straight: 'w', right: 'n' },
+  w: { left: 'n', straight: 'e', right: 's' },
+};
+
+// ── VehiclePositionCache ─────────────────────────────────────────
+// Lightweight in-JS position registry shaped after the MuonCache HSET/HGET/HDEL
+// API.  One snapshot per physics frame lets every collision query read consistent,
+// pre-computed screen coordinates instead of re-running turnBezier per pair.
+class VehiclePositionCache {
+  constructor() { this._store = new Map(); }
+
+  /** Mirrors MuonCache HSET key field value */
+  hset(id, field, value) {
+    let rec = this._store.get(id);
+    if (!rec) { rec = Object.create(null); this._store.set(id, rec); }
+    rec[field] = value;
+  }
+
+  /** Mirrors MuonCache HGET key field */
+  hget(id, field) { return this._store.get(id)?.[field]; }
+
+  /** Mirrors MuonCache HDEL key */
+  hdel(id) { this._store.delete(id); }
+
+  /** Snapshot all registered ids (array copy — safe to mutate cache during loop). */
+  ids() { return [...this._store.keys()]; }
+
+  clear() { this._store.clear(); }
+}
+
+// ── IDM core ──────────────────────────────────────────────────────
+
+function idmAccel(v, gap, vLead) {
+  const dv    = v - vLead;
+  const sStar = IDM_S0 + Math.max(0, v * IDM_T + v * dv / (2 * Math.sqrt(IDM_AMAX * IDM_B)));
+  const sRat  = sStar / Math.max(gap, 0.1);
+  return IDM_AMAX * (1 - Math.pow(v / IDM_V0, 4) - sRat * sRat);
+}
+
+// ── Signal helpers ────────────────────────────────────────────────
 function isGreen(arm, phase) {
   if (arm === 'n' || arm === 's') return phase === 0;
   return phase === 2;
@@ -68,34 +128,38 @@ function isGreen(arm, phase) {
 
 export class IDMIntersection {
   constructor() {
-    this.vehicles = { n: [], s: [], e: [], w: [] };
-    this.nextId   = 0;
+    this.approaching = { n: [], s: [], e: [], w: [] };  // vehicles before stop-line
+    this.turning     = [];   // vehicles mid-turn (Bezier through intersection)
+    this.exiting     = { n: [], s: [], e: [], w: [] };  // vehicles after turn, leaving on exit arm
+    this.nextId  = 0;
+    this.vehNum  = 0;   // sequential display number
 
-    // Signal state
-    this.cycleMs  = 60000;  // total cycle length in ms
-    this.elapsed  = 0;      // ms within the current cycle
-    this.phase    = 0;      // 0=NS-green, 1=yellow, 2=EW-green, 3=yellow(EW→NS)
+    // Signal
+    this.cycleMs = 60000;
+    this.elapsed = 0;
+    this.phase   = 0;
 
-    // Arrival model
-    this.vpm      = 120;    // vehicles per minute total (divided among 4 arms)
-    this.spawnAcc = { n:0, s:0, e:0, w:0 };  // fractional spawn accumulator
+    // Arrival
+    this.vpm      = 120;
+    this.spawnAcc = { n:0, s:0, e:0, w:0 };
 
     // Stats
-    this.throughput = 0;    // vehicles that exited
-    this.waitSum    = 0;    // sum of wait times (s) for exited vehicles
+    this.throughput = 0;
+    this.waitSum    = 0;
+    this._simTimeSec = 0;
+
+    // Per-frame position cache (MuonCache API shape) — rebuilt at the top of every step()
+    this._posCache = new VehiclePositionCache();
   }
 
-  // ── Configuration ───────────────────────────────────────────────
+  setVpm(v)      { this.vpm = v; }
+  setCycleMs(ms) { this.cycleMs = ms; this.elapsed = 0; this.phase = 0; }
 
-  setVpm(v)       { this.vpm = v; }
-  setCycleMs(ms)  { this.cycleMs = ms; this.elapsed = 0; this.phase = 0; }
-
-  // ── Signal phase ────────────────────────────────────────────────
+  // ── Signal ──────────────────────────────────────────────────────
 
   _updateSignal(dtMs) {
     this.elapsed += dtMs;
     const c = this.cycleMs;
-    // Phase durations: 45% NS-green, 5% yellow, 45% EW-green, 5% yellow
     const durations = [c * 0.45, c * 0.05, c * 0.45, c * 0.05];
     let boundary = 0;
     for (let i = 0; i < 4; i++) {
@@ -106,32 +170,42 @@ export class IDMIntersection {
     this.phase = 0;
   }
 
-  // Returns effective phase for drawing: 0=NS-green,1=yellow,2=EW-green
   get drawPhase() {
-    if (this.phase === 0) return 0;
-    if (this.phase === 1) return 1;
-    if (this.phase === 2) return 2;
-    return 1; // phase 3 = yellow before NS
+    // 0=NS-green, 1=yellow, 2=EW-green, (3=yellow→NS treated as yellow)
+    return this.phase <= 1 ? this.phase : (this.phase === 2 ? 2 : 1);
   }
 
   // ── Spawning ────────────────────────────────────────────────────
 
   _spawn(dtSec) {
-    const armRate = (this.vpm / 60) / 4;  // vehicles/sec per arm
+    const armRate = (this.vpm / 60) / 4;
     for (const arm of ['n', 's', 'e', 'w']) {
       this.spawnAcc[arm] += armRate * dtSec;
       while (this.spawnAcc[arm] >= 1) {
         this.spawnAcc[arm] -= 1;
-        const vt = pickVehicleType();
-        // Compute spawn pos: ROAD_M + random jitter, measured from stop-line
+        const vt   = pickVehicleType();
+        const turn = pickTurn();
+        const lane = Math.floor(Math.random() * LANES);
         const spawnPos = ROAD_M + SPAWN_EXTRA * Math.random();
-        this.vehicles[arm].push({
-          id:      this.nextId++,
-          pos:     spawnPos,   // m from stop-line (positive = incoming)
-          vel:     IDM_V0 * (0.6 + 0.4 * Math.random()),
+        // Don't spawn if a vehicle in the same lane is too close to the spawn point
+        const tooClose = this.approaching[arm].some(
+          v => v.lane === lane && Math.abs(v.pos - spawnPos) < v.vt.len + IDM_S0 * 2
+        );
+        if (tooClose) continue;
+        const exitLane = exitLaneFor(turn, lane);
+        this.approaching[arm].push({
+          id:        this.nextId++,
+          num:       ++this.vehNum,
+          arm,
+          lane,
+          turn,
+          exitLane,
+          exitArm:   TURN_EXIT[arm][turn],
+          pos:       spawnPos,
+          vel:       IDM_V0 * (0.6 + 0.4 * Math.random()),
           vt,
+          waiting:   0,
           spawnTime: this._simTimeSec,
-          waiting: 0,
         });
       }
     }
@@ -140,55 +214,183 @@ export class IDMIntersection {
   // ── Physics step ────────────────────────────────────────────────
 
   step(dtSec) {
-    this._simTimeSec = (this._simTimeSec || 0) + dtSec;
+    this._simTimeSec += dtSec;
     this._updateSignal(dtSec * 1000);
     this._spawn(dtSec);
 
+    // ── Pre-snapshot: write every turning vehicle's screen position into the cache ──
+    // Computed once per frame (MuonCache write phase); all collision queries below
+    // read from this snapshot instead of re-invoking turnBezier.
+    const _roadPx = LANES * LANE_W_M * M2PX;
+    this._posCache.clear();
+    for (const tv of this.turning) {
+      const { x, y } = turnBezier(tv, tv.turnPos, 0, 0, _roadPx);
+      this._posCache.hset(tv.id, 'x', x);
+      this._posCache.hset(tv.id, 'y', y);
+      this._posCache.hset(tv.id, 'r', (tv.vt.len * 0.5 + SAFETY_BUFFER_M) * M2PX);
+    }
+
+    // ── Approaching vehicles: per-lane IDM + stop-line ──────────────────
     for (const arm of ['n', 's', 'e', 'w']) {
-      const list = this.vehicles[arm];
-      // Sort by pos descending: closest to stop-line first (lowest pos)
-      list.sort((a, b) => a.pos - b.pos);
-
       const green = isGreen(arm, this.phase);
+      // Process each lane independently — vehicles in different lanes don't block each other
+      for (let lane = 0; lane < LANES; lane++) {
+        const lv = this.approaching[arm]
+          .filter(v => v.lane === lane)
+          .sort((a, b) => a.pos - b.pos);  // closest to stop-line first
 
-      for (let i = 0; i < list.length; i++) {
-        const v = list[i];
-        let gap, vLead;
-
-        if (i === 0) {
-          // Leader — only the signal / intersection matters
-          if (green || v.pos < 0) {
-            // No obstacle — free-flow or already through
-            gap   = 999;
-            vLead = IDM_V0;
+        for (let i = 0; i < lv.length; i++) {
+          const v = lv[i];
+          let gap, vLead;
+          if (i === 0) {
+            if (green || v.pos <= 0) { gap = 999; vLead = IDM_V0; }
+            else { gap = Math.max(v.pos - v.vt.len / 2, 0.1); vLead = 0; }
           } else {
-            // Red/yellow — virtual stopped vehicle at stop-line
-            gap   = Math.max(v.pos - v.vt.len / 2, 0.1);
-            vLead = 0;
+            const leader = lv[i - 1];
+            gap   = Math.max(v.pos - leader.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
+            vLead = leader.vel;
           }
+          const a = idmAccel(v.vel, gap, vLead);
+          v.vel = Math.max(0, v.vel + a * dtSec);
+          v.pos -= v.vel * dtSec;
+          if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) v.waiting += dtSec;
+        }
+      }
+
+      // Move vehicles that crossed the stop-line into the turning list
+      const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
+      this.approaching[arm] = remaining;
+      for (const v of crossed) {
+        // Entry gate: sample 3 points along this vehicle's Bezier path and check
+        // each against the position cache (MuonCache HGET reads).
+        // If blocked, hold the vehicle at the stop-line for the next frame.
+        const vr = (v.vt.len * 0.5 + SAFETY_BUFFER_M) * M2PX;
+        const existIds = this._posCache.ids();  // snapshot before we might add below
+        let blocked = false;
+        for (const t of [0, 0.25, 0.5]) {
+          const { x: px, y: py } = turnBezier(v, t, 0, 0, _roadPx);
+          for (const eid of existIds) {
+            const dist = Math.hypot(px - this._posCache.hget(eid, 'x'),
+                                    py - this._posCache.hget(eid, 'y'));
+            if (dist < vr + this._posCache.hget(eid, 'r')) { blocked = true; break; }
+          }
+          if (blocked) break;
+        }
+        if (blocked) {
+          // Hold at stop-line; will retry on next green after intersection clears
+          v.pos = 0.1;
+          v.vel = 0;
+          this.approaching[arm].push(v);
         } else {
-          const leader = list[i - 1];
-          gap   = Math.max(v.pos - leader.pos - leader.vt.len, IDM_S0 * 0.5);
-          vLead = leader.vel;
-        }
-
-        const a = idmAccel(v.vel, gap, vLead, v.vt);
-        v.vel = Math.max(0, v.vel + a * dtSec);
-        v.pos -= v.vel * dtSec;
-
-        // Track wait time (when velocity < 0.5 m/s near stop-line)
-        if (v.vel < 0.5 && v.pos > 0 && v.pos < ROAD_M) {
-          v.waiting = (v.waiting || 0) + dtSec;
+          // Approved — register in cache (MuonCache HSET) so subsequent crossed
+          // vehicles from other arms see this vehicle's entry position.
+          const { x: ex, y: ey } = turnBezier(v, 0, 0, 0, _roadPx);
+          this._posCache.hset(v.id, 'x', ex);
+          this._posCache.hset(v.id, 'y', ey);
+          this._posCache.hset(v.id, 'r', vr);
+          this.turning.push({ ...v, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
         }
       }
+    }
 
-      // Remove vehicles that have cleared the intersection far side
-      const [exited, remaining] = partition(list, v => v.pos < -(ROAD_M * 0.5));
-      this.vehicles[arm] = remaining;
-      for (const v of exited) {
+    // ── Turning vehicles (Bezier arc through intersection) ───────
+
+    // Step 1: free-flow acceleration for all turning vehicles
+    for (const v of this.turning) {
+      v.turnSpeed = Math.min(IDM_V0 * 0.65, v.turnSpeed + IDM_AMAX * dtSec);
+    }
+
+    // Step 2: same-path IDM — vehicles sharing the same exit arm + lane follow each other
+    const pathMap = {};
+    for (const v of this.turning) {
+      const key = v.exitArm + ':' + v.exitLane;
+      (pathMap[key] = pathMap[key] || []).push(v);
+    }
+    for (const grp of Object.values(pathMap)) {
+      grp.sort((a, b) => b.turnPos - a.turnPos);  // highest turnPos = leader
+      for (let i = 1; i < grp.length; i++) {
+        const leader = grp[i - 1];
+        const v      = grp[i];
+        const gapM   = (leader.turnPos - v.turnPos) * TURN_DIST
+                       - leader.vt.len - SAFETY_BUFFER_M;
+        const a      = idmAccel(v.turnSpeed, Math.max(gapM, IDM_S0 * 0.5), leader.turnSpeed);
+        v.turnSpeed  = Math.max(0.5, v.turnSpeed + a * dtSec);
+      }
+    }
+
+    // Step 3: cross-path proximity — read cached positions (MuonCache HGET).
+    // Hard-stop the yielding vehicle (no minimum speed floor) with a 1.5× look-ahead
+    // zone so braking starts well before bodies actually touch.
+    if (this.turning.length > 1) {
+      for (let i = 0; i < this.turning.length; i++) {
+        for (let j = i + 1; j < this.turning.length; j++) {
+          const vi = this.turning[i], vj = this.turning[j];
+          if (vi.exitArm === vj.exitArm && vi.exitLane === vj.exitLane) continue;
+          const xi = this._posCache.hget(vi.id, 'x'), yi = this._posCache.hget(vi.id, 'y');
+          const xj = this._posCache.hget(vj.id, 'x'), yj = this._posCache.hget(vj.id, 'y');
+          if (xi == null || xj == null) continue;
+          const dist     = Math.hypot(xi - xj, yi - yj);
+          const safetyPx = this._posCache.hget(vi.id, 'r') + this._posCache.hget(vj.id, 'r');
+          if (dist < safetyPx * 1.5) {
+            // Proportional hard-stop: squeeze=1 → speed=0, squeeze=0 → no change
+            const squeeze = Math.max(0, 1 - dist / safetyPx);
+            if (vi.turnPos <= vj.turnPos) {
+              vi.turnSpeed = Math.max(0, vi.turnSpeed * (1 - squeeze));
+            } else {
+              vj.turnSpeed = Math.max(0, vj.turnSpeed * (1 - squeeze));
+            }
+          }
+        }
+      }
+    }
+
+    // Step 4: advance position and graduate completed turns
+    const stillTurning = [];
+    for (const v of this.turning) {
+      v.turnPos += (v.turnSpeed * dtSec) / TURN_DIST;
+
+      if (v.turnPos >= 1) {
+        // Graduate onto exit arm — evict from position cache (MuonCache HDEL)
+        this._posCache.hdel(v.id);
         this.throughput++;
-        this.waitSum += v.waiting || 0;
+        this.waitSum += v.waiting;
+        this.exiting[v.exitArm].push({
+          ...v,
+          arm:  v.exitArm,
+          lane: v.exitLane,
+          pos:  0,          // 0 = at exit stop-line, increases as vehicle moves away
+          vel:  v.turnSpeed,
+        });
+      } else {
+        stillTurning.push(v);
       }
+    }
+    this.turning = stillTurning;
+
+    // ── Exiting vehicles: per-lane IDM, pos increases away from intersection ──
+    for (const arm of ['n', 's', 'e', 'w']) {
+      for (let lane = 0; lane < LANES; lane++) {
+        const lv = this.exiting[arm]
+          .filter(v => v.lane === lane)
+          .sort((a, b) => b.pos - a.pos);  // furthest from intersection first = leader
+
+        for (let i = 0; i < lv.length; i++) {
+          const v = lv[i];
+          let gap, vLead;
+          if (i === 0) {
+            gap = 999; vLead = IDM_V0;  // leader: free flow
+          } else {
+            const leader = lv[i - 1];  // further ahead (higher pos)
+            gap   = Math.max(leader.pos - v.pos - leader.vt.len - SAFETY_BUFFER_M, IDM_S0 * 0.5);
+            vLead = leader.vel;
+          }
+          const a = idmAccel(v.vel, gap, vLead);
+          v.vel = Math.max(0, v.vel + a * dtSec);
+          v.pos += v.vel * dtSec;  // pos increases (moving away from intersection)
+        }
+      }
+      // Remove vehicles that have cleared the visible road
+      this.exiting[arm] = this.exiting[arm].filter(v => v.pos < ROAD_M + SPAWN_EXTRA + 4);
     }
   }
 
@@ -203,8 +405,137 @@ function partition(arr, pred) {
   return [yes, no];
 }
 
+// Map turn direction + inbound lane → exit lane number
+// right turn = outer lane (kerb side = 0), left = inner (centre side = LANES-1), straight = same
+function exitLaneFor(turn, inLane) {
+  if (turn === 'right') return 0;
+  if (turn === 'left')  return LANES - 1;
+  return inLane;
+}
+
+// ── Geometry helpers ──────────────────────────────────────────────
+
+/**
+ * Return the screen (x,y) and heading angle (radians) for a vehicle on an arm,
+ * given the intersection centre (cx,cy), road half-width (roadPx), and pos in metres.
+ *
+ * Lane model: inbound traffic keeps LEFT of the road centreline (UK-style / Indian roads).
+ * From the driver's perspective they are on the left; in canvas coords:
+ *   N arm:  inbound (travelling south) → x slightly RIGHT of cx
+ *   S arm:  inbound (travelling north) → x slightly LEFT  of cx
+ *   E arm:  inbound (travelling west)  → y slightly BELOW  cy
+ *   W arm:  inbound (travelling east)  → y slightly ABOVE  cy
+ *
+ * laneOffset: 0 = nearest centre (inner), LANES-1 = nearest kerb (outer)
+ *   inbound side starts at +0.5*laneW from centre and increases outward.
+ */
+function armPos(arm, lane, posPx, cx, cy, roadPx) {
+  const laneWPx  = roadPx / LANES;
+  // inbound offset from road centre (positive = away from centre on inbound side)
+  const inOffset = (lane + 0.5) * laneWPx;
+
+  // Angle convention: after ctx.rotate(angle), local-y must point in the direction of travel.
+  // ctx.rotate(θ) maps local-y → screen direction (-sinθ, cosθ).
+  //   N (travel south  = screen +y): need cosθ=1, sinθ=0  → θ = 0
+  //   S (travel north  = screen -y): need cosθ=-1,sinθ=0  → θ = π
+  //   E (travel west   = screen -x): need sinθ=-1,cosθ=0  → θ = -π/2  (local-y→screen-left)
+  //   W (travel east   = screen +x): need sinθ=1, cosθ=0  → θ = π/2   (local-y→screen-right)
+  // Wait — for E: local-y→(-sinθ,cosθ)=(-1,0)=screen-left ✓ when θ=π/2.
+  //   sinθ=1,cosθ=0 → θ=π/2.  For W: (-sinθ,cosθ)=(1,0)=screen-right ✓ when θ=-π/2.
+  switch (arm) {
+    case 'n':
+      // travelling south (screen +y), inbound lane right of centre (+x)
+      return { x: cx + inOffset, y: cy - roadPx - posPx, angle: 0 };
+    case 's':
+      // travelling north (screen -y), inbound lane left of centre (-x)
+      return { x: cx - inOffset, y: cy + roadPx + posPx, angle: Math.PI };
+    case 'e':
+      // travelling west (screen -x), inbound lane below centre (+y)
+      return { x: cx + roadPx + posPx, y: cy + inOffset, angle: Math.PI / 2 };
+    case 'w':
+      // travelling east (screen +x), inbound lane above centre (-y)
+      return { x: cx - roadPx - posPx, y: cy - inOffset, angle: -Math.PI / 2 };
+  }
+}
+
+/**
+ * Smooth turn: cubic Bezier from approach stop-line → exit stop-line.
+ * Control points are tangent extensions from entry and exit directions,
+ * giving a tight arc for right turns, a wide arc for left turns, and a
+ * straight line for straight-through — the shortest natural path in each case.
+ * t ∈ [0,1]. Returns {x, y, angle}.
+ */
+function turnBezier(v, t, cx, cy, roadPx) {
+  const laneWPx   = roadPx / LANES;
+  const inOffset  = (v.lane    + 0.5) * laneWPx;
+  const outOffset = (v.exitLane + 0.5) * laneWPx;
+
+  // p0 = entry stop-line point, p2 = exit stop-line point
+  let p0, p2;
+  switch (v.arm) {
+    case 'n': p0 = { x: cx + inOffset,  y: cy - roadPx }; break;
+    case 's': p0 = { x: cx - inOffset,  y: cy + roadPx }; break;
+    case 'e': p0 = { x: cx + roadPx,    y: cy + inOffset }; break;
+    case 'w': p0 = { x: cx - roadPx,    y: cy - inOffset }; break;
+  }
+  switch (v.exitArm) {
+    case 'n': p2 = { x: cx - outOffset, y: cy - roadPx  }; break;
+    case 's': p2 = { x: cx + outOffset, y: cy + roadPx  }; break;
+    case 'e': p2 = { x: cx + roadPx,    y: cy - outOffset }; break;
+    case 'w': p2 = { x: cx - roadPx,    y: cy + outOffset }; break;
+  }
+
+  // Travel direction vectors:  ENTRY = into the intersection, EXIT = out of the exit arm.
+  // These match the armPos / armPosOut angle conventions exactly.
+  const ENTRY = { n: [0,1], s: [0,-1], e: [-1,0], w: [1,0]  };
+  const EXIT  = { n: [0,-1], s: [0,1], e: [1,0],  w: [-1,0] };
+
+  // Control distance scales with chord length; 0.45 gives near-circular arcs for 90° turns
+  // and reduces to a straight line when p0→p2 are collinear with the tangents.
+  const chord = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+  const d = chord * 0.45;
+
+  const [ex, ey] = ENTRY[v.arm];
+  const [fx, fy] = EXIT[v.exitArm];
+  const c1 = { x: p0.x + d * ex, y: p0.y + d * ey };  // extend entry tangent
+  const c2 = { x: p2.x - d * fx, y: p2.y - d * fy };  // extend exit tangent back
+
+  // Cubic Bezier position
+  const mt = 1 - t;
+  const bx = mt*mt*mt*p0.x + 3*mt*mt*t*c1.x + 3*mt*t*t*c2.x + t*t*t*p2.x;
+  const by = mt*mt*mt*p0.y + 3*mt*mt*t*c1.y + 3*mt*t*t*c2.y + t*t*t*p2.y;
+
+  // Cubic Bezier tangent
+  const tx_ = 3*mt*mt*(c1.x-p0.x) + 6*mt*t*(c2.x-c1.x) + 3*t*t*(p2.x-c2.x);
+  const ty_ = 3*mt*mt*(c1.y-p0.y) + 6*mt*t*(c2.y-c1.y) + 3*t*t*(p2.y-c2.y);
+
+  // angle = atan2(-tx_, ty_) matches the armPos/armPosOut rotation convention,
+  // so vehicle orientation is continuous at the stop-line boundaries.
+  const angle = Math.atan2(-tx_, ty_);
+
+  return { x: bx, y: by, angle };
+}
+
+// Arrow characters per turn direction
+const TURN_ARROW = { straight: '↑', left: '←', right: '→' };
+
+/**
+ * armPosOut — screen position for a vehicle that has exited the intersection
+ * and is traveling AWAY on arm `arm`. pos=0 = stop-line, pos increases toward canvas edge.
+ * Outbound traffic uses the opposite side of road from inbound.
+ */
+function armPosOut(arm, lane, posPx, cx, cy, roadPx) {
+  const laneWPx   = roadPx / LANES;
+  const outOffset = (lane + 0.5) * laneWPx;  // offset on outbound side
+  switch (arm) {
+    case 'n': return { x: cx - outOffset, y: cy - roadPx - posPx, angle: Math.PI };
+    case 's': return { x: cx + outOffset, y: cy + roadPx + posPx, angle: 0 };
+    case 'e': return { x: cx + roadPx + posPx, y: cy - outOffset, angle: -Math.PI / 2 };
+    case 'w': return { x: cx - roadPx - posPx, y: cy + outOffset, angle:  Math.PI / 2 };
+  }
+}
+
 // ── IDMRenderer ───────────────────────────────────────────────────
-// Draws a single IDM intersection centred in the given canvas region.
 
 export class IDMRenderer {
   constructor(canvas) {
@@ -220,53 +551,110 @@ export class IDMRenderer {
     const cy = H / 2;
 
     ctx.clearRect(0, 0, W, H);
-
-    // Background
     ctx.fillStyle = '#111114';
     ctx.fillRect(0, 0, W, H);
 
-    const lanes   = 3;              // fixed for IDM tab (could be parameterised later)
-    const laneWM  = 3.5;           // lane width in metres
-    const roadM   = lanes * laneWM; // total road half-width in m
-    const roadPx  = roadM * M2PX;  // half-road in px
+    const roadPx    = LANES * LANE_W_M * M2PX;  // half-road width in px
+    const roadLenPx = ROAD_M * M2PX;
 
-    this._drawRoads(cx, cy, roadPx, ROAD_M * M2PX);
+    this._drawRoads(cx, cy, roadPx, roadLenPx);
     this._drawIntersectionBox(cx, cy, roadPx);
     this._drawSignals(cx, cy, roadPx, sim.drawPhase);
-    this._drawVehicles(cx, cy, sim, roadPx, lanes, laneWM);
+    this._drawLaneLabels(cx, cy, roadPx);
+    this._drawVehicles(cx, cy, sim, roadPx, roadLenPx);
     this._drawStats(sim);
   }
 
   _drawRoads(cx, cy, roadPx, roadLenPx) {
     const { ctx } = this;
-    // Road surface
     ctx.fillStyle = '#222228';
-    // North road
-    ctx.fillRect(cx - roadPx, cy - roadPx - roadLenPx, roadPx * 2, roadLenPx);
-    // South road
-    ctx.fillRect(cx - roadPx, cy + roadPx, roadPx * 2, roadLenPx);
-    // West road
-    ctx.fillRect(cx - roadPx - roadLenPx, cy - roadPx, roadLenPx, roadPx * 2);
-    // East road
-    ctx.fillRect(cx + roadPx, cy - roadPx, roadLenPx, roadPx * 2);
+    ctx.fillRect(cx - roadPx, cy - roadPx - roadLenPx, roadPx * 2, roadLenPx);  // N
+    ctx.fillRect(cx - roadPx, cy + roadPx,             roadPx * 2, roadLenPx);  // S
+    ctx.fillRect(cx - roadPx - roadLenPx, cy - roadPx, roadLenPx,  roadPx * 2); // W
+    ctx.fillRect(cx + roadPx,             cy - roadPx, roadLenPx,  roadPx * 2); // E
 
-    // Centre lines (dashed)
-    ctx.strokeStyle = '#ffff0044';
-    ctx.lineWidth   = 1;
-    ctx.setLineDash([8, 10]);
-    // N/S centre
+    // Road centre divider (solid yellow)
+    ctx.strokeStyle = '#ffff0066';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(cx, cy - roadPx - roadLenPx); ctx.lineTo(cx, cy - roadPx); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cx, cy + roadPx); ctx.lineTo(cx, cy + roadPx + roadLenPx); ctx.stroke();
-    // E/W centre
     ctx.beginPath(); ctx.moveTo(cx - roadPx - roadLenPx, cy); ctx.lineTo(cx - roadPx, cy); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cx + roadPx, cy); ctx.lineTo(cx + roadPx + roadLenPx, cy); ctx.stroke();
+
+    // Lane markers (dashed white)
+    const laneWPx = (roadPx * 2) / (LANES * 2);  // each lane width
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([8, 10]);
+    for (let l = 1; l < LANES * 2; l++) {
+      if (l === LANES) continue; // skip centre line (already drawn)
+      const off = -roadPx + l * laneWPx;
+      // N/S arms: vertical lanes
+      ctx.beginPath(); ctx.moveTo(cx + off, cy - roadPx - roadLenPx); ctx.lineTo(cx + off, cy - roadPx); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx + off, cy + roadPx); ctx.lineTo(cx + off, cy + roadPx + roadLenPx); ctx.stroke();
+      // E/W arms: horizontal lanes
+      ctx.beginPath(); ctx.moveTo(cx - roadPx - roadLenPx, cy + off); ctx.lineTo(cx - roadPx, cy + off); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx + roadPx, cy + off); ctx.lineTo(cx + roadPx + roadLenPx, cy + off); ctx.stroke();
+    }
     ctx.setLineDash([]);
   }
 
+  // Draw lane name badges at the road edge for all 4 arms.
+  // Inbound  badges (warm amber)  : arm-letter + 1-3  e.g. N1 N2 N3  – on the inbound lane side
+  // Outbound badges (cool cyan)   : arm-letter + 4-6  e.g. N4 N5 N6  – on the outbound lane side
+  _drawLaneLabels(cx, cy, roadPx) {
+    const { ctx }  = this;
+    const laneWPx  = roadPx / LANES;
+    const BADGE_R  = 8;
+    const OFFSET   = roadPx + BADGE_R + 6;  // distance from centre to badge centre
+
+    ctx.font         = `bold ${BADGE_R * 1.15}px monospace`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    // inbound badge colours (warm) and outbound badge colours (cool)
+    const IN_COLORS  = ['#ffb347', '#ff7f7f', '#ffec6e'];  // amber/red/yellow
+    const OUT_COLORS = ['#4ec9ff', '#7fffb2', '#c47fff'];  // cyan/green/purple
+
+    const drawBadge = (x, y, label, bg) => {
+      ctx.beginPath();
+      ctx.arc(x, y, BADGE_R, 0, Math.PI * 2);
+      ctx.fillStyle   = bg + 'bb';
+      ctx.fill();
+      ctx.strokeStyle = bg;
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+      ctx.fillStyle   = '#111';
+      ctx.fillText(label, x, y);
+    };
+
+    for (let lane = 0; lane < LANES; lane++) {
+      const off = (lane + 0.5) * laneWPx;
+      const inC  = IN_COLORS[lane];
+      const outC = OUT_COLORS[lane];
+
+      // N arm  — inbound: +x side,  outbound: −x side
+      drawBadge(cx + off, cy - OFFSET, inboundLabel('n', lane),  inC);
+      drawBadge(cx - off, cy - OFFSET, outboundLabel('n', lane), outC);
+
+      // S arm  — inbound: −x side,  outbound: +x side
+      drawBadge(cx - off, cy + OFFSET, inboundLabel('s', lane),  inC);
+      drawBadge(cx + off, cy + OFFSET, outboundLabel('s', lane), outC);
+
+      // E arm  — inbound: +y side,  outbound: −y side
+      drawBadge(cx + OFFSET, cy + off, inboundLabel('e', lane),  inC);
+      drawBadge(cx + OFFSET, cy - off, outboundLabel('e', lane), outC);
+
+      // W arm  — inbound: −y side,  outbound: +y side
+      drawBadge(cx - OFFSET, cy - off, inboundLabel('w', lane),  inC);
+      drawBadge(cx - OFFSET, cy + off, outboundLabel('w', lane), outC);
+    }
+  }
+
   _drawIntersectionBox(cx, cy, roadPx) {
-    const { ctx } = this;
-    ctx.fillStyle = '#2a2a30';
-    ctx.fillRect(cx - roadPx, cy - roadPx, roadPx * 2, roadPx * 2);
+    this.ctx.fillStyle = '#2a2a30';
+    this.ctx.fillRect(cx - roadPx, cy - roadPx, roadPx * 2, roadPx * 2);
   }
 
   _drawSignals(cx, cy, roadPx, phase) {
@@ -276,103 +664,109 @@ export class IDMRenderer {
 
     const drawLight = (x, y, color) => {
       const r = 7;
-      // Faux glow (no shadowBlur — too expensive)
       ctx.fillStyle = color + '30';
       ctx.beginPath(); ctx.arc(x, y, r + 6, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = color + '70';
       ctx.beginPath(); ctx.arc(x, y, r + 2, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, r,     0, Math.PI * 2); ctx.fill();
     };
 
-    const o = roadPx + 12;
+    const o = roadPx + 14;
     drawLight(cx - o, cy - o, nsColor);
     drawLight(cx + o, cy - o, nsColor);
     drawLight(cx - o, cy + o, ewColor);
     drawLight(cx + o, cy + o, ewColor);
   }
 
-  _drawVehicles(cx, cy, sim, roadPx, lanes, laneWM) {
+  _drawVehicles(cx, cy, sim, roadPx, roadLenPx) {
     const { ctx } = this;
-    const roadLenPx = ROAD_M * M2PX;
 
-    const armConfig = {
-      n: { axis: 'v', dir:  1, baseX: cx, baseY: cy - roadPx, sign: -1 },
-      s: { axis: 'v', dir: -1, baseX: cx, baseY: cy + roadPx, sign:  1 },
-      e: { axis: 'h', dir: -1, baseX: cx + roadPx, baseY: cy, sign:  1 },
-      w: { axis: 'h', dir:  1, baseX: cx - roadPx, baseY: cy, sign: -1 },
-    };
+    // ── Approaching vehicles ───────────────────────────────────
+    for (const arm of ['n', 's', 'e', 'w']) {
+      for (const v of sim.approaching[arm]) {
+        const posPx = v.pos * M2PX;
+        if (posPx > roadLenPx + 20) continue;  // not yet on screen
 
-    for (const [arm, cfg] of Object.entries(armConfig)) {
-      const list = sim.vehicles[arm];
-      for (let i = 0; i < list.length; i++) {
-        const v   = list[i];
-        const posPx = v.pos * M2PX;   // distance from stop-line in px
-        const laneIdx = i % lanes;
-        const laneOffset = (laneIdx - (lanes - 1) / 2) * laneWM * M2PX;
+        const { x, y, angle } = armPos(arm, v.lane, posPx, cx, cy, roadPx);
+        this._drawVehicle(v, x, y, angle);
+      }
+    }
 
-        const lenPx = v.vt.len * M2PX;
-        const widPx = v.vt.wid * M2PX;
+    // ── Turning vehicles (Bezier path) ─────────────────────────
+    for (const v of sim.turning) {
+      const { x, y, angle } = turnBezier(v, v.turnPos, cx, cy, roadPx);
+      this._drawVehicle(v, x, y, angle);
+    }
 
-        let vx, vy, rw, rh;
-        if (cfg.axis === 'v') {
-          vx = cfg.baseX + laneOffset;
-          vy = cfg.baseY + cfg.sign * posPx;
-          rw = widPx;
-          rh = lenPx;
-        } else {
-          vx = cfg.baseX + cfg.sign * posPx;
-          vy = cfg.baseY + laneOffset;
-          rw = lenPx;
-          rh = widPx;
-        }
-
-        // Clip vehicles to visible road area
-        if (posPx > roadLenPx + 20) continue;   // off-screen spawn side
-        if (posPx < -(roadLenPx + 20)) continue; // off-screen exit side
-
-        // Speed-based brightness: faster = brighter
-        const speedRatio = Math.min(v.vel / IDM_V0, 1);
-        const alpha = Math.round(140 + speedRatio * 115).toString(16).padStart(2, '0');
-
-        ctx.fillStyle   = v.vt.color + alpha;
-        ctx.strokeStyle = v.vt.color;
-        ctx.lineWidth   = 0.5;
-        ctx.fillRect(vx - rw / 2, vy - rh / 2, rw, rh);
-        ctx.strokeRect(vx - rw / 2, vy - rh / 2, rw, rh);
-
-        // Velocity bar (small indicator at front of vehicle)
-        const barLen = Math.round(speedRatio * (rw - 2));
-        if (cfg.axis === 'v') {
-          ctx.fillStyle = '#ffffff33';
-          ctx.fillRect(vx - rw / 2 + 1, vy - rh / 2, barLen, 2);
-        } else {
-          ctx.fillStyle = '#ffffff33';
-          ctx.fillRect(vx - rw / 2, vy - rh / 2 + 1, 2, barLen);
-        }
+    // ── Exiting vehicles (outbound, leaving the intersection) ───
+    for (const arm of ['n', 's', 'e', 'w']) {
+      for (const v of sim.exiting[arm]) {
+        const posPx = v.pos * M2PX;
+        if (posPx > roadLenPx + 20) continue;  // off canvas
+        const { x, y, angle } = armPosOut(arm, v.lane, posPx, cx, cy, roadPx);
+        this._drawVehicle(v, x, y, angle);
       }
     }
   }
 
+  _drawVehicle(v, cx, cy, angle) {
+    const { ctx } = this;
+    const lenPx = v.vt.len * M2PX;
+    const widPx = v.vt.wid * M2PX;
+    const speedRatio = Math.min(v.vel / IDM_V0, 1);
+    const alpha = Math.round(140 + speedRatio * 115).toString(16).padStart(2, '0');
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+
+    // Body
+    ctx.fillStyle   = v.vt.color + alpha;
+    ctx.strokeStyle = v.vt.color;
+    ctx.lineWidth   = 0.8;
+    ctx.fillRect(-widPx / 2, -lenPx / 2, widPx, lenPx);
+    ctx.strokeRect(-widPx / 2, -lenPx / 2, widPx, lenPx);
+
+    // Speed bar at front
+    const barLen = Math.round(speedRatio * (widPx - 2));
+    ctx.fillStyle = '#ffffff44';
+    ctx.fillRect(-widPx / 2 + 1, -lenPx / 2, barLen, 2);
+
+    // Number
+    const numSize = Math.min(widPx * 0.55, 9);
+    ctx.font         = `bold ${numSize}px monospace`;
+    ctx.fillStyle    = '#ffffffcc';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(v.num % 100), 0, -lenPx * 0.18);
+
+    // Destination badge: turn arrow + unique outbound lane name (e.g. "→N5")
+    // exitArm and exitLane are both set at spawn so all vehicles, including approaching,
+    // already know their destination lane.
+    const destStr = (TURN_ARROW[v.turn] || '↑') + outboundLabel(v.exitArm, v.exitLane ?? 0);
+    const arrSize = Math.min(widPx * 0.52, 8);
+    ctx.font      = `bold ${arrSize}px monospace`;
+    ctx.fillStyle = '#ffe040dd';
+    ctx.fillText(destStr, 0, lenPx * 0.25);
+
+    ctx.restore();
+  }
+
   _drawStats(sim) {
     const { ctx, W, H } = this;
-    const throughput = sim.throughput;
-    const avgWait    = sim.avgWaitSec().toFixed(1);
-    const phase      = ['NS ▶', 'Yellow', 'EW ▶', 'Yellow'][sim.phase];
-    const totalVeh   = Object.values(sim.vehicles).reduce((s, a) => s + a.length, 0);
-
-    ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = '#aaa';
+    const totalVeh = Object.values(sim.approaching).reduce((s, a) => s + a.length, 0)
+                   + sim.turning.length
+                   + Object.values(sim.exiting).reduce((s, a) => s + a.length, 0);
+    const phase    = ['NS ▶', 'Yellow ●', 'EW ▶', 'Yellow ●'][sim.phase];
     const lines = [
       `Signal: ${phase}`,
-      `Active vehicles: ${totalVeh}`,
-      `Throughput: ${throughput}`,
-      `Avg wait: ${avgWait}s`,
+      `Active: ${totalVeh}  Throughput: ${sim.throughput}`,
+      `Avg wait: ${sim.avgWaitSec().toFixed(1)}s`,
     ];
-    let y = H - 16 - lines.length * 18;
-    for (const line of lines) {
-      ctx.fillText(line, 14, y);
-      y += 18;
-    }
+    ctx.font      = '12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = '#aaa';
+    let y = H - 14 - lines.length * 16;
+    for (const line of lines) { ctx.fillText(line, 14, y); y += 16; }
   }
 }
