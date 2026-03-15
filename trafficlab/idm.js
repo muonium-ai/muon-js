@@ -83,6 +83,32 @@ const TURN_EXIT = {
   w: { left: 'n', straight: 'e', right: 's' },
 };
 
+// ── VehiclePositionCache ─────────────────────────────────────────
+// Lightweight in-JS position registry shaped after the MuonCache HSET/HGET/HDEL
+// API.  One snapshot per physics frame lets every collision query read consistent,
+// pre-computed screen coordinates instead of re-running turnBezier per pair.
+class VehiclePositionCache {
+  constructor() { this._store = new Map(); }
+
+  /** Mirrors MuonCache HSET key field value */
+  hset(id, field, value) {
+    let rec = this._store.get(id);
+    if (!rec) { rec = Object.create(null); this._store.set(id, rec); }
+    rec[field] = value;
+  }
+
+  /** Mirrors MuonCache HGET key field */
+  hget(id, field) { return this._store.get(id)?.[field]; }
+
+  /** Mirrors MuonCache HDEL key */
+  hdel(id) { this._store.delete(id); }
+
+  /** Snapshot all registered ids (array copy — safe to mutate cache during loop). */
+  ids() { return [...this._store.keys()]; }
+
+  clear() { this._store.clear(); }
+}
+
 // ── IDM core ──────────────────────────────────────────────────────
 
 function idmAccel(v, gap, vLead) {
@@ -121,6 +147,9 @@ export class IDMIntersection {
     this.throughput = 0;
     this.waitSum    = 0;
     this._simTimeSec = 0;
+
+    // Per-frame position cache (MuonCache API shape) — rebuilt at the top of every step()
+    this._posCache = new VehiclePositionCache();
   }
 
   setVpm(v)      { this.vpm = v; }
@@ -189,6 +218,18 @@ export class IDMIntersection {
     this._updateSignal(dtSec * 1000);
     this._spawn(dtSec);
 
+    // ── Pre-snapshot: write every turning vehicle's screen position into the cache ──
+    // Computed once per frame (MuonCache write phase); all collision queries below
+    // read from this snapshot instead of re-invoking turnBezier.
+    const _roadPx = LANES * LANE_W_M * M2PX;
+    this._posCache.clear();
+    for (const tv of this.turning) {
+      const { x, y } = turnBezier(tv, tv.turnPos, 0, 0, _roadPx);
+      this._posCache.hset(tv.id, 'x', x);
+      this._posCache.hset(tv.id, 'y', y);
+      this._posCache.hset(tv.id, 'r', (tv.vt.len * 0.5 + SAFETY_BUFFER_M) * M2PX);
+    }
+
     // ── Approaching vehicles: per-lane IDM + stop-line ──────────────────
     for (const arm of ['n', 's', 'e', 'w']) {
       const green = isGreen(arm, this.phase);
@@ -220,8 +261,35 @@ export class IDMIntersection {
       const [crossed, remaining] = partition(this.approaching[arm], v => v.pos <= 0);
       this.approaching[arm] = remaining;
       for (const v of crossed) {
-        // exitArm and exitLane already set at spawn; preserve them
-        this.turning.push({ ...v, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
+        // Entry gate: sample 3 points along this vehicle's Bezier path and check
+        // each against the position cache (MuonCache HGET reads).
+        // If blocked, hold the vehicle at the stop-line for the next frame.
+        const vr = (v.vt.len * 0.5 + SAFETY_BUFFER_M) * M2PX;
+        const existIds = this._posCache.ids();  // snapshot before we might add below
+        let blocked = false;
+        for (const t of [0, 0.25, 0.5]) {
+          const { x: px, y: py } = turnBezier(v, t, 0, 0, _roadPx);
+          for (const eid of existIds) {
+            const dist = Math.hypot(px - this._posCache.hget(eid, 'x'),
+                                    py - this._posCache.hget(eid, 'y'));
+            if (dist < vr + this._posCache.hget(eid, 'r')) { blocked = true; break; }
+          }
+          if (blocked) break;
+        }
+        if (blocked) {
+          // Hold at stop-line; will retry on next green after intersection clears
+          v.pos = 0.1;
+          v.vel = 0;
+          this.approaching[arm].push(v);
+        } else {
+          // Approved — register in cache (MuonCache HSET) so subsequent crossed
+          // vehicles from other arms see this vehicle's entry position.
+          const { x: ex, y: ey } = turnBezier(v, 0, 0, 0, _roadPx);
+          this._posCache.hset(v.id, 'x', ex);
+          this._posCache.hset(v.id, 'y', ey);
+          this._posCache.hset(v.id, 'r', vr);
+          this.turning.push({ ...v, turnPos: 0, turnSpeed: Math.max(v.vel, 2) });
+        }
       }
     }
 
@@ -250,24 +318,26 @@ export class IDMIntersection {
       }
     }
 
-    // Step 3: cross-path proximity — brake the earlier vehicle when two turning
-    // vehicles from different paths come within their combined safety radius
+    // Step 3: cross-path proximity — read cached positions (MuonCache HGET).
+    // Hard-stop the yielding vehicle (no minimum speed floor) with a 1.5× look-ahead
+    // zone so braking starts well before bodies actually touch.
     if (this.turning.length > 1) {
-      const roadPxC = LANES * LANE_W_M * M2PX;  // use cx=cy=0 for relative distances
-      const pts = this.turning.map(v => turnBezier(v, v.turnPos, 0, 0, roadPxC));
       for (let i = 0; i < this.turning.length; i++) {
         for (let j = i + 1; j < this.turning.length; j++) {
           const vi = this.turning[i], vj = this.turning[j];
-          if (vi.exitArm === vj.exitArm && vi.exitLane === vj.exitLane) continue; // same path
-          const dist     = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
-          const safetyPx = (vi.vt.len + vj.vt.len) * 0.5 * M2PX + SAFETY_BUFFER_M * M2PX;
-          if (dist < safetyPx) {
-            const squeeze = 1 - dist / safetyPx;  // 0 = just touching, 1 = full overlap
-            // Yield to whichever vehicle is further along (let it clear first)
+          if (vi.exitArm === vj.exitArm && vi.exitLane === vj.exitLane) continue;
+          const xi = this._posCache.hget(vi.id, 'x'), yi = this._posCache.hget(vi.id, 'y');
+          const xj = this._posCache.hget(vj.id, 'x'), yj = this._posCache.hget(vj.id, 'y');
+          if (xi == null || xj == null) continue;
+          const dist     = Math.hypot(xi - xj, yi - yj);
+          const safetyPx = this._posCache.hget(vi.id, 'r') + this._posCache.hget(vj.id, 'r');
+          if (dist < safetyPx * 1.5) {
+            // Proportional hard-stop: squeeze=1 → speed=0, squeeze=0 → no change
+            const squeeze = Math.max(0, 1 - dist / safetyPx);
             if (vi.turnPos <= vj.turnPos) {
-              vi.turnSpeed = Math.max(0.5, vi.turnSpeed * (1 - squeeze * 0.6));
+              vi.turnSpeed = Math.max(0, vi.turnSpeed * (1 - squeeze));
             } else {
-              vj.turnSpeed = Math.max(0.5, vj.turnSpeed * (1 - squeeze * 0.6));
+              vj.turnSpeed = Math.max(0, vj.turnSpeed * (1 - squeeze));
             }
           }
         }
@@ -280,7 +350,8 @@ export class IDMIntersection {
       v.turnPos += (v.turnSpeed * dtSec) / TURN_DIST;
 
       if (v.turnPos >= 1) {
-        // Graduate onto exit arm as an outbound vehicle
+        // Graduate onto exit arm — evict from position cache (MuonCache HDEL)
+        this._posCache.hdel(v.id);
         this.throughput++;
         this.waitSum += v.waiting;
         this.exiting[v.exitArm].push({
